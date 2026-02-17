@@ -70,6 +70,9 @@ dev = [
     "pytest-cov>=6.0",
     "pytest-asyncio>=0.24",
 ]
+bench = [
+    "plotly[kaleido]>=6",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

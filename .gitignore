@@ -34,3 +34,7 @@ htmlcov/
 .env
 .env.local
 *.local.md
+
+# Benchmarks (regenerable outputs)
+benchmarks/results/*.json
+benchmarks/results/*.html
