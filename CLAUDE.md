@@ -341,9 +341,11 @@ if m.has_index():
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `lint.yml` | Push/PR to `main` | `ruff check src/` + `ruff format --check src/` |
-| `release.yml` | Tag push (`v*`) | `uv build` → publish to PyPI via trusted publishers |
+| `release.yml` | Tag push (`v*`) | `uv build` → PyPI publish → GitHub Release |
 
-### Releasing to PyPI
+### Releasing
+
+A single tag push triggers the full pipeline: **build → PyPI publish → GitHub Release**.
 
 ```bash
 # 1. Bump version in pyproject.toml
@@ -351,11 +353,17 @@ if m.has_index():
 git add pyproject.toml
 git commit -m "Bump version to 0.X.Y"
 
-# 3. Tag and push
+# 3. Tag and push — this triggers everything
 git tag v0.X.Y
 git push origin main v0.X.Y
-# → release.yml builds and publishes automatically
 ```
+
+**What happens automatically:**
+1. `build` job — `uv build` creates sdist + wheel
+2. `publish` job — uploads to PyPI via OIDC trusted publisher (no tokens)
+3. `github-release` job — creates a GitHub Release with auto-generated notes
+
+Both PyPI and GitHub Releases stay in sync from a single `git push`.
 
 **Trusted Publishers:** PyPI is configured to trust `release.yml` in the `pypi` GitHub environment — no API tokens needed. If this breaks, check:
 - PyPI project settings → Trusted Publishers
@@ -395,6 +403,35 @@ for (let i = 0; i < data.sender.length; i++) {
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | Index database location |
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails per mailbox |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before refresh |
+
+## Benchmarks
+
+Competitive benchmarks live in `benchmarks/` and compare against 7 other Apple Mail MCP servers.
+
+```bash
+# Install all competitors
+bash benchmarks/setup.sh
+
+# Run all benchmarks (outputs JSON to benchmarks/results/)
+uv run --group bench python -m benchmarks.run
+
+# Generate Plotly charts (PNG to repo root, HTML to results/)
+uv run --group bench python -m benchmarks.charts
+
+# Single competitor or scenario
+uv run --group bench python -m benchmarks.run --competitor imdinu
+uv run --group bench python -m benchmarks.run --scenario search_body
+```
+
+Key files:
+- `benchmarks/harness.py` — MCP client + timing engine (JSON-RPC over stdio)
+- `benchmarks/competitors.py` — Competitor configs (commands, tool name mappings)
+- `benchmarks/run.py` — CLI runner (argparse, outputs JSON + stdout summary)
+- `benchmarks/charts.py` — Plotly horizontal bar charts (PNG + HTML)
+- `benchmarks/setup.sh` — Install all competitors to `~/.cache/apple-mail-mcp-bench/`
+- `BENCHMARKS.md` — Results document with embedded chart PNGs
+
+Chart PNGs are committed (they ARE the results). JSON and HTML in `benchmarks/results/` are gitignored.
 
 ## Known Limitations
 

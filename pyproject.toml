@@ -1,6 +1,6 @@
 [project]
 name = "apple-mail-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fast MCP server for Apple Mail with FTS5 search index"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -43,6 +43,7 @@ watch = ["watchfiles>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/imdinu/apple-mail-mcp"
+Documentation = "https://imdinu.github.io/apple-mail-mcp/"
 Repository = "https://github.com/imdinu/apple-mail-mcp"
 Issues = "https://github.com/imdinu/apple-mail-mcp/issues"
 
@@ -69,6 +70,12 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=6.0",
     "pytest-asyncio>=0.24",
+]
+bench = [
+    "plotly[kaleido]>=6",
+]
+docs = [
+    "zensical",
 ]
 
 [tool.pytest.ini_options]

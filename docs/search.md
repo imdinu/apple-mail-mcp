@@ -1,0 +1,160 @@
+# Search & Indexing
+
+Apple Mail MCP includes an optional **FTS5 search index** that makes body search **700–3500x faster** — ~2ms instead of ~7s.
+
+## How It Works
+
+```
+┌─────────────────────┐     ┌──────────────────┐
+│  ~/Library/Mail/V10 │     │  ~/.apple-mail-mcp│
+│  ├── account-uuid/  │────▶│  └── index.db     │
+│  │   └── mailbox/   │     │      (SQLite+FTS5)│
+│  │       └── *.emlx │     └──────────────────┘
+│  └── ...            │              │
+└─────────────────────┘              ▼
+                              Fast search (~2ms)
+```
+
+1. **Build from disk** — `apple-mail-mcp index` reads `.emlx` files directly (~30x faster than JXA)
+2. **Startup sync** — index is reconciled with disk when the server starts (<5s)
+3. **Real-time updates** — `--watch` flag monitors for new emails
+4. **Fast search** — queries use SQLite FTS5 with BM25 ranking
+
+## Building the Index
+
+### Requirements
+
+Building requires **Full Disk Access** for your terminal:
+
+1. Open **System Settings**
+2. Go to **Privacy & Security → Full Disk Access**
+3. Add and enable **Terminal.app** (or your terminal emulator)
+4. Restart your terminal
+
+!!! note
+    The MCP server itself does **not** need Full Disk Access. It uses disk-based sync to keep the index updated.
+
+### Commands
+
+```bash
+# Build the index (first time)
+apple-mail-mcp index --verbose
+
+# Check index status
+apple-mail-mcp status
+
+# Force rebuild from scratch
+apple-mail-mcp rebuild
+```
+
+### What Gets Indexed
+
+For each email, the index stores:
+
+| Field | Source | Searchable via FTS5 |
+|-------|--------|:---:|
+| `message_id` | Mail.app ID | — |
+| `account` | Folder path UUID | — |
+| `mailbox` | Folder path | — |
+| `subject` | `.emlx` header | Yes |
+| `sender` | `.emlx` header | Yes |
+| `content` | `.emlx` body (HTML → text) | Yes |
+| `date_received` | `.emlx` header | — |
+| `emlx_path` | Filesystem path | — |
+
+## Database Schema
+
+The index uses SQLite with FTS5 external content tables:
+
+```sql
+-- Email content cache
+CREATE TABLE emails (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    account TEXT NOT NULL,
+    mailbox TEXT NOT NULL,
+    subject TEXT,
+    sender TEXT,
+    content TEXT,
+    date_received TEXT,
+    emlx_path TEXT,
+    indexed_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(account, mailbox, message_id)
+);
+
+-- FTS5 index (external content — shares storage with emails table)
+CREATE VIRTUAL TABLE emails_fts USING fts5(
+    subject, sender, content,
+    content='emails',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+-- Sync state tracking per mailbox
+CREATE TABLE sync_state (
+    account TEXT NOT NULL,
+    mailbox TEXT NOT NULL,
+    last_sync TEXT,
+    message_count INTEGER DEFAULT 0,
+    PRIMARY KEY(account, mailbox)
+);
+```
+
+The `porter unicode61` tokenizer provides:
+
+- **Porter stemming** — "running" matches "run", "runs", "runner"
+- **Unicode support** — handles international characters correctly
+
+## Startup Sync
+
+Every time the server starts, it runs a fast **state reconciliation** against the filesystem:
+
+```
+1. Get DB inventory:   {(account, mailbox, msg_id): emlx_path}  ← from SQLite
+2. Get Disk inventory: {(account, mailbox, msg_id): emlx_path}  ← fast walk
+3. Calculate diff:
+   - NEW:     on disk, not in DB → parse & insert
+   - DELETED: in DB, not on disk → remove from DB
+   - MOVED:   same ID, different path → update path
+```
+
+This takes **<5s** even for 20,000+ emails (vs. 60s+ timeout with the old JXA-based sync).
+
+## Real-Time Updates
+
+Enable automatic index updates with the `--watch` flag:
+
+```bash
+apple-mail-mcp --watch
+```
+
+The file watcher monitors `~/Library/Mail/V10/` for:
+
+- New `.emlx` files → parse and insert into index
+- Deleted `.emlx` files → remove from index
+- Moved `.emlx` files → update path in index
+
+## Performance
+
+### Search Speed
+
+| Query | Results | Time |
+|-------|---------|------|
+| "invoice" | 20 | 2.5ms |
+| "meeting tomorrow" | 20 | 1.3ms |
+| "password reset" | 20 | 0.6ms |
+| "shipping confirmation" | 10 | 4.1ms |
+
+### With vs. Without Index
+
+| Operation | Without Index | With Index | Speedup |
+|-----------|---------------|------------|---------|
+| Body search | ~7,000ms | ~2–10ms | **700–3500x** |
+| Startup sync | 60s timeout | <5s | **12x** |
+| Initial build | — | ~1–2 min | One-time |
+| Disk usage | — | ~6 KB/email | — |
+
+## Known Limitations
+
+!!! warning "FTS5 search ignores account/mailbox filters"
+    The disk indexer stores account **UUIDs** from folder paths (e.g., `A1B2C3D4-...`), while JXA returns friendly names (e.g., `"iCloud"`). This mismatch prevents filtering search results by account or mailbox. Search currently returns results from **all indexed emails**.
