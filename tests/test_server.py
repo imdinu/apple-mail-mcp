@@ -263,6 +263,7 @@ class TestSearch:
 
         mock_acct_map = MagicMock()
         mock_acct_map.ensure_loaded = AsyncMock()
+        mock_acct_map.name_to_uuid.return_value = None
         mock_acct_map.uuid_to_name.side_effect = lambda x: x
 
         with (
@@ -453,8 +454,20 @@ class TestSearch:
         mock_manager.has_index.return_value = True
         mock_manager.search.return_value = []
 
-        with patch("apple_mail_mcp.server._get_index_manager") as mock_get:
+        mock_acct_map = MagicMock()
+        mock_acct_map.ensure_loaded = AsyncMock()
+        mock_acct_map.name_to_uuid.return_value = None
+
+        with (
+            patch(
+                "apple_mail_mcp.server._get_index_manager"
+            ) as mock_get,
+            patch(
+                "apple_mail_mcp.server._get_account_map"
+            ) as mock_get_map,
+        ):
             mock_get.return_value = mock_manager
+            mock_get_map.return_value = mock_acct_map
 
             from apple_mail_mcp.server import search
 

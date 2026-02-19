@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -39,6 +40,7 @@ class AccountMap:
         self._uuid_to_name: dict[str, str] = {}
         self._loaded_at: float = 0
         self._lock = threading.Lock()
+        self._async_lock = asyncio.Lock()
 
     @classmethod
     def get_instance(cls) -> AccountMap:
@@ -103,13 +105,22 @@ class AccountMap:
 
         Called from async context (MCP tool handlers). Uses
         execute_with_core_async to avoid blocking the event loop.
+
+        Double-checked locking prevents concurrent callers from
+        firing duplicate JXA fetches.
         """
         if not self._is_stale():
             return
 
-        from ..builders import AccountsQueryBuilder
-        from ..executor import execute_with_core_async
+        async with self._async_lock:
+            # Re-check after acquiring lock — another coroutine
+            # may have refreshed while we were waiting.
+            if not self._is_stale():
+                return
 
-        script = AccountsQueryBuilder().list_accounts()
-        accounts = await execute_with_core_async(script)
-        self.load_from_jxa(accounts)
+            from ..builders import AccountsQueryBuilder
+            from ..executor import execute_with_core_async
+
+            script = AccountsQueryBuilder().list_accounts()
+            accounts = await execute_with_core_async(script)
+            self.load_from_jxa(accounts)
