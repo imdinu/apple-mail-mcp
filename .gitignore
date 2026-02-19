@@ -35,6 +35,9 @@ htmlcov/
 .env.local
 *.local.md
 
+# MkDocs
+site/
+
 # Benchmarks (regenerable outputs)
 benchmarks/results/*.json
 benchmarks/results/*.html
