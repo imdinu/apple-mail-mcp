@@ -350,7 +350,7 @@ async def search(
             results = manager.search(
                 query,
                 account=search_account,
-                mailbox=resolved_mailbox,
+                mailbox=mailbox,  # pass raw value — None means all
                 limit=limit,
             )
             return [
