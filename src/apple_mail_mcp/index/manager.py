@@ -28,9 +28,9 @@ from ..config import (
     get_index_staleness_hours,
 )
 from .schema import (
-    INSERT_ATTACHMENT_SQL,
     INSERT_EMAIL_SQL,
     init_database,
+    insert_attachments,
     optimize_fts_index,
     rebuild_fts_index,
 )
@@ -53,6 +53,7 @@ class IndexStats:
     last_sync: datetime | None
     db_size_mb: float
     staleness_hours: float | None
+    capped_mailboxes: int = 0
 
 
 # SearchResult is imported from .search to avoid duplication
@@ -154,12 +155,25 @@ class IndexManager:
         if self._db_path.exists():
             db_size_mb = self._db_path.stat().st_size / (1024 * 1024)
 
+        # Count mailboxes at or above the per-mailbox cap
+        max_per_mailbox = get_index_max_emails()
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT account, mailbox FROM emails"
+            "  GROUP BY account, mailbox"
+            "  HAVING COUNT(*) >= ?"
+            ")",
+            (max_per_mailbox,),
+        )
+        capped_mailboxes = cursor.fetchone()[0]
+
         return IndexStats(
             email_count=email_count,
             mailbox_count=mailbox_count,
             last_sync=last_sync,
             db_size_mb=db_size_mb,
             staleness_hours=staleness_hours,
+            capped_mailboxes=capped_mailboxes,
         )
 
     def is_stale(self) -> bool:
@@ -199,6 +213,7 @@ class IndexManager:
 
         # Track counts per mailbox to enforce limits
         mailbox_counts: dict[tuple[str, str], int] = {}
+        capped_mailboxes: set[tuple[str, str]] = set()
         total_indexed = 0
 
         # Clear existing data for rebuild
@@ -222,6 +237,7 @@ class IndexManager:
                 count = mailbox_counts.get(key, 0)
 
                 if count >= max_per_mailbox:
+                    capped_mailboxes.add(key)
                     continue
 
                 mailbox_counts[key] = count + 1
@@ -314,6 +330,21 @@ class IndexManager:
                 END;
             """)
 
+            # Log cap warnings (aggregate summary)
+            if capped_mailboxes:
+                logger.warning(
+                    "%d mailbox(es) hit the per-mailbox cap (%d). "
+                    "Increase APPLE_MAIL_INDEX_MAX_EMAILS to index more.",
+                    len(capped_mailboxes),
+                    max_per_mailbox,
+                )
+                if progress_callback:
+                    msg = (
+                        f"Warning: {len(capped_mailboxes)} mailbox(es) "
+                        f"hit cap ({max_per_mailbox})"
+                    )
+                    progress_callback(total_indexed, total_indexed, msg)
+
         return total_indexed
 
     @staticmethod
@@ -343,18 +374,7 @@ class IndexManager:
                 )
                 row = cursor.fetchone()
                 if row:
-                    rowid = row[0]
-                    for att in attachments:
-                        conn.execute(
-                            INSERT_ATTACHMENT_SQL,
-                            (
-                                rowid,
-                                att.filename,
-                                att.mime_type,
-                                att.file_size,
-                                att.content_id,
-                            ),
-                        )
+                    insert_attachments(conn, row[0], attachments)
 
         conn.commit()
 
@@ -491,6 +511,168 @@ class IndexManager:
             cursor = conn.execute("SELECT message_id FROM emails")
 
         return {row[0] for row in cursor}
+
+    # ─────────────────────────────────────────────────────────────────
+    # Public Query Methods (used by server.py instead of raw SQL)
+    # ─────────────────────────────────────────────────────────────────
+
+    def find_email_location(
+        self,
+        message_id: int,
+        account: str | None = None,
+        mailbox: str | None = None,
+    ) -> tuple[str, str] | None:
+        """Look up an email's (account, mailbox) from the index.
+
+        Used by get_email Strategy 2 to find where an email lives
+        without iterating all mailboxes via JXA.
+
+        Args:
+            message_id: Mail.app message ID
+            account: Optional account filter (UUID)
+            mailbox: Optional mailbox filter
+
+        Returns:
+            (account, mailbox) tuple or None if not found
+        """
+        conn = self._get_conn()
+        where = ["message_id = ?"]
+        params: list = [message_id]
+        if account:
+            where.append("account = ?")
+            params.append(account)
+        if mailbox:
+            where.append("mailbox = ?")
+            params.append(mailbox)
+
+        sql = (
+            "SELECT account, mailbox FROM emails WHERE "
+            + " AND ".join(where)
+            + " LIMIT 1"
+        )
+        row = conn.execute(sql, params).fetchone()
+        if row:
+            return (row["account"], row["mailbox"])
+        return None
+
+    def find_email_path(
+        self,
+        message_id: int,
+        account: str | None = None,
+        mailbox: str | None = None,
+    ) -> Path | None:
+        """Look up an email's .emlx file path from the index.
+
+        Used by get_attachment to locate the file on disk.
+
+        Args:
+            message_id: Mail.app message ID
+            account: Optional account filter (UUID)
+            mailbox: Optional mailbox filter
+
+        Returns:
+            Path to the .emlx file, or None if not found / path is NULL
+        """
+        conn = self._get_conn()
+        where = ["message_id = ?"]
+        params: list = [message_id]
+        if account:
+            where.append("account = ?")
+            params.append(account)
+        if mailbox:
+            where.append("mailbox = ?")
+            params.append(mailbox)
+
+        sql = (
+            "SELECT emlx_path FROM emails WHERE "
+            + " AND ".join(where)
+            + " LIMIT 1"
+        )
+        row = conn.execute(sql, params).fetchone()
+        if row and row["emlx_path"]:
+            return Path(row["emlx_path"])
+        return None
+
+    def search_attachments(
+        self,
+        query: str,
+        account: str | None = None,
+        mailbox: str | None = None,
+        limit: int = 20,
+        exclude_mailboxes: list[str] | None = None,
+    ) -> list[dict]:
+        """Search attachments by filename using SQL LIKE.
+
+        Args:
+            query: Filename search term (matched with LIKE %query%)
+            account: Optional account filter (UUID)
+            mailbox: Optional mailbox filter
+            limit: Maximum results
+            exclude_mailboxes: Mailboxes to exclude from results
+
+        Returns:
+            List of dicts with message_id, account, mailbox,
+            subject, sender, date_received, filename
+        """
+        from .search import search_attachments as _search_attachments
+
+        return _search_attachments(
+            self._get_conn(),
+            query,
+            account=account,
+            mailbox=mailbox,
+            limit=limit,
+            exclude_mailboxes=exclude_mailboxes,
+        )
+
+    def get_email_attachments(
+        self,
+        message_id: int,
+        account: str | None = None,
+        mailbox: str | None = None,
+    ) -> list[dict] | None:
+        """Get attachment metadata for an email from the index.
+
+        Returns richer MIME-parsed attachment data than JXA's
+        mailAttachments(), including inline images and S/MIME parts.
+
+        Args:
+            message_id: Mail.app message ID
+            account: Optional account filter (UUID)
+            mailbox: Optional mailbox filter
+
+        Returns:
+            List of attachment dicts, or None if email not found
+        """
+        conn = self._get_conn()
+        where = ["e.message_id = ?"]
+        params: list = [message_id]
+        if account:
+            where.append("e.account = ?")
+            params.append(account)
+        if mailbox:
+            where.append("e.mailbox = ?")
+            params.append(mailbox)
+
+        sql = (
+            "SELECT a.filename, a.mime_type, a.file_size, a.content_id "
+            "FROM attachments a "
+            "JOIN emails e ON a.email_rowid = e.rowid "
+            "WHERE " + " AND ".join(where)
+        )
+        cursor = conn.execute(sql, params)
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+        return [
+            {
+                "filename": r["filename"],
+                "mime_type": r["mime_type"],
+                "size": r["file_size"] or 0,
+                "content_id": r["content_id"],
+            }
+            for r in rows
+        ]
 
     # ─────────────────────────────────────────────────────────────────
     # File Watcher Methods

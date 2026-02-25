@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING
 
 from .disk import find_mail_directory, parse_emlx
 from .schema import (
-    INSERT_ATTACHMENT_SQL,
     INSERT_EMAIL_SQL,
     create_connection,
     email_to_row,
+    insert_attachments,
 )
 
 if TYPE_CHECKING:
@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 # Regex to extract account/mailbox from path
 # ~/Library/Mail/V10/[AccountUUID]/[Mailbox].mbox/.../*.emlx
-PATH_PATTERN = re.compile(r"/V\d+/([^/]+)/([^/]+)\.mbox/.*?/(\d+)\.emlx$")
+PATH_PATTERN = re.compile(
+    r"/V\d+/([^/]+)/([^/]+)\.mbox/.*?/(\d+)(?:\.partial)?\.emlx$"
+)
 
 # Constants for safety limits
 MAX_PENDING_CHANGES = 10000  # Prevent unbounded memory growth
@@ -312,17 +314,7 @@ class IndexWatcher:
                             rowid = conn.execute(
                                 "SELECT last_insert_rowid()"
                             ).fetchone()[0]
-                            for att in attachments:
-                                conn.execute(
-                                    INSERT_ATTACHMENT_SQL,
-                                    (
-                                        rowid,
-                                        att.filename,
-                                        att.mime_type,
-                                        att.file_size,
-                                        att.content_id,
-                                    ),
-                                )
+                            insert_attachments(conn, rowid, attachments)
 
                         added_count += 1
                     except sqlite3.IntegrityError as e:

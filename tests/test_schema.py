@@ -13,6 +13,7 @@ from apple_mail_mcp.index.schema import (
     SCHEMA_VERSION,
     _run_migrations,
     init_database,
+    insert_attachments,
     optimize_fts_index,
     rebuild_fts_index,
 )
@@ -327,3 +328,72 @@ class TestMigrationV3ToV4:
 
         cursor = v3_db.execute("SELECT version FROM schema_version")
         assert cursor.fetchone()[0] == SCHEMA_VERSION
+
+
+class TestInsertAttachments:
+    """Tests for the shared insert_attachments() helper."""
+
+    def test_insert_attachments_inserts_rows(
+        self, temp_db: sqlite3.Connection
+    ):
+        """insert_attachments creates attachment rows."""
+        from types import SimpleNamespace
+
+        # Create parent email
+        temp_db.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject) "
+            "VALUES (1, 'acc', 'INBOX', 'Test')"
+        )
+        rowid = temp_db.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+
+        atts = [
+            SimpleNamespace(
+                filename="a.pdf",
+                mime_type="application/pdf",
+                file_size=100,
+                content_id=None,
+            ),
+            SimpleNamespace(
+                filename="b.png",
+                mime_type="image/png",
+                file_size=200,
+                content_id="cid1",
+            ),
+        ]
+
+        insert_attachments(temp_db, rowid, atts)
+        temp_db.commit()
+
+        cursor = temp_db.execute(
+            "SELECT filename, file_size FROM attachments "
+            "WHERE email_rowid = ? ORDER BY filename",
+            (rowid,),
+        )
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+        assert rows[0]["filename"] == "a.pdf"
+        assert rows[1]["filename"] == "b.png"
+
+    def test_insert_attachments_empty_list(
+        self, temp_db: sqlite3.Connection
+    ):
+        """insert_attachments with empty list is a no-op."""
+        temp_db.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject) "
+            "VALUES (1, 'acc', 'INBOX', 'Test')"
+        )
+        rowid = temp_db.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+
+        insert_attachments(temp_db, rowid, [])
+        temp_db.commit()
+
+        count = temp_db.execute(
+            "SELECT COUNT(*) FROM attachments"
+        ).fetchone()[0]
+        assert count == 0

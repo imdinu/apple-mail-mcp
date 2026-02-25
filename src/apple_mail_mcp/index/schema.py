@@ -40,6 +40,35 @@ INSERT_ATTACHMENT_SQL = """INSERT INTO attachments
     VALUES (?, ?, ?, ?, ?)"""
 
 
+def insert_attachments(
+    conn: sqlite3.Connection,
+    email_rowid: int,
+    attachments: list,
+) -> None:
+    """Insert attachment metadata rows for an email.
+
+    Centralizes the attachment insertion pattern used by manager.py,
+    sync.py, and watcher.py to avoid 3x duplication.
+
+    Args:
+        conn: Database connection
+        email_rowid: The rowid of the parent email in the emails table
+        attachments: List of AttachmentInfo (or duck-typed objects with
+            filename, mime_type, file_size, content_id attributes)
+    """
+    for att in attachments:
+        conn.execute(
+            INSERT_ATTACHMENT_SQL,
+            (
+                email_rowid,
+                att.filename,
+                att.mime_type,
+                att.file_size,
+                att.content_id,
+            ),
+        )
+
+
 def email_to_row(
     email: dict,
     account: str,

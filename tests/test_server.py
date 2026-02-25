@@ -245,7 +245,7 @@ class TestGetEmail:
         """B1: Strategy 2 uses index lookup when strategy 1 fails."""
         call_count = 0
 
-        async def mock_exec_side_effect(script):
+        async def mock_exec_side_effect(script, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -263,17 +263,17 @@ class TestGetEmail:
                     "flagged": False,
                     "reply_to": "",
                     "message_id": "<x>",
+                    "attachments": [],
                 }
             return {}
 
         mock_manager = MagicMock()
         mock_manager.has_index.return_value = True
-        mock_conn = MagicMock()
-        mock_row = {"account": "uuid-123", "mailbox": "Archive"}
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = mock_row
-        mock_conn.execute.return_value = mock_cursor
-        mock_manager._get_conn.return_value = mock_conn
+        mock_manager.find_email_location.return_value = (
+            "uuid-123",
+            "Archive",
+        )
+        mock_manager.get_email_attachments.return_value = None
 
         mock_acct_map = MagicMock()
         mock_acct_map.ensure_loaded = AsyncMock()
@@ -709,14 +709,13 @@ class TestGetAttachment:
     @pytest.mark.asyncio
     async def test_get_attachment_returns_base64(self):
         """get_attachment returns base64-encoded content."""
+        from pathlib import Path
+
         mock_manager = MagicMock()
         mock_manager.has_index.return_value = True
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_row = {"emlx_path": "/fake/path/42.emlx"}
-        mock_cursor.fetchone.return_value = mock_row
-        mock_conn.execute.return_value = mock_cursor
-        mock_manager._get_conn.return_value = mock_conn
+        mock_manager.find_email_path.return_value = Path(
+            "/fake/path/42.emlx"
+        )
 
         fake_bytes = b"fake pdf content"
         fake_result = (fake_bytes, "application/pdf")
@@ -743,14 +742,13 @@ class TestGetAttachment:
     @pytest.mark.asyncio
     async def test_get_attachment_raises_for_missing(self):
         """get_attachment raises ValueError for missing attachment."""
+        from pathlib import Path
+
         mock_manager = MagicMock()
         mock_manager.has_index.return_value = True
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_row = {"emlx_path": "/fake/path/42.emlx"}
-        mock_cursor.fetchone.return_value = mock_row
-        mock_conn.execute.return_value = mock_cursor
-        mock_manager._get_conn.return_value = mock_conn
+        mock_manager.find_email_path.return_value = Path(
+            "/fake/path/42.emlx"
+        )
 
         with (
             patch("apple_mail_mcp.server._get_index_manager") as mock_get,
@@ -776,20 +774,17 @@ class TestSearchAttachments:
         """search(scope='attachments') queries attachments table."""
         mock_manager = MagicMock()
         mock_manager.has_index.return_value = True
-        mock_conn = MagicMock()
-        mock_manager._get_conn.return_value = mock_conn
-
-        # Mock cursor with one result row
-        mock_row = {
-            "message_id": 1,
-            "account": "UUID-123",
-            "mailbox": "INBOX",
-            "subject": "Invoice attached",
-            "sender": "billing@co.com",
-            "date_received": "2024-01-15",
-            "filename": "invoice.pdf",
-        }
-        mock_conn.execute.return_value = [mock_row]
+        mock_manager.search_attachments.return_value = [
+            {
+                "message_id": 1,
+                "account": "UUID-123",
+                "mailbox": "INBOX",
+                "subject": "Invoice attached",
+                "sender": "billing@co.com",
+                "date_received": "2024-01-15",
+                "filename": "invoice.pdf",
+            }
+        ]
 
         mock_acct_map = MagicMock()
         mock_acct_map.ensure_loaded = AsyncMock()
@@ -809,3 +804,105 @@ class TestSearchAttachments:
             assert len(results) == 1
             assert results[0]["matched_in"] == "attachment: invoice.pdf"
             assert results[0]["account"] == "Work"
+
+
+class TestGetEmailEnrichesAttachments:
+    """Tests for #36: attachment enrichment from index."""
+
+    @pytest.mark.asyncio
+    async def test_enriches_attachments_from_index(self):
+        """get_email replaces JXA attachments with richer index data."""
+        jxa_result = {
+            "id": 42,
+            "subject": "Test",
+            "sender": "a@b.com",
+            "content": "Body",
+            "date_received": "2024-01-01",
+            "date_sent": "2024-01-01",
+            "read": True,
+            "flagged": False,
+            "reply_to": "",
+            "message_id": "<x>",
+            "attachments": [
+                {"filename": "doc.pdf", "mime_type": "application/pdf",
+                 "size": 100}
+            ],
+        }
+        idx_atts = [
+            {"filename": "doc.pdf", "mime_type": "application/pdf",
+             "size": 100, "content_id": None},
+            {"filename": "sig.p7s", "mime_type": "application/pkcs7-signature",
+             "size": 50, "content_id": None},
+        ]
+
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.get_email_attachments.return_value = idx_atts
+
+        with (
+            patch(
+                "apple_mail_mcp.server.execute_with_core_async",
+                new_callable=AsyncMock,
+                return_value=jxa_result,
+            ),
+            patch(
+                "apple_mail_mcp.server._get_index_manager"
+            ) as mock_get_mgr,
+        ):
+            mock_get_mgr.return_value = mock_manager
+
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+
+            # Index has 2 attachments vs JXA's 1, so index wins
+            assert len(result["attachments"]) == 2
+            assert result["attachments"][1]["filename"] == "sig.p7s"
+
+
+class TestStrategy3Timeout:
+    """Tests for #40: Strategy 3 timeout guard."""
+
+    @pytest.mark.asyncio
+    async def test_get_email_strategy3_has_timeout(self):
+        """Strategy 3 passes timeout=15 to execute_with_core_async."""
+        call_count = 0
+
+        async def mock_exec(script, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Strategy 1 fails
+                raise Exception("Not found in mailbox")
+            # Strategy 3 (Strategy 2 skipped: has_index=False)
+            assert kwargs.get("timeout") == 15
+            return {
+                "id": 42, "subject": "Found",
+                "sender": "a@b.com", "content": "Body",
+                "date_received": "2024-01-01",
+                "date_sent": "2024-01-01",
+                "read": True, "flagged": False,
+                "reply_to": "", "message_id": "<x>",
+                "attachments": [],
+            }
+
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = False
+        mock_manager.get_email_attachments.return_value = None
+
+        with (
+            patch(
+                "apple_mail_mcp.server.execute_with_core_async",
+                side_effect=mock_exec,
+            ),
+            patch(
+                "apple_mail_mcp.server._get_index_manager"
+            ) as mock_get_mgr,
+        ):
+            mock_get_mgr.return_value = mock_manager
+
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+            assert result["subject"] == "Found"
+            assert call_count == 2  # Strategy 1 + Strategy 3

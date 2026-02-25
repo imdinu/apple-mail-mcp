@@ -7,7 +7,9 @@ import sqlite3
 from apple_mail_mcp.index.search import (
     _escape_all_special,
     count_matches,
+    detect_matched_columns,
     sanitize_fts_query,
+    search_attachments,
     search_fts,
 )
 
@@ -217,3 +219,102 @@ class TestCompositeKeyUniqueness:
         # Should find at least the INBOX and Archive versions
         mailboxes = {r.mailbox for r in results}
         assert len(mailboxes) >= 1
+
+
+class TestSearchAttachments:
+    """Tests for search_attachments (#41)."""
+
+    def test_basic(self, temp_db: sqlite3.Connection):
+        temp_db.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, "
+            "date_received, attachment_count) "
+            "VALUES (1, 'acc', 'INBOX', 'Test', 'a@b.com', "
+            "'2024-01-01', 1)"
+        )
+        rowid = temp_db.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+        temp_db.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename, mime_type, file_size) "
+            "VALUES (?, 'report.pdf', 'application/pdf', 100)",
+            (rowid,),
+        )
+        temp_db.commit()
+
+        results = search_attachments(temp_db, "report")
+        assert len(results) == 1
+        assert results[0]["filename"] == "report.pdf"
+        assert results[0]["message_id"] == 1
+
+    def test_with_filters(self, temp_db: sqlite3.Connection):
+        temp_db.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, "
+            "date_received, attachment_count) "
+            "VALUES (1, 'acc1', 'INBOX', 'Test', 'a@b.com', "
+            "'2024-01-01', 1)"
+        )
+        rowid = temp_db.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+        temp_db.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename) VALUES (?, 'doc.pdf')",
+            (rowid,),
+        )
+        temp_db.commit()
+
+        # Should find with correct account
+        assert len(search_attachments(temp_db, "doc", account="acc1")) == 1
+        # Should not find with wrong account
+        assert len(search_attachments(temp_db, "doc", account="x")) == 0
+
+    def test_no_results(self, temp_db: sqlite3.Connection):
+        results = search_attachments(temp_db, "nonexistent")
+        assert results == []
+
+
+class TestDetectMatchedColumns:
+    """Tests for detect_matched_columns (#41)."""
+
+    def test_subject_match(self):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.subject = "Meeting tomorrow"
+        result.sender = "boss@co.com"
+
+        matched = detect_matched_columns("meeting", result)
+        assert "subject" in matched
+        assert "body" in matched
+
+    def test_sender_match(self):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.subject = "Hello"
+        result.sender = "john@example.com"
+
+        matched = detect_matched_columns("john", result)
+        assert "sender" in matched
+
+    def test_body_always_included(self):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.subject = "Other"
+        result.sender = "other@test.com"
+
+        matched = detect_matched_columns("xyzunknown", result)
+        assert "body" in matched
+
+    def test_empty_query(self):
+        from unittest.mock import MagicMock
+
+        result = MagicMock()
+        result.subject = "Test"
+        result.sender = "a@b.com"
+
+        assert detect_matched_columns("!!!", result) == "body"

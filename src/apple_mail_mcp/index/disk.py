@@ -39,6 +39,25 @@ if TYPE_CHECKING:
 # Mail.app version folder (V10 for macOS Catalina+)
 MAIL_VERSION = "V10"
 
+
+def extract_message_id(path: Path) -> int:
+    """Extract the numeric message ID from an .emlx filename.
+
+    Handles both regular (``12345.emlx``) and partial
+    (``12345.partial.emlx``) filenames by splitting on the first dot.
+
+    Args:
+        path: Path to an .emlx file
+
+    Returns:
+        Integer message ID
+
+    Raises:
+        ValueError: If the filename does not start with a number
+    """
+    return int(path.name.split(".")[0])
+
+
 # Maximum email file size to prevent OOM from malformed/huge files (25 MB)
 MAX_EMLX_SIZE = 25 * 1024 * 1024
 
@@ -316,8 +335,8 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         # Extract attachment metadata
         attachments = _extract_attachments(msg)
 
-        # Extract message ID from filename
-        msg_id = int(path.stem)
+        # Extract message ID from filename (handles .partial.emlx)
+        msg_id = extract_message_id(path)
 
         return EmlxEmail(
             id=msg_id,
@@ -411,10 +430,54 @@ def _strip_html(html: str) -> str:
 
         return text.strip()
 
-    except (TypeError, ValueError, RecursionError):
-        # Fallback: return empty string if parsing fails entirely
-        # This is safer than returning potentially malicious content
+    except Exception:
+        # Fallback: return empty string if parsing fails entirely.
+        # Covers ParserRejectedMarkup from malformed HTML and
+        # any other parser errors that shouldn't crash the scan.
         return ""
+
+
+def _estimate_attachment_size(part: email.message.Message) -> int:
+    """Estimate decoded attachment size without full MIME decode.
+
+    Avoids allocating the full decoded binary during indexing by
+    computing the size from the encoded payload and transfer encoding.
+
+    Strategy:
+    1. Use ``Content-Length`` header if present (rare but exact).
+    2. Compute from encoded payload length and encoding type:
+       - base64 → ``(clean_len * 3) // 4``
+       - quoted-printable / 7bit / 8bit → encoded length (≈ decoded)
+    3. Fallback to 0.
+    """
+    # 1. Explicit Content-Length header (rare but exact)
+    cl = part.get("Content-Length")
+    if cl:
+        try:
+            return int(cl)
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Compute from encoded payload
+    raw = part.get_payload(decode=False)
+    if not raw or not isinstance(raw, str):
+        return 0
+
+    encoding = (part.get("Content-Transfer-Encoding") or "").lower().strip()
+
+    if encoding == "base64":
+        # Strip whitespace to get the clean base64 length
+        stripped = raw.replace("\n", "").replace("\r", "")
+        clean_len = len(stripped.replace(" ", ""))
+        if clean_len == 0:
+            return 0
+        # Standard base64 ratio: 3 decoded bytes per 4 encoded chars
+        # Account for padding
+        padding = raw.rstrip().count("=") if raw.rstrip().endswith("=") else 0
+        return (clean_len * 3) // 4 - padding
+    else:
+        # QP, 7bit, 8bit — encoded length ≈ decoded length
+        return len(raw)
 
 
 def _extract_attachments(
@@ -454,8 +517,7 @@ def _extract_attachments(
             # Skip parts with no filename that aren't marked as attachments
             continue
 
-        payload = part.get_payload(decode=True)
-        file_size = len(payload) if payload else 0
+        file_size = _estimate_attachment_size(part)
         content_id = part.get("Content-ID")
         if content_id:
             # Strip angle brackets: <cid123> → cid123
@@ -536,10 +598,6 @@ def scan_emlx_files(
 
     # .emlx files are in: account-uuid/mailbox.mbox/Data/x/y/Messages/
     for emlx_path in mail_dir.rglob("*.emlx"):
-        # Skip partial downloads
-        if ".partial.emlx" in emlx_path.name:
-            continue
-
         # Skip excluded mailboxes by checking .mbox dir name
         if exclude_mailboxes:
             parts = emlx_path.relative_to(mail_dir).parts
@@ -624,8 +682,8 @@ def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
 
     for emlx_path in scan_emlx_files(mail_dir):
         try:
-            # Extract message ID from filename (e.g., "12345.emlx" -> 12345)
-            msg_id = int(emlx_path.stem)
+            # Extract message ID from filename (handles .partial.emlx)
+            msg_id = extract_message_id(emlx_path)
 
             # Infer account/mailbox from path
             account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)

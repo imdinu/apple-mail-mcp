@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import get_index_max_emails
-from .schema import INSERT_ATTACHMENT_SQL, INSERT_EMAIL_SQL, email_to_row
+from .schema import INSERT_EMAIL_SQL, email_to_row, insert_attachments
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -197,17 +197,7 @@ def sync_from_disk(
                     rowid = conn.execute(
                         "SELECT last_insert_rowid()"
                     ).fetchone()[0]
-                    for att in attachments:
-                        conn.execute(
-                            INSERT_ATTACHMENT_SQL,
-                            (
-                                rowid,
-                                att.filename,
-                                att.mime_type,
-                                att.file_size,
-                                att.content_id,
-                            ),
-                        )
+                    insert_attachments(conn, rowid, attachments)
 
                 added += 1
                 mailbox_counts[mb_key] = current_count + 1
@@ -219,16 +209,23 @@ def sync_from_disk(
         if progress_callback and processed % 100 == 0:
             progress_callback(processed, total_ops, f"Added {added} emails...")
 
-    # Log cap warnings for mailboxes that hit the limit
-    for mb_key, skipped in skipped_per_mailbox.items():
+    # Log aggregate cap warning with summary + per-mailbox detail
+    if skipped_per_mailbox:
+        total_skipped = sum(skipped_per_mailbox.values())
         logger.warning(
-            "Mailbox %s/%s hit cap (%d). %d new emails skipped. "
+            "%d mailbox(es) hit cap (%d), %d new emails skipped. "
             "Increase APPLE_MAIL_INDEX_MAX_EMAILS to index more.",
-            mb_key[0],
-            mb_key[1],
+            len(skipped_per_mailbox),
             max_per_mailbox,
-            skipped,
+            total_skipped,
         )
+        for mb_key, skipped in skipped_per_mailbox.items():
+            logger.debug(
+                "  Cap detail: %s/%s — %d skipped",
+                mb_key[0],
+                mb_key[1],
+                skipped,
+            )
 
     # Process DELETED emails (remove from DB)
     for key in deleted_keys:

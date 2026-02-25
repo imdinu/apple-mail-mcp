@@ -15,6 +15,31 @@ from apple_mail_mcp.index.sync import (
     get_db_inventory,
     sync_from_disk,
 )
+from apple_mail_mcp.index.watcher import PATH_PATTERN
+
+
+class TestWatcherPathPattern:
+    """Tests for watcher PATH_PATTERN regex (#39)."""
+
+    def test_matches_regular_emlx(self):
+        path = "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/12345.emlx"
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(1) == "acc"
+        assert m.group(2) == "INBOX"
+        assert m.group(3) == "12345"
+
+    def test_matches_partial_emlx(self):
+        path = "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/67301.partial.emlx"
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(1) == "acc"
+        assert m.group(2) == "INBOX"
+        assert m.group(3) == "67301"
+
+    def test_rejects_non_emlx(self):
+        path = "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/12345.txt"
+        assert PATH_PATTERN.search(path) is None
 
 
 class TestSyncResult:
@@ -92,17 +117,18 @@ class TestGetDiskInventory:
         assert ("account-uuid", "INBOX", 12345) in inventory
         assert ("account-uuid", "INBOX", 67890) in inventory
 
-    def test_skips_partial_files(self, tmp_path: Path):
+    def test_includes_partial_files(self, tmp_path: Path):
+        """Partial .emlx files are now indexed (#39)."""
         mail_dir = tmp_path / "V10"
         mbox = mail_dir / "acc" / "INBOX.mbox" / "Data" / "Messages"
         mbox.mkdir(parents=True)
 
-        # Create normal and partial files
+        # Create normal and partial files (same message ID)
         (mbox / "12345.emlx").write_bytes(b"test")
         (mbox / "12345.partial.emlx").write_bytes(b"partial")
 
         inventory = get_disk_inventory(mail_dir)
-        assert len(inventory) == 1
+        # Both map to the same (acc, INBOX, 12345) key — last one wins
         assert ("acc", "INBOX", 12345) in inventory
 
     def test_handles_nested_mbox_structure(self, tmp_path: Path):
@@ -253,3 +279,24 @@ class TestSyncFromDisk:
         cursor = sync_db.execute("SELECT message_id FROM emails")
         msg_id = cursor.fetchone()["message_id"]
         assert msg_id == 1002
+
+    def test_sync_logs_cap_warning(
+        self, sync_db: sqlite3.Connection, mail_dir: Path, caplog
+    ):
+        """Sync logs an aggregate cap warning when mailboxes hit limit."""
+        import logging
+
+        # Create more files than the cap
+        for i in range(3):
+            self._create_emlx(mail_dir, "acc1", "INBOX", 2000 + i)
+
+        with (
+            patch(
+                "apple_mail_mcp.index.sync.get_index_max_emails",
+                return_value=1,
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            sync_from_disk(sync_db, mail_dir)
+
+        assert "hit cap" in caplog.text

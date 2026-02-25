@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
+from typing import Any
 
 # Characters that make a bare FTS5 token dangerous
 # (hyphens = NOT, colons = column filter, parens = grouping, etc.)
@@ -432,3 +433,94 @@ def count_matches(
         return cursor.fetchone()[0]
     except sqlite3.OperationalError:
         return 0
+
+
+def search_attachments(
+    conn: sqlite3.Connection,
+    query: str,
+    account: str | None = None,
+    mailbox: str | None = None,
+    limit: int = 20,
+    exclude_mailboxes: list[str] | None = None,
+) -> list[dict]:
+    """Search attachments by filename using SQL LIKE.
+
+    Moved from server.py to keep SQL out of the MCP layer.
+
+    Args:
+        conn: Database connection
+        query: Filename search term (matched with LIKE %query%)
+        account: Optional account filter
+        mailbox: Optional mailbox filter
+        limit: Maximum results
+        exclude_mailboxes: Mailboxes to exclude
+
+    Returns:
+        List of dicts with message_id, account, mailbox,
+        subject, sender, date_received, filename
+    """
+    like_pattern = f"%{query}%"
+    sql = """
+        SELECT e.message_id, e.account, e.mailbox,
+               e.subject, e.sender, e.date_received,
+               a.filename
+        FROM attachments a
+        JOIN emails e ON a.email_rowid = e.rowid
+        WHERE a.filename LIKE ?
+    """
+    params: list = [like_pattern]
+    sql = add_account_mailbox_filter(
+        sql, params, account, mailbox, exclude_mailboxes=exclude_mailboxes
+    )
+    sql += " ORDER BY e.date_received DESC LIMIT ?"
+    params.append(limit)
+
+    cursor = conn.execute(sql, params)
+    return [
+        {
+            "message_id": row["message_id"],
+            "account": row["account"],
+            "mailbox": row["mailbox"],
+            "subject": row["subject"],
+            "sender": row["sender"],
+            "date_received": row["date_received"],
+            "filename": row["filename"],
+        }
+        for row in cursor
+    ]
+
+
+def detect_matched_columns(query: str, result: Any) -> str:
+    """Detect which columns the query matched in.
+
+    Extracts search terms from the query and checks them against
+    the result's subject, sender, and content_snippet using simple
+    Python string matching.
+
+    Moved from server.py to keep presentation logic in the search layer.
+
+    Args:
+        query: The search query string
+        result: Object with subject, sender attributes
+
+    Returns:
+        Comma-separated list like ``"subject, body"``
+    """
+    terms = re.findall(r"[a-zA-Z0-9]+", query.lower())
+    if not terms:
+        return "body"
+
+    matched = []
+
+    subject_lower = (result.subject or "").lower()
+    sender_lower = (result.sender or "").lower()
+
+    if any(t in subject_lower for t in terms):
+        matched.append("subject")
+    if any(t in sender_lower for t in terms):
+        matched.append("sender")
+
+    # Body is always included since FTS5 matched the whole content
+    matched.append("body")
+
+    return ", ".join(matched)

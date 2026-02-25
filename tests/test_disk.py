@@ -384,3 +384,131 @@ BINARYDATA
     def test_returns_none_for_missing_file(self, tmp_path):
         result = get_attachment_content(tmp_path / "missing.emlx", "file.pdf")
         assert result is None
+
+
+class TestExtractMessageId:
+    """Tests for extract_message_id helper (#39)."""
+
+    def test_regular_emlx(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import extract_message_id
+
+        path = tmp_path / "12345.emlx"
+        assert extract_message_id(path) == 12345
+
+    def test_partial_emlx(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import extract_message_id
+
+        path = tmp_path / "67301.partial.emlx"
+        assert extract_message_id(path) == 67301
+
+    def test_invalid_filename_raises(self, tmp_path: Path):
+        import pytest
+
+        from apple_mail_mcp.index.disk import extract_message_id
+
+        path = tmp_path / "notanumber.emlx"
+        with pytest.raises(ValueError):
+            extract_message_id(path)
+
+
+class TestParseEmlxPartial:
+    """Tests for .partial.emlx parsing (#39)."""
+
+    def test_parses_partial_emlx_file(self, tmp_path: Path, sample_emlx_content: bytes):
+        """parse_emlx successfully parses a .partial.emlx file."""
+        path = tmp_path / "67301.partial.emlx"
+        path.write_bytes(sample_emlx_content)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.id == 67301
+        assert result.subject == "Test Email Subject"
+
+
+class TestScanIncludesPartialFiles:
+    """Tests that scan_emlx_files includes .partial.emlx (#39)."""
+
+    def test_scan_includes_partial_files(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import scan_emlx_files
+
+        mail_dir = tmp_path / "V10"
+        mbox = mail_dir / "acc" / "INBOX.mbox" / "Data" / "Messages"
+        mbox.mkdir(parents=True)
+
+        (mbox / "12345.partial.emlx").write_bytes(b"test")
+
+        files = list(scan_emlx_files(mail_dir, exclude_mailboxes=set()))
+        assert len(files) == 1
+        assert "12345.partial.emlx" in str(files[0])
+
+    def test_indexes_partial_files(self, tmp_path: Path):
+        """Replaces old test_skips_partial_files -- partials are now included."""
+        from apple_mail_mcp.index.disk import get_disk_inventory
+
+        mail_dir = tmp_path / "V10"
+        mbox = mail_dir / "acc" / "INBOX.mbox" / "Data" / "Messages"
+        mbox.mkdir(parents=True)
+
+        (mbox / "12345.partial.emlx").write_bytes(b"test")
+
+        inventory = get_disk_inventory(mail_dir)
+        assert len(inventory) == 1
+        assert ("acc", "INBOX", 12345) in inventory
+
+
+class TestEstimateAttachmentSize:
+    """Tests for _estimate_attachment_size (#38)."""
+
+    def test_base64_size_estimation(self):
+        import email as email_mod
+
+        raw = """\
+Content-Type: multipart/mixed; boundary="----=_Part"
+
+------=_Part
+Content-Type: text/plain
+
+Body
+
+------=_Part
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="doc.pdf"
+Content-Transfer-Encoding: base64
+
+SGVsbG8gV29ybGQ=
+
+------=_Part--
+"""
+        msg = email_mod.message_from_string(raw)
+        from apple_mail_mcp.index.disk import _estimate_attachment_size
+
+        for part in msg.walk():
+            if part.get_filename() == "doc.pdf":
+                size = _estimate_attachment_size(part)
+                # "Hello World" = 11 bytes, base64 "SGVsbG8gV29ybGQ=" = 16 chars
+                # (16 * 3) // 4 - 1 = 11
+                assert size == 11
+
+    def test_content_length_header_used(self):
+        import email as email_mod
+
+        raw = """\
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="doc.pdf"
+Content-Length: 42000
+
+some payload
+"""
+        msg = email_mod.message_from_string(raw)
+        from apple_mail_mcp.index.disk import _estimate_attachment_size
+
+        assert _estimate_attachment_size(msg) == 42000
+
+    def test_empty_payload(self):
+        import email as email_mod
+
+        raw = "Content-Type: application/pdf\n\n"
+        msg = email_mod.message_from_string(raw)
+        from apple_mail_mcp.index.disk import _estimate_attachment_size
+
+        assert _estimate_attachment_size(msg) == 0

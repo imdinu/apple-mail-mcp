@@ -18,8 +18,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import re
-from pathlib import Path
 from typing import Literal, TypedDict
 
 from fastmcp import FastMCP
@@ -33,6 +31,10 @@ from .executor import (
 )
 
 mcp = FastMCP("Apple Mail")
+
+# Strategy 3 safety limits for get_email's all-mailbox scan
+STRATEGY3_TIMEOUT = 15  # seconds
+STRATEGY3_MAX_MAILBOXES = 50
 
 
 # ========== Response Type Definitions ==========
@@ -133,34 +135,10 @@ _sync_lock = asyncio.Lock()
 
 
 def _detect_matched_columns(query: str, result) -> str:
-    """Detect which columns the query matched in.
+    """Delegate to search.detect_matched_columns."""
+    from .index.search import detect_matched_columns
 
-    Extracts search terms from the query and checks them against
-    the result's subject, sender, and content_snippet using simple
-    Python string matching.
-
-    Returns:
-        Comma-separated list like ``"subject, body"``
-    """
-    # Extract search terms (strip FTS5 operators and quotes)
-    terms = re.findall(r"[a-zA-Z0-9]+", query.lower())
-    if not terms:
-        return "body"
-
-    matched = []
-
-    subject_lower = (result.subject or "").lower()
-    sender_lower = (result.sender or "").lower()
-
-    if any(t in subject_lower for t in terms):
-        matched.append("subject")
-    if any(t in sender_lower for t in terms):
-        matched.append("sender")
-
-    # Body is always included since FTS5 matched the whole content
-    matched.append("body")
-
-    return ", ".join(matched)
+    return detect_matched_columns(query, result)
 
 
 # ========== MCP Tools (6 total) ==========
@@ -365,12 +343,27 @@ async def get_email(
     resolved_account = _resolve_account(account)
     resolved_mailbox = _resolve_mailbox(mailbox)
 
+    def _enrich_attachments(result: dict) -> dict:
+        """Replace JXA attachments with richer index data when available."""
+        try:
+            mgr = _get_index_manager()
+            if mgr.has_index():
+                idx_atts = mgr.get_email_attachments(message_id)
+                if idx_atts and len(idx_atts) > len(
+                    result.get("attachments", [])
+                ):
+                    result["attachments"] = idx_atts
+        except Exception:
+            pass
+        return result
+
     # Strategy 1: Try specified mailbox
     mailbox_setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)
     script = _build_get_email_script(message_id, mailbox_setup)
 
     try:
-        return await execute_with_core_async(script)
+        result = await execute_with_core_async(script)
+        return _enrich_attachments(result)
     except Exception:
         pass  # Fall through to strategy 2
 
@@ -381,46 +374,33 @@ async def get_email(
     try:
         manager = _get_index_manager()
         if manager.has_index():
-            conn = manager._get_conn()
-
-            where = ["message_id = ?"]
-            params: list = [message_id]
-
             acct_map = _get_account_map()
             await acct_map.ensure_loaded()
 
+            idx_acct = None
             if account is not None:
                 idx_acct = acct_map.name_to_uuid(account)
-                if idx_acct:
-                    where.append("account = ?")
-                    params.append(idx_acct)
-            if mailbox is not None:
-                where.append("mailbox = ?")
-                params.append(mailbox)
+            idx_mb = mailbox
 
-            sql = (
-                "SELECT account, mailbox FROM emails WHERE "
-                + " AND ".join(where)
-                + " LIMIT 1"
+            location = manager.find_email_location(
+                message_id, account=idx_acct, mailbox=idx_mb
             )
-            cursor = conn.execute(sql, params)
-            row = cursor.fetchone()
-            if row:
-                idx_account = row["account"]
-                idx_mailbox = row["mailbox"]
-
+            if location:
+                idx_account, idx_mailbox = location
                 friendly_account = acct_map.uuid_to_name(idx_account)
 
                 setup = build_mailbox_setup_js(friendly_account, idx_mailbox)
                 script = _build_get_email_script(message_id, setup)
                 try:
-                    return await execute_with_core_async(script)
+                    result = await execute_with_core_async(script)
+                    return _enrich_attachments(result)
                 except Exception:
                     pass  # Fall through to strategy 3
     except Exception:
         pass  # Index unavailable, fall through
 
     # Strategy 3: Iterate all mailboxes with per-mailbox error handling
+    # Guarded with a timeout and mailbox limit to prevent runaway scans
     acct_setup = (
         f"const account = Mail.accounts.byName({json.dumps(resolved_account)});"
         if resolved_account
@@ -433,7 +413,8 @@ let msg = null;
 {acct_setup}
 
 const allMailboxes = account.mailboxes();
-for (let i = 0; i < allMailboxes.length && !msg; i++) {{
+const mbLimit = Math.min(allMailboxes.length, {STRATEGY3_MAX_MAILBOXES});
+for (let i = 0; i < mbLimit && !msg; i++) {{
     try {{
         const mb = allMailboxes[i];
         const mbIds = mb.messages.id();
@@ -466,7 +447,18 @@ JSON.stringify({{
     attachments: attachments
 }});
 """
-    return await execute_with_core_async(script)
+    try:
+        result = await execute_with_core_async(
+            script, timeout=STRATEGY3_TIMEOUT
+        )
+        return _enrich_attachments(result)
+    except TimeoutError:
+        raise TimeoutError(
+            f"Strategy 3 timed out after {STRATEGY3_TIMEOUT}s "
+            f"searching up to {STRATEGY3_MAX_MAILBOXES} mailboxes "
+            f"for message {message_id}. "
+            f"Provide account/mailbox for faster lookup."
+        ) from None
 
 
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -524,29 +516,17 @@ async def get_attachment(
     if not manager.has_index():
         raise ValueError("No search index. Run 'apple-mail-mcp index'.")
 
-    conn = manager._get_conn()
-
-    where = ["message_id = ?"]
-    params: list = [message_id]
+    idx_acct = None
     if account:
         acct_map = _get_account_map()
         await acct_map.ensure_loaded()
         idx_acct = acct_map.name_to_uuid(account) or account
-        where.append("account = ?")
-        params.append(idx_acct)
-    if mailbox:
-        where.append("mailbox = ?")
-        params.append(mailbox)
 
-    sql = (
-        "SELECT emlx_path FROM emails WHERE " + " AND ".join(where) + " LIMIT 1"
+    emlx_path = manager.find_email_path(
+        message_id, account=idx_acct, mailbox=mailbox
     )
-    cursor = conn.execute(sql, params)
-    row = cursor.fetchone()
-    if not row or not row["emlx_path"]:
+    if not emlx_path:
         raise ValueError(f"Email {message_id} not found in index.")
-
-    emlx_path = Path(row["emlx_path"])
     result = await asyncio.to_thread(
         get_attachment_content, emlx_path, filename
     )
@@ -624,37 +604,20 @@ async def search(
         if not manager.has_index():
             return []
 
-        conn = manager._get_conn()
-        like_pattern = f"%{query}%"
-
-        sql = """
-            SELECT e.message_id, e.account, e.mailbox,
-                   e.subject, e.sender, e.date_received,
-                   a.filename
-            FROM attachments a
-            JOIN emails e ON a.email_rowid = e.rowid
-            WHERE a.filename LIKE ?
-        """
-        params: list = [like_pattern]
-
+        search_acct = None
         if account:
             acct_map = _get_account_map()
             await acct_map.ensure_loaded()
             search_acct = acct_map.name_to_uuid(account) or account
-            sql += " AND e.account = ?"
-            params.append(search_acct)
-        if mailbox:
-            sql += " AND e.mailbox = ?"
-            params.append(mailbox)
-        if exclude_mailboxes:
-            placeholders = ",".join("?" for _ in exclude_mailboxes)
-            sql += f" AND e.mailbox NOT IN ({placeholders})"
-            params.extend(exclude_mailboxes)
 
-        sql += " ORDER BY e.date_received DESC LIMIT ?"
-        params.append(limit)
+        rows = manager.search_attachments(
+            query,
+            account=search_acct,
+            mailbox=mailbox,
+            limit=limit,
+            exclude_mailboxes=exclude_mailboxes,
+        )
 
-        cursor = conn.execute(sql, params)
         acct_map = _get_account_map()
         await acct_map.ensure_loaded()
 
@@ -669,7 +632,7 @@ async def search(
                 "account": acct_map.uuid_to_name(row["account"]),
                 "mailbox": row["mailbox"],
             }
-            for row in cursor
+            for row in rows
         ]
 
     # S5: Split FTS5 vs JXA resolution

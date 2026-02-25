@@ -307,6 +307,219 @@ class TestGetIndexedMessageIds:
         assert ids == {1}
 
 
+class TestFindEmailLocation:
+    """Tests for find_email_location (#37)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_found(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (42, 'uuid-1', 'INBOX')"
+        )
+        conn.commit()
+
+        result = manager.find_email_location(42)
+        assert result == ("uuid-1", "INBOX")
+
+    def test_not_found(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        manager._get_conn()
+
+        assert manager.find_email_location(999) is None
+
+    def test_with_filters(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (42, 'uuid-1', 'INBOX')"
+        )
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (42, 'uuid-2', 'Sent')"
+        )
+        conn.commit()
+
+        result = manager.find_email_location(
+            42, account="uuid-2", mailbox="Sent"
+        )
+        assert result == ("uuid-2", "Sent")
+
+
+class TestFindEmailPath:
+    """Tests for find_email_path (#37)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_found(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, emlx_path) "
+            "VALUES (42, 'uuid-1', 'INBOX', '/path/to/42.emlx')"
+        )
+        conn.commit()
+
+        result = manager.find_email_path(42)
+        assert result is not None
+        assert str(result) == "/path/to/42.emlx"
+
+    def test_null_path(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (42, 'uuid-1', 'INBOX')"
+        )
+        conn.commit()
+
+        assert manager.find_email_path(42) is None
+
+
+class TestSearchAttachments:
+    """Tests for search_attachments (#37)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_basic(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, "
+            "date_received, attachment_count) "
+            "VALUES (1, 'acc', 'INBOX', 'Test', 'a@b.com', "
+            "'2024-01-01', 1)"
+        )
+        rowid = conn.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename, mime_type, file_size) "
+            "VALUES (?, 'invoice.pdf', 'application/pdf', 100)",
+            (rowid,),
+        )
+        conn.commit()
+
+        results = manager.search_attachments("invoice")
+        assert len(results) == 1
+        assert results[0]["filename"] == "invoice.pdf"
+
+    def test_with_filters(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, "
+            "date_received, attachment_count) "
+            "VALUES (1, 'acc1', 'INBOX', 'Test', 'a@b.com', "
+            "'2024-01-01', 1)"
+        )
+        rowid = conn.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename) VALUES (?, 'doc.pdf')",
+            (rowid,),
+        )
+        conn.commit()
+
+        # Should find with matching account
+        results = manager.search_attachments("doc", account="acc1")
+        assert len(results) == 1
+
+        # Should not find with wrong account
+        results = manager.search_attachments("doc", account="other")
+        assert len(results) == 0
+
+
+class TestGetEmailAttachments:
+    """Tests for get_email_attachments (#36)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_found(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject) "
+            "VALUES (42, 'acc', 'INBOX', 'Test')"
+        )
+        rowid = conn.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename, mime_type, file_size, content_id) "
+            "VALUES (?, 'doc.pdf', 'application/pdf', 500, NULL)",
+            (rowid,),
+        )
+        conn.commit()
+
+        result = manager.get_email_attachments(42)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["filename"] == "doc.pdf"
+        assert result[0]["size"] == 500
+
+    def test_not_found(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        manager._get_conn()
+
+        assert manager.get_email_attachments(999) is None
+
+
+class TestGetStatsWithCapped:
+    """Tests for capped_mailboxes in IndexStats (#17)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_get_stats_includes_capped_mailboxes(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+
+        # Insert emails to hit the cap (default 5000)
+        # Use a smaller cap via env override
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO emails (message_id, account, mailbox) "
+                f"VALUES ({i}, 'acc', 'INBOX')"
+            )
+        conn.commit()
+
+        with patch(
+            "apple_mail_mcp.index.manager.get_index_max_emails",
+            return_value=3,
+        ):
+            stats = manager.get_stats()
+
+        assert stats.capped_mailboxes == 1
+
+    def test_no_capped_mailboxes(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (1, 'acc', 'INBOX')"
+        )
+        conn.commit()
+
+        stats = manager.get_stats()
+        assert stats.capped_mailboxes == 0
+
+
 class TestWatcher:
     """Tests for file watcher integration."""
 
