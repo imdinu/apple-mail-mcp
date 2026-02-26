@@ -520,7 +520,14 @@ def _find_external_attachment(
         return None
 
     # Strategy 1: exact filename match
+    # Guard against path traversal from untrusted MIME filenames
+    # (e.g. filename="../../etc/passwd")
     candidate = part_dir / filename
+    try:
+        if not candidate.resolve().is_relative_to(part_dir.resolve()):
+            return None
+    except (ValueError, OSError):
+        return None
     if candidate.is_file():
         return candidate
 
@@ -806,8 +813,8 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
     for emlx_path in scan_emlx_files(mail_dir):
         try:
             parsed = parse_emlx(emlx_path)
-        except Exception:
-            logger.debug("Failed to parse: %s", emlx_path)
+        except Exception as e:
+            logger.warning("Skipping corrupt file %s: %s", emlx_path, e)
             continue
         if not parsed:
             continue

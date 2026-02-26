@@ -711,6 +711,18 @@ class TestFindExternalAttachment:
         )
         assert result is None
 
+    def test_rejects_path_traversal(self, tmp_path: Path):
+        """Malicious filename with '..' must not escape the part dir."""
+        emlx = _build_partial_tree(tmp_path, filenames={2: "photo.jpeg"})
+        # Attacker-crafted filename tries to escape via ../
+        result = _find_external_attachment(
+            emlx,
+            msg_id=49461,
+            part_idx=2,
+            filename="../../../etc/passwd",
+        )
+        assert result is None
+
 
 class TestGetAttachmentContentExternal:
     """get_attachment_content falls back to external files (#45)."""
