@@ -811,6 +811,25 @@ class TestExtractAttachmentsExternalSize:
         assert len(result.attachments) == 1
         assert result.attachments[0].file_size == 12345
 
+    def test_file_size_from_multiple_externals(self, tmp_path: Path):
+        """Multiple external attachments map correctly to dirs 2, 3."""
+        img_bytes = b"y" * 6789
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={2: "photo.jpeg", 3: "document.pdf"},
+            file_content=img_bytes,
+        )
+
+        result = parse_emlx(emlx)
+        assert result is not None
+        assert result.attachments is not None
+        assert len(result.attachments) == 2
+        filenames = {att.filename for att in result.attachments}
+        assert "photo.jpeg" in filenames
+        assert "document.pdf" in filenames
+        for att in result.attachments:
+            assert att.file_size == 6789
+
     def test_no_external_dir_size_zero(self, tmp_path: Path):
         """Without Attachments dir, file_size stays 0."""
         import email as email_mod
