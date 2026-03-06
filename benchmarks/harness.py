@@ -16,6 +16,8 @@ from statistics import median
 TIMEOUT_SECONDS = 60
 WARMUP_RUNS = 5
 MEASURED_RUNS = 10
+# Skip multi-run measurement if a single probe exceeds this threshold
+PROBE_CUTOFF_MS = 10_000
 
 
 @dataclass
@@ -73,6 +75,13 @@ class MCPClient:
         self._process: subprocess.Popen | None = None
         self._request_id = 0
 
+    def __enter__(self) -> MCPClient:
+        self.spawn()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def _next_id(self) -> int:
         self._request_id += 1
         return self._request_id
@@ -102,6 +111,11 @@ class MCPClient:
         # Read response lines, skipping notifications/logs
         deadline = time.monotonic() + TIMEOUT_SECONDS
         while time.monotonic() < deadline:
+            # Fast-path: detect crashed server before blocking on read
+            if self._process.poll() is not None:
+                raise RuntimeError(
+                    f"Server exited with code {self._process.returncode}"
+                )
             raw = self._process.stdout.readline()
             if not raw:
                 raise RuntimeError("Server closed stdout")
@@ -174,14 +188,10 @@ class MCPClient:
 def measure_cold_start(command: list[str], cwd: str | None = None) -> float:
     """Measure spawn -> initialize response time in ms."""
     t0 = time.perf_counter()
-    client = MCPClient(command, cwd=cwd)
-    try:
-        client.spawn()
+    with MCPClient(command, cwd=cwd) as client:
         client.initialize()
         client.send_initialized()
         elapsed = (time.perf_counter() - t0) * 1000
-    finally:
-        client.close()
     return elapsed
 
 
@@ -201,7 +211,36 @@ def measure_tool_call(
         content = result.get("content", [])
         msg = content[0].get("text", "unknown") if content else "unknown"
         raise RuntimeError(f"MCP tool error: {msg}")
+    # Check for hidden failures: tools that return {"success": false}
+    # inside a valid MCP text content block
+    _check_content_for_errors(result)
     return elapsed
+
+
+def _check_content_for_errors(result: dict) -> None:
+    """Detect tool-level errors hidden inside MCP text content.
+
+    Many competitors wrap AppleScript errors in a JSON payload like
+    ``{"success": false, "error": "..."}`` without setting the MCP
+    ``isError`` flag.  This function parses the first text content
+    block and raises if the payload signals failure.
+    """
+    content = result.get("content", [])
+    if not content:
+        return
+    text = content[0].get("text", "")
+    if not text:
+        return
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    # Explicit success=false check
+    if payload.get("success") is False:
+        error_msg = payload.get("error", "unknown tool error")
+        raise RuntimeError(f"Tool returned failure: {error_msg}")
 
 
 def run_scenario(
@@ -235,6 +274,9 @@ def run_scenario(
                 warmup,
                 runs,
             )
+    except _TooSlow as exc:
+        result.success = False
+        result.error = f"too slow ({exc.probe_ms:.0f}ms probe)"
     except Exception as exc:
         result.success = False
         result.error = str(exc)
@@ -277,14 +319,17 @@ def _run_tool_calls(
     runs: int,
 ) -> None:
     """Measure tool calls on a single long-lived process."""
-    client = MCPClient(command, cwd=cwd)
-    try:
-        client.spawn()
+    with MCPClient(command, cwd=cwd) as client:
         client.initialize()
         client.send_initialized()
 
-        # Warmup (bail immediately if first attempt errors)
-        for i in range(warmup):
+        # Probe: single call to screen out extremely slow tools
+        probe = measure_tool_call(client, tool_name, tool_args)
+        if probe > PROBE_CUTOFF_MS:
+            raise _TooSlow(probe)
+
+        # Warmup (probe counts as first warmup, so do warmup-1 more)
+        for i in range(max(0, warmup - 1)):
             try:
                 measure_tool_call(client, tool_name, tool_args)
             except Exception:
@@ -295,5 +340,14 @@ def _run_tool_calls(
         for _ in range(runs):
             elapsed = measure_tool_call(client, tool_name, tool_args)
             result.timings_ms.append(elapsed)
-    finally:
-        client.close()
+
+
+class _TooSlow(Exception):
+    """Raised when a probe call exceeds PROBE_CUTOFF_MS."""
+
+    def __init__(self, probe_ms: float) -> None:
+        self.probe_ms = probe_ms
+        super().__init__(
+            f"Probe took {probe_ms:.0f}ms "
+            f"(cutoff: {PROBE_CUTOFF_MS}ms), skipping"
+        )

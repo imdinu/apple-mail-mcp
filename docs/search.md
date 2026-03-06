@@ -66,7 +66,7 @@ For each email, the index stores:
 Attachment metadata (filename, MIME type, file size) is stored in a separate `attachments` table, enabling `search(scope="attachments")` queries.
 
 !!! note
-    Body search (`scope="body"`) only covers indexed emails, which may be limited by the `APPLE_MAIL_INDEX_MAX_EMAILS` cap (default: 5,000 per mailbox). Subject and sender search (`scope="subject"`, `scope="sender"`) use live JXA queries against Mail.app and are not affected by this limit.
+    All FTS5-backed scopes (`all`, `body`, `subject`, `sender`) only cover indexed emails, which may be limited by the `APPLE_MAIL_INDEX_MAX_EMAILS` cap (default: 5,000 per mailbox). When no index is available, subject and sender search fall back to live JXA queries against a single mailbox.
 
 ### Account UUIDs vs Friendly Names
 

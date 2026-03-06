@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Regex to extract account/mailbox from path
 # ~/Library/Mail/V10/[AccountUUID]/[Mailbox].mbox/.../*.emlx
 PATH_PATTERN = re.compile(
-    r"/V\d+/([^/]+)/([^/]+)\.mbox/.*?/(\d+)(?:\.partial)?\.emlx$"
+    r"/V\d+/([^/]+)/(.+?)\.mbox/.*?/(\d+)(?:\.partial)?\.emlx$"
 )
 
 # Constants for safety limits

@@ -87,4 +87,4 @@ This monitors `~/Library/Mail/V10/` for new `.emlx` files and indexes them in re
 
 - [Installation](installation.md) — alternative install methods (pipx, uv, from source)
 - [Configuration](configuration.md) — environment variables and defaults
-- [Tools](tools.md) — full reference for all 5 MCP tools
+- [Tools](tools.md) — full reference for all 6 MCP tools

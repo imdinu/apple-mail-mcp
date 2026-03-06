@@ -8,16 +8,16 @@
 
 | | Apple Mail MCP | Typical alternatives |
 |---|---|---|
-| **Fetch 50 emails** | 529ms | 15–60s (or timeout) |
-| **Body search** | ~2ms (FTS5) | ~7s or unsupported |
-| **Cold start** | 194ms | 60–800ms |
-| **Architecture** | Batch JXA + disk sync | Per-message AppleScript |
+| **Fetch 50 emails** | 575ms | 14,200ms+ (or crash) |
+| **Search (subject)** | 9ms (FTS5) | 167–200ms |
+| **Search (body)** | 25ms (FTS5) | unsupported |
+| **Architecture** | Batch JXA + FTS5 index | Per-message AppleScript |
 
-> Benchmarked against [7 other Apple Mail MCP servers](benchmarks.md). We're the **fastest dedicated mail server** across all scenarios and the **only one with body search**.
+> Benchmarked against [5 other Apple Mail MCP servers](benchmarks.md). We're the **fastest at search** across all scenarios and the **only one with body search**.
 
 ## Key Features
 
-- **5 focused MCP tools** — list accounts, list mailboxes, get emails, get email, search
+- **6 focused MCP tools** — list accounts, list mailboxes, get emails, get email, search, get attachment
 - **Unified filtering** — unread, flagged, today, this week
 - **FTS5 search index** — full-text body search in ~2ms with BM25 ranking
 - **Real-time updates** — `--watch` flag for automatic index updates
@@ -52,7 +52,7 @@ That's it. Ask Claude to search your emails, get today's messages, or find unrea
 
 - [Getting Started](getting-started.md) — first-use walkthrough
 - [Installation](installation.md) — all installation methods
-- [Tools](tools.md) — full API reference for all 5 tools
+- [Tools](tools.md) — full API reference for all 6 tools
 - [Search & Indexing](search.md) — FTS5 deep dive
 - [Architecture](architecture.md) — how it works under the hood
 - [Benchmarks](benchmarks.md) — competitive performance data

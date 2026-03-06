@@ -5,7 +5,7 @@ Provides MCP tools for interacting with Apple Mail via optimized JXA scripts.
 Uses batch property fetching for 87x faster performance.
 Includes FTS5 search index for 700-3500x faster body search.
 
-TOOLS (5 total):
+TOOLS (6 total):
 - list_accounts() - List email accounts
 - list_mailboxes(account?) - List mailboxes
 - get_emails(..., filter?) - Unified email listing with filters
@@ -16,8 +16,11 @@ TOOLS (5 total):
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
+import shutil
+import tempfile
+import time
+from pathlib import Path as _Path
 from typing import Literal, TypedDict
 
 from fastmcp import FastMCP
@@ -31,6 +34,24 @@ from .executor import (
 )
 
 mcp = FastMCP("Apple Mail")
+
+# Attachment cache directory
+ATTACHMENT_CACHE_DIR = _Path.home() / ".apple-mail-mcp" / "attachments"
+
+
+def _cleanup_old_attachments(max_age_hours: int = 24) -> None:
+    """Remove attachment files older than max_age_hours."""
+    if not ATTACHMENT_CACHE_DIR.exists():
+        return
+    cutoff = time.time() - (max_age_hours * 3600)
+    for subdir in ATTACHMENT_CACHE_DIR.iterdir():
+        if subdir.is_dir():
+            try:
+                if subdir.stat().st_mtime < cutoff:
+                    shutil.rmtree(subdir)
+            except OSError:
+                pass
+
 
 # Strategy 3 safety limits for get_email's all-mailbox scan
 STRATEGY3_TIMEOUT = 15  # seconds
@@ -130,10 +151,6 @@ def _resolve_mailbox(mailbox: str | None) -> str:
     return mailbox if mailbox is not None else get_default_mailbox()
 
 
-# Module-level lock to prevent duplicate concurrent syncs
-_sync_lock = asyncio.Lock()
-
-
 def _detect_matched_columns(query: str, result) -> str:
     """Delegate to search.detect_matched_columns."""
     from .index.search import detect_matched_columns
@@ -193,10 +210,10 @@ async def get_emails(
     limit: int = 50,
 ) -> list[EmailSummary]:
     """
-    Get emails from a mailbox with optional filtering.
+    Get emails from a specific mailbox with optional filtering.
 
-    Retrieves emails with standard properties: id, subject, sender,
-    date_received, read status, and flagged status.
+    Note: This tool lists emails from a single mailbox. To search
+    across all mailboxes, use the search() tool instead.
 
     Args:
         account: Account name. Uses APPLE_MAIL_DEFAULT_ACCOUNT env var or
@@ -310,15 +327,14 @@ async def get_email(
     """
     Get a single email with full content.
 
-    Uses a 3-strategy cascade:
-    1. Try the specified mailbox directly
-    2. Look up location in the FTS5 index (fast, no JXA)
-    3. Iterate all mailboxes with per-mailbox error handling
+    Looks up the email across all accounts using a cascade strategy.
+    Just pass the message_id — account/mailbox are optional hints
+    that speed up lookup but are not required.
 
     Args:
         message_id: The email's unique ID (from search results)
-        account: Account name (optional, helps find message faster)
-        mailbox: Mailbox name (optional, helps find message faster)
+        account: Optional hint (speeds up lookup, not required)
+        mailbox: Optional hint (speeds up lookup, not required)
 
     Returns:
         Email dictionary with full content including:
@@ -461,55 +477,68 @@ JSON.stringify({{
         ) from None
 
 
-MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+class LinkResult(TypedDict):
+    """A hyperlink extracted from an email."""
+
+    url: str
+    text: str
 
 
 class AttachmentContent(TypedDict, total=False):
-    """Attachment content returned by get_attachment."""
+    """Content returned by get_attachment."""
 
     filename: str
     mime_type: str
     size: int
-    content_base64: str
-    truncated: bool
+    file_path: str
+    links: list[LinkResult]
 
 
 @mcp.tool
 async def get_attachment(
     message_id: int,
-    filename: str,
+    filename: str | None = None,
     account: str | None = None,
     mailbox: str | None = None,
 ) -> AttachmentContent:
     """
-    Get the content of a specific email attachment.
+    Extract resources from an email: attachments or links.
 
-    Looks up the email's .emlx file path in the index and extracts
-    the attachment binary content, returning it as base64. This
-    parses the raw MIME structure, so it works for all attachment
-    types including inline images and S/MIME signatures.
+    This tool has two modes based on the filename parameter:
+
+    **Attachment mode** (filename provided):
+    Extracts the named file attachment and saves it to disk under
+    ~/.apple-mail-mcp/attachments/. Parses the raw MIME structure,
+    so it works for all attachment types including inline images
+    and S/MIME signatures.
+
+    **Links mode** (filename omitted):
+    Extracts all hyperlinks from the email's HTML content.
+    Filters out mailto:, javascript:, and long tracking URLs.
+    Returns deduplicated links with their anchor text.
 
     Requires the search index. If upgrading from v0.1.2, run
     'apple-mail-mcp rebuild' to populate attachment metadata.
 
     Args:
         message_id: The email's unique ID
-        filename: The attachment filename to extract
+        filename: Attachment filename to extract. If omitted,
+            returns links instead.
         account: Account name (optional, used for index lookup)
         mailbox: Mailbox name (optional, used for index lookup)
 
     Returns:
-        Dictionary with filename, mime_type, size, and content_base64.
-        If the attachment exceeds 10 MB, returns metadata only with
-        truncated=True.
+        With filename: dict with filename, mime_type, size,
+            and file_path pointing to the saved file.
+        Without filename: dict with links list, each having
+            url and text fields.
 
-    Example:
+    Examples:
         >>> get_attachment(12345, "invoice.pdf")
-        {"filename": "invoice.pdf", "mime_type": "application/pdf",
-         "size": 52340, "content_base64": "JVBERi0x..."}
+        {"filename": "invoice.pdf", ...}
+        >>> get_attachment(12345)
+        {"links": [{"url": "https://...", "text": "Click"}]}
     """
-    from .index.disk import get_attachment_content
-
     # Look up emlx_path from the index, scoped by account/mailbox
     # when provided (message_id is only unique within a mailbox)
     manager = _get_index_manager()
@@ -527,6 +556,19 @@ async def get_attachment(
     )
     if not emlx_path:
         raise ValueError(f"Email {message_id} not found in index.")
+
+    # Links mode: extract hyperlinks from HTML parts
+    if filename is None:
+        from .index.disk import get_email_links
+
+        link_infos = await asyncio.to_thread(get_email_links, emlx_path)
+        return {
+            "links": [{"url": li.url, "text": li.text} for li in link_infos],
+        }
+
+    # Attachment mode: extract and save file
+    from .index.disk import get_attachment_content
+
     result = await asyncio.to_thread(
         get_attachment_content, emlx_path, filename
     )
@@ -537,19 +579,18 @@ async def get_attachment(
 
     raw_bytes, mime_type = result
 
-    if len(raw_bytes) > MAX_ATTACHMENT_SIZE:
-        return {
-            "filename": filename,
-            "mime_type": mime_type,
-            "size": len(raw_bytes),
-            "truncated": True,
-        }
+    # Save to unique subdirectory
+    ATTACHMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    save_dir = _Path(tempfile.mkdtemp(dir=ATTACHMENT_CACHE_DIR))
+    safe_name = _Path(filename).name  # strip directory components
+    file_path = save_dir / safe_name
+    file_path.write_bytes(raw_bytes)
 
     return {
-        "filename": filename,
+        "filename": safe_name,
         "mime_type": mime_type,
         "size": len(raw_bytes),
-        "content_base64": base64.b64encode(raw_bytes).decode("ascii"),
+        "file_path": str(file_path),
     }
 
 
@@ -561,42 +602,57 @@ async def search(
     scope: Literal["all", "subject", "sender", "body", "attachments"] = "all",
     limit: int = 20,
     exclude_mailboxes: list[str] | None = None,
-) -> list[SearchResult]:
+) -> list[SearchResult] | dict:
     """
-    Search emails with automatic FTS5 optimization.
+    Search emails across all accounts and mailboxes.
 
-    Uses the FTS5 index for fast search (~2ms) when available.
-    Falls back to JXA-based search if no index exists.
+    Uses full-text search index for fast results (~2ms). All scopes
+    search across every account and mailbox unless filtered.
+
+    Query tips:
+    - Use 2-3 specific keywords, not full sentences
+    - Terms are AND-ed: "budget Q1" finds emails with BOTH words
+    - Use quotes for exact phrases: '"quarterly report"'
+    - Prefix search: "meet*" matches meeting, meetings, etc.
+    - The default scope "all" searches subject + sender + body together
 
     Args:
-        query: Search term or phrase
-        account: Account name (optional filter).
-            For FTS scopes (all/body/attachments): None searches all accounts.
-            For JXA scopes (subject/sender): None uses the default account.
-        mailbox: Mailbox name (optional filter).
-            For FTS scopes (all/body/attachments): None searches all mailboxes.
-            For JXA scopes (subject/sender): None uses the default mailbox.
+        query: Search keywords (2-3 specific terms work best).
+            Do NOT use long natural-language phrases.
+        account: Filter to specific account name (optional).
+        mailbox: Filter to specific mailbox (optional).
         scope: Where to search:
-            - "all": Search subject, sender, AND body (default, uses FTS5)
-            - "subject": Search subject only (JXA, single mailbox)
-            - "sender": Search sender only (JXA, single mailbox)
-            - "body": Search body content only (FTS5)
-            - "attachments": Search by attachment filename (SQL)
+            - "all": Subject + sender + body (default, recommended)
+            - "subject": Subject line only
+            - "sender": Sender name/email only
+            - "body": Body text only
+            - "attachments": Attachment filenames
         limit: Maximum results (default: 20)
-        exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"]).
-            Only applies to FTS and attachment scopes.
+        exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"])
 
     Returns:
-        List of matching emails sorted by relevance (when using FTS5)
-        or by date (when using JXA fallback).
+        List of matching emails with id, subject, sender,
+        date_received, score, matched_in, content_snippet,
+        account, and mailbox fields.
 
     Examples:
-        >>> search("invoice")  # Search everywhere
-        >>> search("john@example.com", scope="sender")
-        >>> search("meeting notes", scope="body")
+        >>> search("Kim Foulds")  # Find person across all fields
+        >>> search("quarterly budget")  # Keywords, not sentences
+        >>> search('"project update"')  # Exact phrase
+        >>> search("invoice.pdf", scope="attachments")
     """
     if exclude_mailboxes is None:
         exclude_mailboxes = ["Drafts"]
+
+    _EMPTY_HINT = (
+        "No results. Try fewer keywords (2-3 specific terms), "
+        "check spelling, or use scope='all' to search everywhere."
+    )
+
+    def _maybe_hint(results: list) -> list | dict:
+        if not results:
+            return {"result": [], "hint": _EMPTY_HINT}
+        return results
 
     # Attachment filename search (SQL LIKE query, no JXA needed)
     if scope == "attachments":
@@ -621,19 +677,21 @@ async def search(
         acct_map = _get_account_map()
         await acct_map.ensure_loaded()
 
-        return [
-            {
-                "id": row["message_id"],
-                "subject": row["subject"],
-                "sender": row["sender"],
-                "date_received": row["date_received"],
-                "score": 1.0,
-                "matched_in": f"attachment: {row['filename']}",
-                "account": acct_map.uuid_to_name(row["account"]),
-                "mailbox": row["mailbox"],
-            }
-            for row in rows
-        ]
+        return _maybe_hint(
+            [
+                {
+                    "id": row["message_id"],
+                    "subject": row["subject"],
+                    "sender": row["sender"],
+                    "date_received": row["date_received"],
+                    "score": 1.0,
+                    "matched_in": f"attachment: {row['filename']}",
+                    "account": acct_map.uuid_to_name(row["account"]),
+                    "mailbox": row["mailbox"],
+                }
+                for row in rows
+            ]
+        )
 
     # S5: Split FTS5 vs JXA resolution
     # FTS5: None = search all accounts/mailboxes
@@ -643,16 +701,10 @@ async def search(
     jxa_account = _resolve_account(account)
     jxa_mailbox = _resolve_mailbox(mailbox)
 
-    # Try FTS5 index for "all" or "body" scope
-    if scope in ("all", "body"):
+    # Try FTS5 index for all searchable scopes
+    if scope in ("all", "body", "subject", "sender"):
         manager = _get_index_manager()
         if manager.has_index():
-            # S2: Auto-sync stale index before search
-            if manager.is_stale():
-                async with _sync_lock:
-                    if manager.is_stale():  # double-check
-                        await asyncio.to_thread(manager.sync_updates)
-
             # Translate friendly name → UUID for index lookup
             acct_map = _get_account_map()
             await acct_map.ensure_loaded()
@@ -664,27 +716,41 @@ async def search(
                     or fts_account  # fallback: maybe already UUID
                 )
 
+            # Map scope to FTS5 column filter
+            fts_column = None
+            if scope == "subject":
+                fts_column = "subject"
+            elif scope == "sender":
+                fts_column = "sender"
+
             results = manager.search(
                 query,
                 account=search_account,
                 mailbox=fts_mailbox,
                 limit=limit,
                 exclude_mailboxes=exclude_mailboxes,
+                column=fts_column,
             )
-            return [
-                {
-                    "id": r.id,
-                    "subject": r.subject,
-                    "sender": r.sender,
-                    "date_received": r.date_received,
-                    "score": r.score,
-                    "matched_in": _detect_matched_columns(query, r),
-                    "content_snippet": r.content_snippet,
-                    "account": acct_map.uuid_to_name(r.account),
-                    "mailbox": r.mailbox,
-                }
-                for r in results
-            ]
+            return _maybe_hint(
+                [
+                    {
+                        "id": r.id,
+                        "subject": r.subject,
+                        "sender": r.sender,
+                        "date_received": r.date_received,
+                        "score": r.score,
+                        "matched_in": (
+                            scope
+                            if scope in ("subject", "sender")
+                            else _detect_matched_columns(query, r)
+                        ),
+                        "content_snippet": r.content_snippet,
+                        "account": acct_map.uuid_to_name(r.account),
+                        "mailbox": r.mailbox,
+                    }
+                    for r in results
+                ]
+            )
 
     # JXA-based search for subject/sender or when no index
     safe_query_js = json.dumps(query.lower())
@@ -716,17 +782,19 @@ async def search(
     emails = await execute_query_async(q)
 
     # Convert to SearchResult format
-    return [
-        {
-            "id": e["id"],
-            "subject": e["subject"],
-            "sender": e["sender"],
-            "date_received": e["date_received"],
-            "score": 1.0,  # No ranking for JXA search
-            "matched_in": scope if scope != "all" else "metadata",
-        }
-        for e in emails
-    ]
+    return _maybe_hint(
+        [
+            {
+                "id": e["id"],
+                "subject": e["subject"],
+                "sender": e["sender"],
+                "date_received": e["date_received"],
+                "score": 1.0,  # No ranking for JXA search
+                "matched_in": scope if scope != "all" else "metadata",
+            }
+            for e in emails
+        ]
+    )
 
 
 if __name__ == "__main__":

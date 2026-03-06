@@ -55,11 +55,11 @@ apple-mail-mcp index --verbose
 
 | Scenario | Apple Mail MCP | Best alternative | Speedup |
 |----------|---------------|-----------------|---------|
-| Fetch 50 emails | 529ms | 15,288ms | **29x** |
-| Body search | ~2ms | ~7,000ms (or unsupported) | **3500x** |
-| List accounts | 108ms | 146ms | Fastest |
+| Search (subject) | 9ms | 167ms | **18x faster** |
+| Search (body) | 25ms | unsupported | **Only one** |
+| List accounts | 125ms | 138ms | Fastest |
 
-> Benchmarked against [7 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) at the MCP protocol level.
+> Benchmarked against [5 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) at the MCP protocol level.
 
 ## Configuration
 

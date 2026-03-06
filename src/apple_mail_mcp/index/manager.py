@@ -422,6 +422,7 @@ class IndexManager:
         mailbox: str | None = None,
         limit: int = 20,
         exclude_mailboxes: list[str] | None = None,
+        column: str | None = None,
     ) -> list[SearchResult]:
         """
         Search indexed emails using FTS5.
@@ -432,6 +433,8 @@ class IndexManager:
             mailbox: Optional mailbox filter
             limit: Maximum results (default: 20)
             exclude_mailboxes: Mailboxes to exclude from results
+            column: Optional FTS5 column filter ("subject", "sender",
+                or "content")
 
         Returns:
             List of SearchResult ordered by relevance (BM25 score)
@@ -444,6 +447,7 @@ class IndexManager:
             account=account,
             mailbox=mailbox,
             limit=limit,
+            column=column,
             exclude_mailboxes=exclude_mailboxes,
         )
 

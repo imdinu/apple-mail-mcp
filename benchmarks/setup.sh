@@ -70,63 +70,48 @@ install_che_apple_mail() {
 }
 install_or_skip "kiki830621/che-apple-mail-mcp" install_che_apple_mail
 
-# ─── 4. fatbobman/mail-mcp-bridge ────────────────────────────
-install_fatbobman() {
-    local dir="$CACHE_DIR/mail-mcp-bridge"
+# ─── 4. supermemoryai/apple-mcp (dhravya, archived) ──────────
+install_dhravya() {
+    if ! command -v npx &>/dev/null; then
+        warn "npx not found — skipping dhravya"
+        return 1
+    fi
+    ok "dhravya/apple-mcp (will use npx at runtime)"
+}
+install_or_skip "supermemoryai/apple-mcp" install_dhravya
+
+# ─── 5. s-morgan-jeffries/apple-mail-mcp (Python) ────────────
+install_smorgan() {
+    local dir="$CACHE_DIR/smorgan-apple-mail-mcp"
     if [ -d "$dir" ]; then
         cd "$dir" && git pull --quiet
     else
         git clone --quiet --depth 1 \
-            https://github.com/fatbobman/mail-mcp-bridge.git "$dir"
+            https://github.com/s-morgan-jeffries/apple-mail-mcp.git "$dir"
     fi
     cd "$dir"
     python3 -m venv .venv 2>/dev/null || true
-    .venv/bin/pip install -q mcp 2>/dev/null
+    .venv/bin/pip install -q -e . 2>/dev/null
 }
-install_or_skip "fatbobman/mail-mcp-bridge" install_fatbobman
+install_or_skip "s-morgan-jeffries/apple-mail-mcp" install_smorgan
 
-# ─── 5. supermemoryai/apple-mcp (dhravya, archived) ──────────
-install_dhravya() {
-    if ! command -v bunx &>/dev/null && ! command -v npx &>/dev/null; then
-        warn "Neither bunx nor npx found — skipping dhravya"
+# ─── 6. attilagyorffy/apple-mail-mcp (Go) ────────────────────
+install_attilagyorffy() {
+    if ! command -v go &>/dev/null; then
+        warn "go not found — skipping attilagyorffy"
         return 1
     fi
-    # Verify the package exists (dry run)
-    if command -v bunx &>/dev/null; then
-        ok "dhravya/apple-mcp (will use bunx at runtime)"
+    local dir="$CACHE_DIR/attilagyorffy-apple-mail-mcp"
+    if [ -d "$dir" ]; then
+        cd "$dir" && git pull --quiet
     else
-        ok "dhravya/apple-mcp (will use npx at runtime)"
+        git clone --quiet --depth 1 \
+            https://github.com/attilagyorffy/apple-mail-mcp.git "$dir"
     fi
+    cd "$dir"
+    go build -o bin/apple-mail-mcp ./cmd/apple-mail-mcp 2>/dev/null
 }
-install_or_skip "supermemoryai/apple-mcp" install_dhravya
-
-# ─── 6. steipete/macos-automator-mcp ─────────────────────────
-install_steipete() {
-    if ! command -v npx &>/dev/null; then
-        warn "npx not found — skipping steipete"
-        return 1
-    fi
-    ok "steipete/macos-automator-mcp (will use npx at runtime)"
-}
-install_or_skip "steipete/macos-automator-mcp" install_steipete
-
-# ─── 7. PeakMojo/applescript-mcp ─────────────────────────────
-install_peakmojo() {
-    if ! command -v npx &>/dev/null; then
-        warn "npx not found — skipping PeakMojo"
-        return 1
-    fi
-    ok "PeakMojo/applescript-mcp (will use npx at runtime)"
-}
-install_or_skip "PeakMojo/applescript-mcp" install_peakmojo
-
-# ─── 8. 54yyyu/pyapple-mcp ───────────────────────────────────
-install_pyapple() {
-    local dir="$CACHE_DIR/pyapple-mcp"
-    python3 -m venv "$dir/.venv" 2>/dev/null || true
-    "$dir/.venv/bin/pip" install -q pyapple-mcp 2>/dev/null
-}
-install_or_skip "54yyyu/pyapple-mcp" install_pyapple
+install_or_skip "attilagyorffy/apple-mail-mcp" install_attilagyorffy
 
 # ─── Summary ─────────────────────────────────────────────────
 echo ""

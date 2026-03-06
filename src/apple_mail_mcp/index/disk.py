@@ -755,6 +755,113 @@ def _read_external_attachment(
     return (data, mime_type)
 
 
+# Maximum URL length to keep (skip tracking/redirect URLs)
+_MAX_LINK_LENGTH = 200
+# Schemes to skip
+_SKIP_SCHEMES = frozenset(("mailto", "javascript", "tel", "sms", "data", "cid"))
+
+
+@dataclass
+class LinkInfo:
+    """A hyperlink extracted from an email."""
+
+    url: str
+    text: str
+
+
+def get_email_links(emlx_path: Path) -> list[LinkInfo]:
+    """
+    Extract hyperlinks from an email's HTML parts.
+
+    Parses the MIME structure, finds text/html parts, and extracts
+    ``<a href>`` links. Filters out mailto:, javascript:, and
+    very long tracking URLs.
+
+    Args:
+        emlx_path: Path to the .emlx file
+
+    Returns:
+        List of LinkInfo with url and anchor text, deduplicated
+        by URL.
+    """
+    try:
+        if not emlx_path.exists():
+            return []
+        if emlx_path.stat().st_size > MAX_EMLX_SIZE:
+            return []
+
+        content = emlx_path.read_bytes()
+        newline_idx = content.find(b"\n")
+        if newline_idx == -1:
+            return []
+
+        byte_count = int(content[:newline_idx].strip())
+        mime_start = newline_idx + 1
+        mime_end = mime_start + byte_count
+        msg = email.message_from_bytes(content[mime_start:mime_end])
+
+        return _extract_links_from_message(msg)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return []
+
+
+def _extract_links_from_message(
+    msg: email.message.Message,
+) -> list[LinkInfo]:
+    """Extract deduplicated links from HTML parts of a message."""
+    try:
+        from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+    except ImportError:
+        return []
+
+    seen_urls: set[str] = set()
+    links: list[LinkInfo] = []
+
+    parts = msg.walk() if msg.is_multipart() else [msg]
+
+    for part in parts:
+        if part.get_content_type() != "text/html":
+            continue
+
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            html = payload.decode(charset, errors="replace")
+        except (UnicodeDecodeError, LookupError):
+            html = payload.decode("utf-8", errors="replace")
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+            soup = BeautifulSoup(html, "html.parser")
+
+        for a_tag in soup.find_all("a", href=True):
+            url = a_tag["href"].strip()
+            if not url:
+                continue
+
+            # Skip unwanted schemes
+            scheme = url.split(":", 1)[0].lower()
+            if scheme in _SKIP_SCHEMES:
+                continue
+
+            # Skip very long tracking URLs
+            if len(url) > _MAX_LINK_LENGTH:
+                continue
+
+            # Deduplicate by URL
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            text = a_tag.get_text(strip=True) or ""
+            links.append(LinkInfo(url=url, text=text))
+
+    return links
+
+
 def scan_emlx_files(
     mail_dir: Path,
     exclude_mailboxes: set[str] | None = None,
@@ -884,7 +991,10 @@ def _infer_account_mailbox(emlx_path: Path, mail_dir: Path) -> tuple[str, str]:
     """
     Infer account and mailbox from .emlx file path.
 
-    Path structure: V10/account-uuid/mailbox.mbox/Data/.../Messages/id.emlx
+    Handles nested mailboxes like Work/Projects/Q1.mbox by scanning
+    forward to find the first .mbox-ending path component.
+
+    Path structure: V10/account-uuid/[nested/]mailbox.mbox/Data/.../id.emlx
     """
     try:
         relative = emlx_path.relative_to(mail_dir)
@@ -893,14 +1003,15 @@ def _infer_account_mailbox(emlx_path: Path, mail_dir: Path) -> tuple[str, str]:
         # First part is account UUID
         account = parts[0] if parts else "Unknown"
 
-        # Second part is mailbox.mbox
+        # Find the part ending with .mbox — may span multiple components
+        # e.g. parts = ("UUID", "Work", "Projects", "Q1.mbox", "Data", ...)
         mailbox = "Unknown"
-        if len(parts) > 1:
-            mbox_part = parts[1]
-            if mbox_part.endswith(".mbox"):
-                mailbox = mbox_part[:-5]  # Remove .mbox suffix
-            else:
-                mailbox = mbox_part
+        for i, part in enumerate(parts[1:], start=1):
+            if part.endswith(".mbox"):
+                # Join components from parts[1] to parts[i], strip .mbox
+                components = (*parts[1:i], part[:-5])
+                mailbox = "/".join(components)
+                break
 
         return (account, mailbox)
     except ValueError:

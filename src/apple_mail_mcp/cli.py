@@ -59,51 +59,71 @@ def _progress_bar(current: int, total: int | None, width: int = 40) -> str:
 
 def _run_serve(watch: bool = False) -> None:
     """Internal function to run the MCP server."""
-    # Perform startup sync if index exists (disk-based, fast)
+    import threading
+
     from .index import IndexManager
     from .server import mcp
 
     manager = IndexManager.get_instance()
 
+    # Clean up old attachment files
+    try:
+        from .server import _cleanup_old_attachments
+
+        _cleanup_old_attachments()
+    except Exception:
+        pass
+
     if manager.has_index():
-        try:
-            print("Syncing index...", file=sys.stderr, flush=True)
-            start = time.time()
-            count = manager.sync_updates()
-            elapsed = time.time() - start
-            if count > 0:
-                print(
-                    f"Synced {count} changes in {_format_time(elapsed)}",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"Index up to date ({_format_time(elapsed)})",
-                    file=sys.stderr,
-                )
-        except Exception as e:
-            print(f"Warning: Index sync failed: {e}", file=sys.stderr)
 
-        # Start file watcher if requested
-        if watch:
+        def _background_sync() -> None:
             try:
-
-                def on_update(added: int, removed: int) -> None:
-                    if added or removed:
-                        print(
-                            f"Index updated: +{added} -{removed}",
-                            file=sys.stderr,
-                        )
-
-                if manager.start_watcher(on_update=on_update):
-                    print("File watcher started", file=sys.stderr)
+                start = time.time()
+                count = manager.sync_updates()
+                elapsed = time.time() - start
+                if count > 0:
+                    print(
+                        f"Background sync: {count} changes "
+                        f"({_format_time(elapsed)})",
+                        file=sys.stderr,
+                    )
                 else:
                     print(
-                        "Warning: Could not start file watcher",
+                        f"Index up to date ({_format_time(elapsed)})",
                         file=sys.stderr,
                     )
             except Exception as e:
-                print(f"Warning: File watcher failed: {e}", file=sys.stderr)
+                print(
+                    f"Warning: Background sync failed: {e}",
+                    file=sys.stderr,
+                )
+
+            # Start watcher only after sync completes
+            if watch:
+                try:
+
+                    def on_update(added: int, removed: int) -> None:
+                        if added or removed:
+                            print(
+                                f"Index updated: +{added} -{removed}",
+                                file=sys.stderr,
+                            )
+
+                    if manager.start_watcher(on_update=on_update):
+                        print("File watcher started", file=sys.stderr)
+                except Exception as e:
+                    print(
+                        f"Warning: File watcher failed: {e}",
+                        file=sys.stderr,
+                    )
+
+        sync_thread = threading.Thread(target=_background_sync, daemon=True)
+        sync_thread.start()
+        print(
+            "Syncing index in background...",
+            file=sys.stderr,
+            flush=True,
+        )
 
     mcp.run()
 

@@ -142,8 +142,8 @@ Search emails with automatic FTS5 optimization. Uses the FTS5 index for fast sea
 | Scope | Searches | Engine |
 |-------|----------|--------|
 | `all` | Subject + sender + body | FTS5 (if indexed) |
-| `subject` | Subject line only | JXA (single mailbox) |
-| `sender` | Sender field only | JXA (single mailbox) |
+| `subject` | Subject line only | FTS5 column filter (if indexed) |
+| `sender` | Sender field only | FTS5 column filter (if indexed) |
 | `body` | Body content only | FTS5 (if indexed) |
 | `attachments` | Attachment filenames | SQL (requires index) |
 

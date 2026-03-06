@@ -8,13 +8,13 @@ Apple Mail MCP uses a **hybrid access pattern** — live JXA for real-time opera
 src/apple_mail_mcp/
 ├── __init__.py         # CLI entry point, exports main()
 ├── cli.py              # CLI commands (index, status, rebuild, serve)
-├── server.py           # FastMCP server with 5 MCP tools
+├── server.py           # FastMCP server with 6 MCP tools
 ├── config.py           # Environment variable configuration
 ├── builders.py         # QueryBuilder, AccountsQueryBuilder
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
 ├── index/              # FTS5 search index module
 │   ├── __init__.py     # Exports IndexManager
-│   ├── schema.py       # SQLite schema v3 (migrations)
+│   ├── schema.py       # SQLite schema v4 (attachment support)
 │   ├── manager.py      # IndexManager class (singleton)
 │   ├── disk.py         # .emlx reading + get_disk_inventory()
 │   ├── sync.py         # Disk-based state reconciliation
@@ -37,7 +37,7 @@ src/apple_mail_mcp/
 
 ### 1. MCP Tools (`server.py`)
 
-The 5 MCP tools are the public API. Each tool resolves defaults, picks the right access method, and returns typed results.
+The 6 MCP tools are the public API. Each tool resolves defaults, picks the right access method, and returns typed results.
 
 ### 2. Query Builder (`builders.py`)
 

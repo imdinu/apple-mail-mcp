@@ -17,6 +17,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import harness
 from .competitors import COMPETITORS, Competitor
 from .harness import (
     MEASURED_RUNS,
@@ -95,6 +96,8 @@ def run_competitor(
                 f"(p5={result.p5_ms:.1f}, "
                 f"p95={result.p95_ms:.1f})"
             )
+        elif result.error and result.error.startswith("too slow"):
+            print(f"SKIPPED — {result.error}")
         else:
             print(f"FAILED — {result.error}")
 
@@ -198,7 +201,19 @@ def main() -> None:
         "-o",
         help="Output JSON file path (default: results/<date>.json)",
     )
+    parser.add_argument(
+        "--cutoff",
+        type=int,
+        default=harness.PROBE_CUTOFF_MS,
+        help=(
+            "Probe cutoff in ms — skip multi-run measurement if a "
+            f"single call exceeds this (default: {harness.PROBE_CUTOFF_MS})"
+        ),
+    )
     args = parser.parse_args()
+
+    # Apply cutoff override
+    harness.PROBE_CUTOFF_MS = args.cutoff
 
     # Select competitors
     if args.competitor:

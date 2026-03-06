@@ -19,6 +19,9 @@ CACHE_DIR = os.path.expanduser("~/.cache/apple-mail-mcp-bench")
 # Default search query used across all benchmarks
 SEARCH_QUERY = "meeting"
 
+# Default account name for competitors that require it
+BENCHMARK_ACCOUNT = "iCloud"
+
 
 @dataclass
 class ToolCall:
@@ -44,32 +47,6 @@ class Competitor:
     def supported_ops(self) -> set[str]:
         return set(self.tool_mapping.keys())
 
-
-# ─── AppleScript payloads for generic executors ───────────────
-
-APPLESCRIPT_LIST_ACCOUNTS = (
-    'tell application "Mail" to get name of every account'
-)
-APPLESCRIPT_GET_EMAILS = """\
-tell application "Mail"
-    set msgs to messages 1 thru 50 of inbox
-    set results to {}
-    repeat with m in msgs
-        set end of results to \u00ac
-            {subject of m, sender of m, date received of m}
-    end repeat
-    return results
-end tell"""
-APPLESCRIPT_SEARCH_SUBJECT = """\
-tell application "Mail"
-    set results to {}
-    set msgs to (every message of inbox \u00ac
-        whose subject contains "meeting")
-    repeat with m in msgs
-        set end of results to {subject of m, sender of m}
-    end repeat
-    return results
-end tell"""
 
 # ─── Competitor definitions ───────────────────────────────────
 
@@ -122,12 +99,15 @@ _register(
             "get_emails": ToolCall("list_inbox_emails", {"max_emails": 50}),
             "search_subject": ToolCall(
                 "search_email_content",
-                {"account": "iCloud", "search_text": SEARCH_QUERY},
+                {
+                    "account": BENCHMARK_ACCOUNT,
+                    "search_text": SEARCH_QUERY,
+                },
             ),
             "search_body": ToolCall(
                 "search_email_content",
                 {
-                    "account": "iCloud",
+                    "account": BENCHMARK_ACCOUNT,
                     "search_text": SEARCH_QUERY,
                     "search_subject": False,
                     "search_body": True,
@@ -155,22 +135,7 @@ _register(
     )
 )
 
-# 4. fatbobman/mail-mcp-bridge
-_register(
-    Competitor(
-        name="fatbobman/mail-mcp-bridge",
-        key="fatbobman",
-        command=[
-            f"{CACHE_DIR}/mail-mcp-bridge/.venv/bin/python3",
-            "src/mail_mcp_server.py",
-        ],
-        cwd=f"{CACHE_DIR}/mail-mcp-bridge",
-        tool_mapping={},
-        notes="Bridge server - path-based ops only, cold start only",
-    )
-)
-
-# 5. supermemoryai/apple-mcp (dhravya, archived)
+# 4. supermemoryai/apple-mcp (dhravya, archived Jan 2026)
 _register(
     Competitor(
         name="dhravya/apple-mcp",
@@ -187,95 +152,71 @@ _register(
             ),
             "search_subject": ToolCall(
                 "mail",
-                {"operation": "search", "searchTerm": SEARCH_QUERY},
+                {
+                    "operation": "search",
+                    "searchTerm": SEARCH_QUERY,
+                },
             ),
         },
-        notes="Archived, may fail",
+        notes="Archived Jan 2026, historical baseline",
     )
 )
 
-# 6. steipete/macos-automator-mcp
+# 5. s-morgan-jeffries/apple-mail-mcp (Python, FastMCP)
 _register(
     Competitor(
-        name="steipete/macos-automator-mcp",
-        key="steipete",
+        name="s-morgan-jeffries/apple-mail-mcp",
+        key="smorgan",
         command=[
-            "npx",
-            "@steipete/macos-automator-mcp",
+            f"{CACHE_DIR}/smorgan-apple-mail-mcp/.venv/bin/python",
+            "-m",
+            "apple_mail_mcp.server",
+        ],
+        cwd=f"{CACHE_DIR}/smorgan-apple-mail-mcp",
+        tool_mapping={
+            "get_emails": ToolCall(
+                "search_messages",
+                {
+                    "account": BENCHMARK_ACCOUNT,
+                    "limit": 50,
+                },
+            ),
+            "search_subject": ToolCall(
+                "search_messages",
+                {
+                    "account": BENCHMARK_ACCOUNT,
+                    "subject_contains": SEARCH_QUERY,
+                },
+            ),
+        },
+        notes="No list_accounts or body search",
+    )
+)
+
+# 6. attilagyorffy/apple-mail-mcp (Go, single binary)
+_register(
+    Competitor(
+        name="attilagyorffy/apple-mail-mcp",
+        key="attilagyorffy",
+        command=[
+            f"{CACHE_DIR}/attilagyorffy-apple-mail-mcp/bin/apple-mail-mcp",
         ],
         tool_mapping={
-            "list_accounts": ToolCall(
-                "execute_script",
-                {
-                    "script_content": APPLESCRIPT_LIST_ACCOUNTS,
-                    "language": "applescript",
-                },
-            ),
             "get_emails": ToolCall(
-                "execute_script",
+                "search_messages",
                 {
-                    "script_content": APPLESCRIPT_GET_EMAILS,
-                    "language": "applescript",
+                    "account": BENCHMARK_ACCOUNT,
+                    "limit": 50,
                 },
             ),
             "search_subject": ToolCall(
-                "execute_script",
+                "search_messages",
                 {
-                    "script_content": APPLESCRIPT_SEARCH_SUBJECT,
-                    "language": "applescript",
+                    "account": BENCHMARK_ACCOUNT,
+                    "subject_contains": SEARCH_QUERY,
                 },
             ),
         },
-        notes="Generic executor - uses AppleScript payload",
-    )
-)
-
-# 7. PeakMojo/applescript-mcp
-_register(
-    Competitor(
-        name="PeakMojo/applescript-mcp",
-        key="peakmojo",
-        command=["npx", "@peakmojo/applescript-mcp"],
-        tool_mapping={
-            "list_accounts": ToolCall(
-                "applescript_execute",
-                {"code_snippet": APPLESCRIPT_LIST_ACCOUNTS},
-            ),
-            "get_emails": ToolCall(
-                "applescript_execute",
-                {"code_snippet": APPLESCRIPT_GET_EMAILS},
-            ),
-            "search_subject": ToolCall(
-                "applescript_execute",
-                {"code_snippet": APPLESCRIPT_SEARCH_SUBJECT},
-            ),
-        },
-        notes="Generic executor - uses AppleScript payload",
-    )
-)
-
-# 8. 54yyyu/pyapple-mcp
-_register(
-    Competitor(
-        name="54yyyu/pyapple-mcp",
-        key="pyapple",
-        command=[
-            f"{CACHE_DIR}/pyapple-mcp/.venv/bin/pyapple-mcp",
-        ],
-        tool_mapping={
-            "list_accounts": ToolCall(
-                "mail",
-                {"operation": "accounts"},
-            ),
-            "get_emails": ToolCall(
-                "mail",
-                {"operation": "unread"},
-            ),
-            "search_subject": ToolCall(
-                "mail",
-                {"operation": "search", "query": SEARCH_QUERY},
-            ),
-        },
-        notes="Multi-app MCP server",
+        notes="Go binary, no list_accounts or body search",
     )
 )

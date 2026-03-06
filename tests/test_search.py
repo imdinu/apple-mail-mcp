@@ -232,9 +232,7 @@ class TestSearchAttachments:
             "VALUES (1, 'acc', 'INBOX', 'Test', 'a@b.com', "
             "'2024-01-01', 1)"
         )
-        rowid = temp_db.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = temp_db.execute("SELECT last_insert_rowid()").fetchone()[0]
         temp_db.execute(
             "INSERT INTO attachments "
             "(email_rowid, filename, mime_type, file_size) "
@@ -256,9 +254,7 @@ class TestSearchAttachments:
             "VALUES (1, 'acc1', 'INBOX', 'Test', 'a@b.com', "
             "'2024-01-01', 1)"
         )
-        rowid = temp_db.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = temp_db.execute("SELECT last_insert_rowid()").fetchone()[0]
         temp_db.execute(
             "INSERT INTO attachments "
             "(email_rowid, filename) VALUES (?, 'doc.pdf')",
@@ -274,6 +270,57 @@ class TestSearchAttachments:
     def test_no_results(self, temp_db: sqlite3.Connection):
         results = search_attachments(temp_db, "nonexistent")
         assert results == []
+
+
+class TestSearchFtsColumnFilter:
+    """Tests for FTS5 column-scoped queries."""
+
+    def test_subject_column_filter(self, populated_db: sqlite3.Connection):
+        """column='subject' restricts search to subject field."""
+        results = search_fts(populated_db, "meeting", column="subject")
+        assert len(results) >= 1
+        # All results should have "meeting" in the subject
+        for r in results:
+            assert "meeting" in r.subject.lower()
+
+    def test_sender_column_filter(self, populated_db: sqlite3.Connection):
+        """column='sender' restricts search to sender field."""
+        results = search_fts(populated_db, "boss", column="sender")
+        assert len(results) >= 1
+        for r in results:
+            assert "boss" in r.sender.lower()
+
+    def test_sender_column_no_body_match(
+        self, populated_db: sqlite3.Connection
+    ):
+        """column='sender' should NOT match body-only terms."""
+        # "quarterly" appears in body but not sender
+        results = search_fts(populated_db, "quarterly", column="sender")
+        assert results == []
+
+    def test_subject_column_no_body_match(
+        self, populated_db: sqlite3.Connection
+    ):
+        """column='subject' should NOT match body-only terms."""
+        # "extended" appears in body ("extended to Friday") but no subject
+        results = search_fts(populated_db, "extended", column="subject")
+        assert results == []
+
+    def test_content_column_filter(self, populated_db: sqlite3.Connection):
+        """column='content' restricts search to body text."""
+        results = search_fts(populated_db, "quarterly", column="content")
+        assert len(results) >= 1
+
+    def test_invalid_column_ignored(self, populated_db: sqlite3.Connection):
+        """Invalid column name is safely ignored."""
+        results = search_fts(populated_db, "meeting", column="invalid")
+        # Falls back to all-column search
+        assert len(results) >= 1
+
+    def test_none_column_searches_all(self, populated_db: sqlite3.Connection):
+        """column=None searches all columns (default)."""
+        results = search_fts(populated_db, "meeting", column=None)
+        assert len(results) >= 1
 
 
 class TestDetectMatchedColumns:
