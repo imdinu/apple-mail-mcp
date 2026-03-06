@@ -249,9 +249,12 @@ def search_fts(
     # Sanitize query for FTS5 (skip on retry to avoid double-escaping)
     safe_query = query if _is_retry else sanitize_fts_query(query)
 
-    # Apply column filter AFTER sanitization so the colon isn't escaped
+    # Apply column filter AFTER sanitization so the colon isn't escaped.
+    # Wrap in parens so ALL terms are scoped to the column —
+    # without parens, "subject:meeting notes" only applies subject:
+    # to the first term; "notes" would match any column.
     if column and column in ("subject", "sender", "content"):
-        safe_query = f"{column}:{safe_query}"
+        safe_query = f"{column}:({safe_query})"
 
     if not safe_query:
         return []
