@@ -362,13 +362,15 @@ if m.has_index():
 
 A single tag push triggers the full pipeline: **build → PyPI publish → GitHub Release**.
 
-```bash
-# 1. Bump version in pyproject.toml
-# 2. Commit the bump
-git add pyproject.toml
-git commit -m "Bump version to 0.X.Y"
+**Pre-release checklist** (all version strings must match):
+1. `pyproject.toml` → `version = "0.X.Y"`
+2. `server.json` → `"version"` and `packages[0].version`
+3. Run lint + format + tests (see Pre-push Checklist)
+4. Commit, tag, and push:
 
-# 3. Tag and push — this triggers everything
+```bash
+git add pyproject.toml server.json
+git commit -m "Bump version to 0.X.Y"
 git tag v0.X.Y
 git push origin main v0.X.Y
 ```
