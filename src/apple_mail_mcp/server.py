@@ -359,6 +359,46 @@ async def get_email(
     resolved_account = _resolve_account(account)
     resolved_mailbox = _resolve_mailbox(mailbox)
 
+     # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
+    try:
+        manager = _get_index_manager()
+        if manager.has_index():
+            from .index.disk import parse_emlx
+
+            acct_map = _get_account_map()
+            await acct_map.ensure_loaded()
+
+            idx_acct = None
+            if account is not None:
+                idx_acct = acct_map.name_to_uuid(account)
+
+            emlx_path = manager.find_email_path(
+                message_id, account=idx_acct, mailbox=mailbox
+            )
+            if emlx_path and emlx_path.exists():
+                parsed = await asyncio.to_thread(parse_emlx, emlx_path)
+                if parsed:
+                    result = {
+                        "id": parsed.id,
+                        "subject": parsed.subject,
+                        "sender": parsed.sender,
+                        "content": parsed.content,
+                        "date_received": parsed.date_received,
+                        "date_sent": "",
+                        "read": False,
+                        "flagged": False,
+                        "reply_to": "",
+                        "message_id": str(parsed.id),
+                        "attachments": [
+                            {"filename": a.filename, "mime_type": a.mime_type, "size": a.file_size}
+                            for a in (parsed.attachments or [])
+                        ],
+                    }
+                    return _enrich_attachments(result)
+    except Exception:
+        pass  # Fall through to JXA strategies
+
+    
     def _enrich_attachments(result: dict) -> dict:
         """Replace JXA attachments with richer index data when available."""
         try:
