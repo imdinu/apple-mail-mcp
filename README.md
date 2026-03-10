@@ -9,7 +9,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![CI](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml/badge.svg)](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml)
 
-A fast MCP server for Apple Mail — **87x faster** email fetching via batch JXA, plus an FTS5 search index for **700–3500x faster** body search (~2ms vs ~7s).
+A fast MCP server for Apple Mail — disk-first email reading, **87x faster** batch fetching via JXA, and an FTS5 search index for **700–3500x faster** body search (~2ms vs ~7s).
 
 **[Read the docs](https://imdinu.github.io/apple-mail-mcp/)** for the full guide.
 
@@ -55,9 +55,10 @@ apple-mail-mcp index --verbose
 
 | Scenario | Apple Mail MCP | Best alternative | Speedup |
 |----------|---------------|-----------------|---------|
-| Search (subject) | 9ms | 167ms | **18x faster** |
-| Search (body) | 25ms | unsupported | **Only one** |
-| List accounts | 125ms | 138ms | Fastest |
+| Fetch single email | 6ms | unsupported | **Only one** (disk-first) |
+| Search (subject) | 10ms | 148ms | **15x faster** |
+| Search (body) | 22ms | unsupported | **Only one** |
+| List accounts | 118ms | 134ms | Fastest |
 
 > Benchmarked against [5 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) at the MCP protocol level.
 
@@ -95,7 +96,7 @@ If you used [supermemoryai/apple-mcp](https://github.com/supermemoryai/apple-mcp
 | `search_emails` | `search(query, scope?)` — 5 scopes: all, subject, sender, body, attachments |
 | `send_email` | Not yet supported (planned) |
 
-**What's different:** available on PyPI (`pipx install apple-mail-mcp`), 87x faster email fetching via batch JXA, FTS5 search index for ~2ms body search, and disk-based sync that avoids the JXA timeouts and false-success responses.
+**What's different:** available on PyPI (`pipx install apple-mail-mcp`), disk-first single-email reads (~1-5ms via .emlx parsing), 87x faster batch fetching via JXA, FTS5 search index for ~2ms body search, and disk-based sync that avoids JXA timeouts and false-success responses.
 
 ## Development
 

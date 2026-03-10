@@ -63,14 +63,17 @@ _register(
         name="apple-mail-mcp (ours)",
         key="imdinu",
         command=[
-            "uvx",
-            "--prerelease=allow",
+            "uv",
+            "run",
             "apple-mail-mcp",
             "serve",
         ],
         tool_mapping={
             "list_accounts": ToolCall("list_accounts"),
             "get_emails": ToolCall("get_emails", {"limit": 50}),
+            "get_email": ToolCall(
+                "get_email", {"message_id": None}
+            ),  # message_id discovered at runtime
             "search_subject": ToolCall(
                 "search",
                 {"query": SEARCH_QUERY, "scope": "subject"},
@@ -97,6 +100,10 @@ _register(
         tool_mapping={
             "list_accounts": ToolCall("list_accounts"),
             "get_emails": ToolCall("list_inbox_emails", {"max_emails": 50}),
+            "get_email": ToolCall(
+                "get_email",
+                {"email_id": None},
+            ),  # email_id discovered at runtime
             "search_subject": ToolCall(
                 "search_email_content",
                 {

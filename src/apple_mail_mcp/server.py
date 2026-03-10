@@ -1,16 +1,18 @@
 """
 Apple Mail MCP Server
 
-Provides MCP tools for interacting with Apple Mail via optimized JXA scripts.
-Uses batch property fetching for 87x faster performance.
-Includes FTS5 search index for 700-3500x faster body search.
+3-layer architecture for fast email access:
+1. Disk-first reads — single emails via .emlx parsing (~1-5ms, no JXA)
+2. FTS5 search — full-text body search in ~2ms with BM25 ranking
+3. JXA fallback — batch property fetching for multi-email ops (87x faster)
 
 TOOLS (6 total):
 - list_accounts() - List email accounts
 - list_mailboxes(account?) - List mailboxes
 - get_emails(..., filter?) - Unified email listing with filters
-- get_email(id) - Get single email with content
+- get_email(id) - Get single email with content (disk-first)
 - search(query, ...) - Unified search with FTS5 support
+- get_attachment(id, filename?) - Extract attachment or links
 """
 
 from __future__ import annotations

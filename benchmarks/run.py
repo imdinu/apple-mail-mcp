@@ -23,6 +23,7 @@ from .harness import (
     MEASURED_RUNS,
     WARMUP_RUNS,
     BenchmarkResult,
+    MCPClient,
     run_scenario,
 )
 
@@ -33,9 +34,58 @@ SCENARIOS = [
     "cold_start",
     "list_accounts",
     "get_emails",
+    "get_email",
     "search_subject",
     "search_body",
 ]
+
+
+def _discover_message_id(competitor: Competitor) -> int | None:
+    """Discover a real message ID by calling get_emails(limit=1).
+
+    Returns the ID from the first email, or None if discovery fails.
+    """
+    if "get_emails" not in competitor.supported_ops:
+        return None
+
+    tc = competitor.tool_mapping["get_emails"]
+    # Override limit to 1 for discovery
+    discovery_args = {**tc.arguments, "limit": 1}
+    # Some competitors use max_emails instead of limit
+    if "max_emails" in tc.arguments:
+        discovery_args = {**tc.arguments, "max_emails": 1}
+
+    try:
+        with MCPClient(competitor.command, cwd=competitor.cwd) as client:
+            client.initialize()
+            client.send_initialized()
+            resp = client.call_tool(tc.name, discovery_args)
+
+        # Parse the response to extract an email ID
+        result = resp.get("result", {})
+        content = result.get("content", [])
+        if not content:
+            return None
+        text = content[0].get("text", "")
+        if not text:
+            return None
+
+        import json as _json
+
+        payload = _json.loads(text)
+        # Handle list of emails or single email
+        emails = payload if isinstance(payload, list) else [payload]
+        if not emails:
+            return None
+
+        # Try common ID field names
+        email = emails[0]
+        for key in ("id", "email_id", "message_id"):
+            if key in email and email[key] is not None:
+                return int(email[key])
+    except Exception:
+        pass
+    return None
 
 
 def run_competitor(
@@ -52,6 +102,16 @@ def run_competitor(
     if competitor.notes:
         print(f"  ({competitor.notes})")
     print(f"{'─' * 50}")
+
+    # Discover a message ID for get_email scenario
+    discovered_id: int | None = None
+    if "get_email" in scenarios and "get_email" in competitor.supported_ops:
+        print("  discovering message_id... ", end="", flush=True)
+        discovered_id = _discover_message_id(competitor)
+        if discovered_id is not None:
+            print(f"found {discovered_id}")
+        else:
+            print("failed")
 
     for scenario in scenarios:
         if (
@@ -75,7 +135,25 @@ def run_competitor(
         if scenario != "cold_start":
             tc = competitor.tool_mapping[scenario]
             tool_name = tc.name
-            tool_args = tc.arguments
+            tool_args = dict(tc.arguments)
+
+            # Inject discovered message ID for get_email scenario
+            if scenario == "get_email":
+                if discovered_id is None:
+                    print("SKIP (no message ID discovered)")
+                    results.append(
+                        BenchmarkResult(
+                            competitor=competitor.key,
+                            scenario=scenario,
+                            success=False,
+                            error="Message ID discovery failed",
+                        )
+                    )
+                    continue
+                # Replace the None placeholder with the real ID
+                for key in ("message_id", "email_id"):
+                    if key in tool_args:
+                        tool_args[key] = discovered_id
 
         print(f"  {scenario}: ", end="", flush=True)
         result = run_scenario(

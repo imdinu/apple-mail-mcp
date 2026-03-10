@@ -45,6 +45,7 @@ SCENARIO_TITLES = {
     "cold_start": "Cold Start (spawn → initialize)",
     "list_accounts": "List Accounts",
     "get_emails": "Fetch 50 Emails",
+    "get_email": "Fetch Single Email",
     "search_subject": "Search by Subject",
     "search_body": "Search by Body (FTS5)",
 }
@@ -201,6 +202,7 @@ def main() -> None:
         "cold_start",
         "list_accounts",
         "get_emails",
+        "get_email",
         "search_subject",
         "search_body",
     ]

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Fast MCP server for Apple Mail using optimized JXA scripts with batch property fetching for 87x faster performance than naive iteration, plus an FTS5 search index for **700-3500x faster** body search (~2ms vs ~7s).
+Fast MCP server for Apple Mail with disk-first email reads (~1-5ms via .emlx parsing), batch JXA property fetching for 87x faster multi-email performance, and an FTS5 search index for **700-3500x faster** body search (~2ms vs ~7s).
 
 ## Project Structure
 

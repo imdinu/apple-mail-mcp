@@ -1,6 +1,6 @@
 # Architecture
 
-Apple Mail MCP uses a **hybrid access pattern** — live JXA for real-time operations, FTS5 for search, and direct disk reads for indexing.
+Apple Mail MCP uses a **3-layer hybrid access pattern** — disk-first reads for single emails (~1-5ms), FTS5 for search, and JXA as a fallback for real-time operations.
 
 ## Project Structure
 
@@ -29,7 +29,8 @@ src/apple_mail_mcp/
 
 | Access Method | Use Case | Latency | When Used |
 |---------------|----------|---------|-----------|
-| **JXA (Live)** | Real-time ops, small queries | ~100–300ms | `get_email()`, `list_mailboxes()` |
+| **Disk (Single)** | Read single email by ID | ~1–5ms | `get_email()` Strategy 0 |
+| **JXA (Live)** | Real-time ops, small queries | ~100–300ms | `get_email()` Strategies 1-3, `list_mailboxes()` |
 | **FTS5 (Cached)** | Body search, complex filtering | ~2–10ms | `search()` |
 | **Disk (Batch)** | Initial indexing, sync | ~15ms/100 emails | `index` command, startup |
 
@@ -105,6 +106,37 @@ search(query, scope="all")
       → FTS5 MATCH with BM25 ranking
         → Return results with content snippets
 ```
+
+### Disk Read Path
+
+```
+get_email(message_id)
+  → IndexManager.find_email_path(id)
+    → SQLite lookup → emlx_path
+      → parse_emlx(path)
+        → MIME headers + plist footer
+          → Return email dict (no JXA needed)
+```
+
+### Strategy Cascade (`get_email`)
+
+```
+Strategy 0: Disk read (.emlx)     ← fastest (~1-5ms), requires index
+    ↓ fail
+Strategy 1: JXA specified mailbox ← uses account + mailbox params
+    ↓ fail
+Strategy 2: Index lookup + JXA   ← finds mailbox via SQLite, then JXA
+    ↓ fail
+Strategy 3: Iterate all mailboxes ← slowest, always works (with timeout)
+```
+
+All strategies return an identical response schema. Strategy 0 extracts read/flagged status from the plist footer flags bitmask (bit 0 = read, bit 4 = flagged) and `date_sent`, `reply_to`, `message_id` from MIME headers.
+
+---
+
+For a deeper exploration of the `.emlx` file format, JXA IPC tradeoffs, and SQLite index design, see the **[Architecture Deep Dive](architecture-deep-dive.md)**.
+
+---
 
 ## Design Patterns
 

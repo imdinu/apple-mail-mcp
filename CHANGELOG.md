@@ -12,8 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Strategy 0 (disk read) for `get_email()`** — reads email content directly from `.emlx` files on disk, bypassing JXA/Apple Events entirely. Fastest path when the search index is available. Falls through to JXA strategies on failure. (Thanks to @vkostakos for the initial implementation in PR #53)
 - Extracts read/flagged status from `.emlx` plist footer flags bitmask
 - Extracts `date_sent`, `reply_to`, `Message-ID` from MIME headers for full schema parity
+- `get_email` benchmark scenario with dynamic message ID discovery
 - `CONTRIBUTING.md` for new contributors
 - This changelog
+
+### Changed
+
+- Updated project messaging across all descriptions to reflect disk-first architecture
+- Re-ran competitive benchmarks with new `get_email` scenario
+- Updated all docs, descriptions, and online listings for v0.1.7
 
 ## [0.1.6] - 2026-03-08
 

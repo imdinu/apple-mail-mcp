@@ -1,6 +1,6 @@
 site_name: Apple Mail MCP
 site_url: https://imdinu.github.io/apple-mail-mcp/
-site_description: Fast MCP server for Apple Mail with FTS5 search index
+site_description: Fast MCP server for Apple Mail with disk-first reads, batch JXA, and FTS5 search
 site_author: Ioan-Mihail Dinu
 
 repo_name: imdinu/apple-mail-mcp
@@ -67,5 +67,6 @@ nav:
   - Tools: tools.md
   - Search & Indexing: search.md
   - Architecture: architecture.md
+  - Architecture Deep Dive: architecture-deep-dive.md
   - Benchmarks: benchmarks.md
   - Troubleshooting: troubleshooting.md
