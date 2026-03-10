@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import tempfile
 import time
@@ -34,6 +35,8 @@ from .executor import (
 )
 
 mcp = FastMCP("Apple Mail")
+
+logger = logging.getLogger(__name__)
 
 # Attachment cache directory
 ATTACHMENT_CACHE_DIR = _Path.home() / ".apple-mail-mcp" / "attachments"
@@ -359,7 +362,21 @@ async def get_email(
     resolved_account = _resolve_account(account)
     resolved_mailbox = _resolve_mailbox(mailbox)
 
-     # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
+    def _enrich_attachments(result: dict) -> dict:
+        """Replace JXA attachments with richer index data when available."""
+        try:
+            mgr = _get_index_manager()
+            if mgr.has_index():
+                idx_atts = mgr.get_email_attachments(message_id)
+                if idx_atts and len(idx_atts) > len(
+                    result.get("attachments", [])
+                ):
+                    result["attachments"] = idx_atts
+        except Exception:
+            pass
+        return result
+
+    # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
     try:
         manager = _get_index_manager()
         if manager.has_index():
@@ -384,34 +401,31 @@ async def get_email(
                         "sender": parsed.sender,
                         "content": parsed.content,
                         "date_received": parsed.date_received,
-                        "date_sent": "",
-                        "read": False,
-                        "flagged": False,
-                        "reply_to": "",
-                        "message_id": str(parsed.id),
+                        "date_sent": parsed.date_sent,
+                        "read": parsed.read
+                        if parsed.read is not None
+                        else False,
+                        "flagged": parsed.flagged
+                        if parsed.flagged is not None
+                        else False,
+                        "reply_to": parsed.reply_to,
+                        "message_id": parsed.message_id_header,
                         "attachments": [
-                            {"filename": a.filename, "mime_type": a.mime_type, "size": a.file_size}
+                            {
+                                "filename": a.filename,
+                                "mime_type": a.mime_type,
+                                "size": a.file_size,
+                            }
                             for a in (parsed.attachments or [])
                         ],
                     }
                     return _enrich_attachments(result)
     except Exception:
-        pass  # Fall through to JXA strategies
-
-    
-    def _enrich_attachments(result: dict) -> dict:
-        """Replace JXA attachments with richer index data when available."""
-        try:
-            mgr = _get_index_manager()
-            if mgr.has_index():
-                idx_atts = mgr.get_email_attachments(message_id)
-                if idx_atts and len(idx_atts) > len(
-                    result.get("attachments", [])
-                ):
-                    result["attachments"] = idx_atts
-        except Exception:
-            pass
-        return result
+        logger.debug(
+            "Strategy 0 (disk) failed for %s, falling through",
+            message_id,
+            exc_info=True,
+        )
 
     # Strategy 1: Try specified mailbox
     mailbox_setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)
