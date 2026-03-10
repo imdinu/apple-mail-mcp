@@ -45,3 +45,4 @@ mcp-publisher
 # Benchmarks (regenerable outputs)
 benchmarks/results/*.json
 benchmarks/results/*.html
+/benchmark_*.png

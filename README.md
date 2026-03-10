@@ -56,6 +56,7 @@ apple-mail-mcp index --verbose
 | Scenario | Apple Mail MCP | Best alternative | Speedup |
 |----------|---------------|-----------------|---------|
 | Fetch single email | 6ms | unsupported | **Only one** (disk-first) |
+| Fetch 50 emails | 301ms | 13,800ms+ | **46x faster** |
 | Search (subject) | 10ms | 148ms | **15x faster** |
 | Search (body) | 22ms | unsupported | **Only one** |
 | List accounts | 118ms | 134ms | Fastest |
