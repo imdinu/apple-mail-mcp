@@ -202,9 +202,11 @@ class TestGetEmail:
     """Tests for get_email() tool."""
 
     @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_index_manager")
     @patch("apple_mail_mcp.server.execute_with_core_async")
-    async def test_returns_full_email(self, mock_exec):
+    async def test_returns_full_email(self, mock_exec, mock_mgr):
         """get_email returns complete email with content."""
+        mock_mgr.return_value.has_index.return_value = False
         mock_exec.return_value = {
             "id": 12345,
             "subject": "Meeting notes",
@@ -227,9 +229,13 @@ class TestGetEmail:
         assert "notes from today" in result["content"]
 
     @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_index_manager")
     @patch("apple_mail_mcp.server.execute_with_core_async")
-    async def test_includes_message_id_in_script(self, mock_exec):
+    async def test_includes_message_id_in_script(
+        self, mock_exec, mock_mgr
+    ):
         """get_email includes message_id in the JXA script."""
+        mock_mgr.return_value.has_index.return_value = False
         mock_exec.return_value = {"id": 99999}
 
         from apple_mail_mcp.server import get_email
@@ -239,6 +245,98 @@ class TestGetEmail:
         call_args = mock_exec.call_args[0][0]  # First positional arg
         assert "99999" in call_args
         assert "targetId" in call_args
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_reads_from_disk(
+        self, mock_exec, mock_mgr, mock_acct_map
+    ):
+        """Strategy 0 reads directly from .emlx without JXA."""
+        from unittest.mock import AsyncMock
+        from pathlib import Path
+        from apple_mail_mcp.index.disk import EmlxEmail
+
+        parsed = EmlxEmail(
+            id=42,
+            subject="Disk email",
+            sender="alice@example.com",
+            content="Read from disk",
+            date_received="2025-01-01T00:00:00",
+            emlx_path=Path("/tmp/fake.emlx"),
+            read=True,
+            flagged=False,
+            date_sent="2025-01-01T00:00:00",
+            reply_to="",
+            message_id_header="<abc@example.com>",
+        )
+
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.find_email_path.return_value = (
+            Path("/tmp/fake.emlx")
+        )
+        mock_mgr.return_value.get_email_attachments.return_value = []
+
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.name_to_uuid.return_value = None
+
+        with patch(
+            "apple_mail_mcp.server.asyncio.to_thread",
+            return_value=parsed,
+        ), patch("pathlib.Path.exists", return_value=True):
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+
+        assert result["id"] == 42
+        assert result["subject"] == "Disk email"
+        assert result["read"] is True
+        assert result["message_id"] == "<abc@example.com>"
+        # JXA should NOT have been called
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_falls_through_on_failure(
+        self, mock_exec, mock_mgr, mock_acct_map
+    ):
+        """Strategy 0 failure falls through to JXA strategies."""
+        from unittest.mock import AsyncMock
+
+        # Strategy 0: index exists but find_email_path returns None
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.find_email_path.return_value = None
+        mock_mgr.return_value.get_email_attachments.return_value = []
+
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.name_to_uuid.return_value = None
+
+        # Strategy 1 (JXA) should be called as fallback
+        mock_exec.return_value = {
+            "id": 42,
+            "subject": "From JXA",
+            "sender": "a@b.com",
+            "content": "Body",
+            "date_received": "2024-01-01",
+            "date_sent": "2024-01-01",
+            "read": True,
+            "flagged": False,
+            "reply_to": "",
+            "message_id": "<x>",
+            "attachments": [],
+        }
+
+        from apple_mail_mcp.server import get_email
+
+        result = await get_email(42, account="Work", mailbox="INBOX")
+
+        assert result["subject"] == "From JXA"
+        mock_exec.assert_called()
 
     @pytest.mark.asyncio
     async def test_get_email_uses_index_for_fallback(self):

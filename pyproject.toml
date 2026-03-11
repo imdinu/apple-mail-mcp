@@ -1,7 +1,7 @@
 [project]
 name = "apple-mail-mcp"
-version = "0.1.6"
-description = "Fast MCP server for Apple Mail with FTS5 search index"
+version = "0.1.7"
+description = "Fast MCP server for Apple Mail with disk-first reads, batch JXA, and FTS5 search"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"

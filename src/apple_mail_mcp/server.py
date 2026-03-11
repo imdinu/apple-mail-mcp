@@ -1,22 +1,25 @@
 """
 Apple Mail MCP Server
 
-Provides MCP tools for interacting with Apple Mail via optimized JXA scripts.
-Uses batch property fetching for 87x faster performance.
-Includes FTS5 search index for 700-3500x faster body search.
+3-layer architecture for fast email access:
+1. Disk-first reads — single emails via .emlx parsing (~1-5ms, no JXA)
+2. FTS5 search — full-text body search in ~2ms with BM25 ranking
+3. JXA fallback — batch property fetching for multi-email ops (87x faster)
 
 TOOLS (6 total):
 - list_accounts() - List email accounts
 - list_mailboxes(account?) - List mailboxes
 - get_emails(..., filter?) - Unified email listing with filters
-- get_email(id) - Get single email with content
+- get_email(id) - Get single email with content (disk-first)
 - search(query, ...) - Unified search with FTS5 support
+- get_attachment(id, filename?) - Extract attachment or links
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import tempfile
 import time
@@ -34,6 +37,8 @@ from .executor import (
 )
 
 mcp = FastMCP("Apple Mail")
+
+logger = logging.getLogger(__name__)
 
 # Attachment cache directory
 ATTACHMENT_CACHE_DIR = _Path.home() / ".apple-mail-mcp" / "attachments"
@@ -372,6 +377,57 @@ async def get_email(
         except Exception:
             pass
         return result
+
+    # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
+    try:
+        manager = _get_index_manager()
+        if manager.has_index():
+            from .index.disk import parse_emlx
+
+            acct_map = _get_account_map()
+            await acct_map.ensure_loaded()
+
+            idx_acct = None
+            if account is not None:
+                idx_acct = acct_map.name_to_uuid(account)
+
+            emlx_path = manager.find_email_path(
+                message_id, account=idx_acct, mailbox=mailbox
+            )
+            if emlx_path and emlx_path.exists():
+                parsed = await asyncio.to_thread(parse_emlx, emlx_path)
+                if parsed:
+                    result = {
+                        "id": parsed.id,
+                        "subject": parsed.subject,
+                        "sender": parsed.sender,
+                        "content": parsed.content,
+                        "date_received": parsed.date_received,
+                        "date_sent": parsed.date_sent,
+                        "read": parsed.read
+                        if parsed.read is not None
+                        else False,
+                        "flagged": parsed.flagged
+                        if parsed.flagged is not None
+                        else False,
+                        "reply_to": parsed.reply_to,
+                        "message_id": parsed.message_id_header,
+                        "attachments": [
+                            {
+                                "filename": a.filename,
+                                "mime_type": a.mime_type,
+                                "size": a.file_size,
+                            }
+                            for a in (parsed.attachments or [])
+                        ],
+                    }
+                    return _enrich_attachments(result)
+    except Exception:
+        logger.debug(
+            "Strategy 0 (disk) failed for %s, falling through",
+            message_id,
+            exc_info=True,
+        )
 
     # Strategy 1: Try specified mailbox
     mailbox_setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)

@@ -2,17 +2,17 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.imdinu/apple-mail-mcp",
   "title": "Apple Mail MCP",
-  "description": "Fast MCP server for Apple Mail with batch JXA and FTS5 search index.",
+  "description": "Fast MCP server for Apple Mail with disk-first reads, batch JXA, and FTS5 search index.",
   "repository": {
     "url": "https://github.com/imdinu/apple-mail-mcp",
     "source": "github"
   },
-  "version": "0.1.6",
+  "version": "0.1.7",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "apple-mail-mcp",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "transport": {
         "type": "stdio"
       }

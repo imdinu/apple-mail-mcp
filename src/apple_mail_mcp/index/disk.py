@@ -27,6 +27,7 @@ from __future__ import annotations
 import email
 import logging
 import mimetypes
+import plistlib
 import re
 import sqlite3
 import warnings
@@ -87,6 +88,12 @@ class EmlxEmail:
     date_received: str
     emlx_path: Path
     attachments: list[AttachmentInfo] | None = None
+    # Extended fields (populated by parse_emlx when available)
+    read: bool | None = None
+    flagged: bool | None = None
+    date_sent: str = ""
+    reply_to: str = ""
+    message_id_header: str = ""
 
 
 def find_mail_directory() -> Path:
@@ -322,9 +329,23 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
             except (UnicodeDecodeError, LookupError):
                 pass
 
-        # Extract date and convert from RFC 2822 to ISO 8601
+        # Extract received date from Received header (delivery time)
+        # Falls back to Date header if no Received header exists
         date_received = ""
-        if msg["Date"]:
+        received_header = msg["Received"]
+        if received_header:
+            try:
+                from email.utils import parsedate_to_datetime
+
+                # RFC 5322: Received header ends with "; <date>"
+                semicolon_idx = received_header.rfind(";")
+                if semicolon_idx != -1:
+                    date_part = received_header[semicolon_idx + 1 :].strip()
+                    dt = parsedate_to_datetime(date_part)
+                    date_received = dt.isoformat()
+            except (ValueError, TypeError):
+                pass
+        if not date_received and msg["Date"]:
             try:
                 from email.utils import parsedate_to_datetime
 
@@ -342,6 +363,46 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         # Extract message ID from filename (handles .partial.emlx)
         msg_id = extract_message_id(path)
 
+        # Extract sent date from Date header (composition time)
+        date_sent = ""
+        if msg["Date"]:
+            try:
+                from email.utils import parsedate_to_datetime
+
+                dt = parsedate_to_datetime(msg["Date"])
+                date_sent = dt.isoformat()
+            except (ValueError, TypeError):
+                date_sent = msg["Date"]
+
+        reply_to = ""
+        if msg["Reply-To"]:
+            try:
+                reply_to = str(make_header(decode_header(msg["Reply-To"])))
+            except (UnicodeDecodeError, LookupError):
+                reply_to = msg["Reply-To"] or ""
+
+        message_id_header = msg.get("Message-ID", "") or ""
+
+        # Extract read/flagged from plist footer flags bitmask
+        read = None
+        flagged = None
+        plist_data = content[mime_end:]
+        if plist_data.strip():
+            try:
+                plist = plistlib.loads(plist_data)
+                flags = plist.get("flags", 0)
+                read = bool(flags & (1 << 0))
+                flagged = bool(flags & (1 << 4))
+                if not date_received:
+                    ts = plist.get("date-received")
+                    if ts:
+                        from datetime import datetime
+
+                        dt = datetime.fromtimestamp(ts, tz=datetime.UTC)
+                        date_received = dt.isoformat()
+            except Exception:
+                pass  # Plist parsing is best-effort
+
         return EmlxEmail(
             id=msg_id,
             subject=subject,
@@ -350,6 +411,11 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
             date_received=date_received,
             emlx_path=path,
             attachments=attachments or None,
+            read=read,
+            flagged=flagged,
+            date_sent=date_sent,
+            reply_to=reply_to,
+            message_id_header=message_id_header,
         )
 
     except (OSError, ValueError, UnicodeDecodeError, LookupError):

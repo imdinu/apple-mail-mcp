@@ -8,16 +8,16 @@ All benchmarks are run at the **MCP protocol level**: we spawn each server as a 
 
 | Property | Value |
 |----------|-------|
-| **macOS** | 26.3 (Tahoe) |
+| **macOS** | 26.3.1 (Tahoe) |
 | **Chip** | Apple M4 Max |
 | **Python** | 3.12.0 |
-| **Date** | 2026-03-06 |
+| **Date** | 2026-03-10 |
 
 ## Competitors
 
 | # | Project | Type | Notes |
 |---|---------|------|-------|
-| 1 | **[imdinu/apple-mail-mcp](https://github.com/imdinu/apple-mail-mcp)** (ours) | Dedicated | Batch JXA + FTS5 index |
+| 1 | **[imdinu/apple-mail-mcp](https://github.com/imdinu/apple-mail-mcp)** (ours) | Dedicated | Disk-first + batch JXA + FTS5 |
 | 2 | **[patrickfreyer/apple-mail-mcp](https://github.com/patrickfreyer/apple-mail-mcp)** | Dedicated | Python + AppleScript, 26 tools |
 | 3 | **[dhravya/apple-mcp](https://github.com/supermemoryai/apple-mcp)** | Multi-app | TypeScript (archived Jan 2026) |
 | 4 | **[s-morgan-jeffries/apple-mail-mcp](https://github.com/s-morgan-jeffries/apple-mail-mcp)** | Dedicated | Python + FastMCP |
@@ -33,23 +33,23 @@ Time from spawning the server process to receiving an MCP `initialize` response.
 
 | Server | Median | p5 | p95 |
 |--------|-------:|---:|----:|
-| attilagyorffy (Go) | **3.7ms** | 3.5 | 4.9 |
-| patrickfreyer | 262ms | 260 | 271 |
-| s-morgan-jeffries | 399ms | 391 | 414 |
-| dhravya | 406ms | 397 | 496 |
-| **apple-mail-mcp** | 480ms | 475 | 494 |
+| attilagyorffy (Go) | **10ms** | 3.7 | 13.3 |
+| patrickfreyer | 273ms | 263 | 285 |
+| s-morgan-jeffries | 368ms | 356 | 392 |
+| dhravya | 386ms | 377 | 440 |
+| **apple-mail-mcp** | 443ms | 423 | 467 |
 
 ![Cold Start](benchmark_cold_start.png)
 
 ### List Accounts
 
-The simplest mail operation. We're the **fastest** at 125ms.
+The simplest mail operation. We're the **fastest** at 118ms.
 
 | Server | Median | p5 | p95 |
 |--------|-------:|---:|----:|
-| **apple-mail-mcp** | **125ms** | 120 | 147 |
-| dhravya | 138ms | 134 | 142 |
-| patrickfreyer | 183ms | 175 | 184 |
+| **apple-mail-mcp** | **118ms** | 114 | 153 |
+| dhravya | 134ms | 119 | 144 |
+| patrickfreyer | 184ms | 183 | 199 |
 | s-morgan-jeffries | — | — | — |
 | attilagyorffy | — | — | — |
 
@@ -61,23 +61,35 @@ We are the **only server that successfully returns email data** in a competitive
 
 | Server | Median | p5 | p95 | Status |
 |--------|-------:|---:|----:|--------|
-| **apple-mail-mcp** | **575ms** | 564 | 591 | 50 emails returned |
-| dhravya | 175ms | 167 | 175 | "No unread emails" (different operation) |
-| patrickfreyer | ~14,200ms | — | — | too slow (screened out) |
+| **apple-mail-mcp** | **301ms** | 293 | 331 | 50 emails returned |
+| dhravya | 167ms | 158 | 175 | "No unread emails" (different operation) |
+| patrickfreyer | ~13,800ms | — | — | too slow (screened out) |
 | s-morgan-jeffries | — | — | — | error: `whose true` crash |
 | attilagyorffy | — | — | — | error: date parsing bug |
 
 ![Fetch Emails](benchmark_get_emails.png)
 
+### Fetch Single Email
+
+Our disk-first strategy reads `.emlx` files directly — no JXA needed. **We're the only server with a dedicated single-email fetch tool** that returns full content at disk speed.
+
+| Server | Median | p5 | p95 | Status |
+|--------|-------:|---:|----:|--------|
+| **apple-mail-mcp** | **5.9ms** | 2.9 | 47.2 | Full content via .emlx disk read |
+| patrickfreyer | — | — | — | ID discovery failed |
+| Others | — | — | — | Not supported |
+
+![Fetch Single Email](benchmark_get_email.png)
+
 ### Search by Subject
 
-Our FTS5 column filter makes us **18x faster** than the next competitor.
+Our FTS5 column filter makes us **15x faster** than the next competitor.
 
 | Server | Median | p5 | p95 |
 |--------|-------:|---:|----:|
-| **apple-mail-mcp** | **9.2ms** | 7.4 | 47.3 |
-| dhravya | 167ms | 167 | 175 |
-| attilagyorffy (Go) | 200ms | 191 | 213 |
+| **apple-mail-mcp** | **10ms** | 6.7 | 46.3 |
+| attilagyorffy (Go) | 148ms | 141 | 152 |
+| dhravya | 166ms | 158 | 174 |
 | s-morgan-jeffries | — | — | — |
 | patrickfreyer | timeout | — | — |
 
@@ -85,7 +97,7 @@ Our FTS5 column filter makes us **18x faster** than the next competitor.
 
 ### Search by Body
 
-**We are the only server that supports body search** via FTS5 at 25ms. No other competitor implements this feature.
+**We are the only server that supports body search** via FTS5 at 22ms. No other competitor implements this feature.
 
 ![Search Body](benchmark_search_body.png)
 

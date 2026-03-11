@@ -56,6 +56,120 @@ class TestParseEmlx:
         _ = parse_emlx(tmp_path / "42.emlx")
 
 
+class TestParseEmlxExtendedFields:
+    """Tests for extended fields from plist footer and MIME headers."""
+
+    def test_plist_flags_read_and_flagged(self, tmp_path: Path):
+        """Plist footer flags bitmask: bit 0 = read, bit 4 = flagged."""
+        mime = (
+            b"From: alice@example.com\n"
+            b"Subject: Flagged email\n"
+            b"Date: Mon, 15 Jan 2024 10:00:00 -0500\n"
+            b"Reply-To: replies@example.com\n"
+            b"Message-ID: <unique-123@example.com>\n"
+            b"Content-Type: text/plain\n\n"
+            b"Hello\n"
+        )
+        # flags = 17 means bit 0 (read=True) + bit 4 (flagged=True)
+        plist = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            b'<plist version="1.0"><dict>\n'
+            b"  <key>flags</key>\n"
+            b"  <integer>17</integer>\n"
+            b"</dict></plist>\n"
+        )
+        path = tmp_path / "99.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime + plist)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.read is True
+        assert result.flagged is True
+        assert result.reply_to == "replies@example.com"
+        assert result.message_id_header == "<unique-123@example.com>"
+        assert "2024-01-15" in result.date_sent
+
+    def test_plist_flags_unread_unflagged(self, tmp_path: Path):
+        """flags=0 means unread and unflagged."""
+        mime = (
+            b"From: bob@example.com\n"
+            b"Subject: New email\n"
+            b"Date: Mon, 15 Jan 2024 10:00:00 -0500\n"
+            b"Content-Type: text/plain\n\n"
+            b"Body\n"
+        )
+        plist = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            b'<plist version="1.0"><dict>\n'
+            b"  <key>flags</key>\n"
+            b"  <integer>0</integer>\n"
+            b"</dict></plist>\n"
+        )
+        path = tmp_path / "100.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime + plist)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.read is False
+        assert result.flagged is False
+        assert result.reply_to == ""
+        assert result.message_id_header == ""
+
+    def test_date_received_from_received_header(self, tmp_path: Path):
+        """date_received should use Received header, not Date header."""
+        mime = (
+            b"Received: from mail.example.com by mx.example.com;"
+            b" Tue, 16 Jan 2024 08:30:00 +0000\n"
+            b"From: alice@example.com\n"
+            b"Subject: Delayed email\n"
+            b"Date: Mon, 15 Jan 2024 10:00:00 -0500\n"
+            b"Content-Type: text/plain\n\n"
+            b"Body\n"
+        )
+        path = tmp_path / "102.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        # date_received = Received header (Jan 16)
+        assert "2024-01-16" in result.date_received
+        # date_sent = Date header (Jan 15)
+        assert "2024-01-15" in result.date_sent
+
+    def test_date_received_falls_back_to_date_header(
+        self, tmp_path: Path
+    ):
+        """Without Received header, date_received falls back to Date."""
+        mime = (
+            b"From: bob@example.com\n"
+            b"Subject: No received header\n"
+            b"Date: Mon, 15 Jan 2024 10:00:00 -0500\n"
+            b"Content-Type: text/plain\n\n"
+            b"Body\n"
+        )
+        path = tmp_path / "103.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        # Both should be Jan 15 since no Received header
+        assert "2024-01-15" in result.date_received
+        assert "2024-01-15" in result.date_sent
+
+    def test_no_plist_footer_leaves_none(self, tmp_path: Path):
+        """Without plist footer, read/flagged remain None."""
+        mime = b"From: x@y.z\nSubject: Minimal\n\nBody"
+        path = tmp_path / "101.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.read is None
+        assert result.flagged is None
+
+
 class TestExtractBodyText:
     """Tests for email body extraction."""
 

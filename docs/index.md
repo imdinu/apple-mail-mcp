@@ -1,6 +1,6 @@
 # Apple Mail MCP
 
-**A fast MCP server for Apple Mail** — optimized JXA scripts with batch property fetching for **87x faster** performance, plus an FTS5 search index for **700–3500x faster** body search.
+**A fast MCP server for Apple Mail** — disk-first email reading, batch JXA property fetching for **87x faster** multi-email performance, and an FTS5 search index for **700–3500x faster** body search.
 
 ---
 
@@ -8,10 +8,11 @@
 
 | | Apple Mail MCP | Typical alternatives |
 |---|---|---|
-| **Fetch 50 emails** | 575ms | 14,200ms+ (or crash) |
-| **Search (subject)** | 9ms (FTS5) | 167–200ms |
-| **Search (body)** | 25ms (FTS5) | unsupported |
-| **Architecture** | Batch JXA + FTS5 index | Per-message AppleScript |
+| **Fetch single email** | 6ms (disk) | unsupported |
+| **Fetch 50 emails** | 301ms | 13,800ms+ (or crash) |
+| **Search (subject)** | 10ms (FTS5) | 148–166ms |
+| **Search (body)** | 22ms (FTS5) | unsupported |
+| **Architecture** | Disk-first + batch JXA + FTS5 | Per-message AppleScript |
 
 > Benchmarked against [5 other Apple Mail MCP servers](benchmarks.md). We're the **fastest at search** across all scenarios and the **only one with body search**.
 
@@ -55,4 +56,5 @@ That's it. Ask Claude to search your emails, get today's messages, or find unrea
 - [Tools](tools.md) — full API reference for all 6 tools
 - [Search & Indexing](search.md) — FTS5 deep dive
 - [Architecture](architecture.md) — how it works under the hood
+- [Architecture Deep Dive](architecture-deep-dive.md) — `.emlx` format, JXA IPC, FTS5 index design
 - [Benchmarks](benchmarks.md) — competitive performance data
