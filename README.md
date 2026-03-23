@@ -60,7 +60,7 @@ Tested against [6 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
 - **5ms** single email fetch via disk-first `.emlx` reading
 - **7–9ms** subject search via FTS5 (vs 230ms+ for AppleScript-based servers)
 
-![Capability Matrix](benchmark_overview.png)
+![Capability Matrix](docs/benchmark_overview.png)
 
 ## Configuration
 
