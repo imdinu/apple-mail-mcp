@@ -13,6 +13,10 @@ The only Apple Mail MCP server with **full-text email search**. Reliable on larg
 
 **[Read the docs](https://imdinu.github.io/apple-mail-mcp/)** for the full guide.
 
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/imdinu-apple-mail-mcp).
+
 ## Quick Start
 
 ```bash
