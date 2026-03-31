@@ -412,6 +412,30 @@ class TestDetectMatchedColumns:
         assert detect_matched_columns("!!!", result) == "body"
 
 
+class TestMailboxCaseInsensitive:
+    """Tests for case-insensitive mailbox filtering (#67)."""
+
+    def test_mailbox_case_insensitive(self, fts_db):
+        """Mailbox filter should match regardless of case."""
+        # fts_db has mailboxes: "Inbox" and "Sent"
+        r1 = search_fts(fts_db, "budget", mailbox="Inbox")
+        r2 = search_fts(fts_db, "budget", mailbox="inbox")
+        r3 = search_fts(fts_db, "budget", mailbox="INBOX")
+        assert len(r1) == len(r2) == len(r3)
+        assert len(r1) > 0
+
+    def test_exclude_mailbox_case_insensitive(self, fts_db):
+        """Excluded mailboxes should match regardless of case."""
+        r1 = search_fts(
+            fts_db, "budget", exclude_mailboxes=["Sent"]
+        )
+        r2 = search_fts(
+            fts_db, "budget", exclude_mailboxes=["sent"]
+        )
+        assert len(r1) == len(r2)
+        assert all(r.mailbox != "Sent" for r in r1)
+
+
 class TestDateRangeFiltering:
     """Tests for before/after date filtering in search."""
 
