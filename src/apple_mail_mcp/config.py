@@ -95,3 +95,34 @@ def get_index_staleness_hours() -> float:
         Staleness threshold in hours.
     """
     return float(os.environ.get("APPLE_MAIL_INDEX_STALENESS_HOURS", "24"))
+
+
+# ========== Server Mode ==========
+
+_read_only_mode: bool = False
+
+
+def get_read_only_mode() -> bool:
+    """
+    Check if write operations are disabled.
+
+    Set ``APPLE_MAIL_READ_ONLY`` environment variable or call
+    :func:`set_read_only_mode` to enable.  When enabled, write
+    tools (v0.3.0+) will refuse to execute.
+
+    Returns:
+        True if read-only mode is active.
+    """
+    if _read_only_mode:
+        return True
+    return os.environ.get("APPLE_MAIL_READ_ONLY", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def set_read_only_mode(value: bool) -> None:
+    """Enable or disable read-only mode programmatically."""
+    global _read_only_mode
+    _read_only_mode = value

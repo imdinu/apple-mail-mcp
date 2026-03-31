@@ -565,59 +565,16 @@ class AttachmentContent(TypedDict, total=False):
     links: list[LinkResult]
 
 
-@mcp.tool
-async def get_attachment(
+async def _resolve_emlx_path(
     message_id: int,
-    filename: str | None = None,
     account: str | None = None,
     mailbox: str | None = None,
-) -> AttachmentContent:
+) -> _Path:
+    """Resolve a message ID to an .emlx file path via the index.
+
+    Raises:
+        ValueError: If the index is missing or email not found.
     """
-    Extract resources from an email: attachments or links.
-
-    This tool has two modes based on the filename parameter:
-
-    **Attachment mode** (filename provided):
-    Extracts the named file attachment and saves it to disk under
-    ~/.apple-mail-mcp/attachments/. Parses the raw MIME structure,
-    so it works for all attachment types including inline images
-    and S/MIME signatures.
-
-    **Links mode** (filename omitted):
-    Extracts all hyperlinks from the email's HTML content.
-    Filters out mailto:, javascript:, and long tracking URLs.
-    Returns deduplicated links with their anchor text.
-
-    Requires the search index. If upgrading from v0.1.2, run
-    'apple-mail-mcp rebuild' to populate attachment metadata.
-
-    Args:
-        message_id: The email's unique ID
-        filename: Attachment filename to extract. If omitted,
-            returns links instead.
-        account: Account name (optional, used for index lookup)
-        mailbox: Mailbox name (optional, used for index lookup)
-
-    Returns:
-        With filename: dict with filename, mime_type, size,
-            and file_path pointing to the saved file.
-        Without filename: dict with links list, each having
-            url and text fields.
-
-    Examples:
-        >>> get_attachment(12345, "invoice.pdf")
-        {"filename": "invoice.pdf", ...}
-        >>> get_attachment(12345)
-        {"links": [{"url": "https://...", "text": "Click"}]}
-    """
-    # Clean up old cached attachments (best-effort, non-blocking)
-    try:
-        await asyncio.to_thread(_cleanup_old_attachments)
-    except Exception:
-        pass  # Cleanup failure should not block attachment extraction
-
-    # Look up emlx_path from the index, scoped by account/mailbox
-    # when provided (message_id is only unique within a mailbox)
     manager = _get_index_manager()
     if not manager.has_index():
         raise ValueError("No search index. Run 'apple-mail-mcp index'.")
@@ -633,17 +590,81 @@ async def get_attachment(
     )
     if not emlx_path:
         raise ValueError(f"Email {message_id} not found in index.")
+    return emlx_path
 
-    # Links mode: extract hyperlinks from HTML parts
-    if filename is None:
-        from .index.disk import get_email_links
 
-        link_infos = await asyncio.to_thread(get_email_links, emlx_path)
-        return {
-            "links": [{"url": li.url, "text": li.text} for li in link_infos],
-        }
+@mcp.tool
+async def get_email_links(
+    message_id: int,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> dict:
+    """
+    Extract hyperlinks from an email's HTML content.
 
-    # Attachment mode: extract and save file
+    Filters out mailto:, javascript:, and long tracking URLs.
+    Returns deduplicated links with their anchor text.
+
+    Requires the search index.
+
+    Args:
+        message_id: The email's unique ID
+        account: Account name (optional, speeds up lookup)
+        mailbox: Mailbox name (optional, speeds up lookup)
+
+    Returns:
+        Dict with 'links' list, each having 'url' and 'text'.
+
+    Example:
+        >>> get_email_links(12345)
+        {"links": [{"url": "https://...", "text": "Click"}]}
+    """
+    emlx_path = await _resolve_emlx_path(message_id, account, mailbox)
+    from .index.disk import get_email_links as _get_links
+
+    link_infos = await asyncio.to_thread(_get_links, emlx_path)
+    return {
+        "links": [{"url": li.url, "text": li.text} for li in link_infos],
+    }
+
+
+@mcp.tool
+async def get_email_attachment(
+    message_id: int,
+    filename: str,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> AttachmentContent:
+    """
+    Extract a file attachment from an email and save to disk.
+
+    Saves the attachment under ~/.apple-mail-mcp/attachments/.
+    Parses the raw MIME structure, so it works for all attachment
+    types including inline images and S/MIME signatures.
+
+    Requires the search index.
+
+    Args:
+        message_id: The email's unique ID
+        filename: Attachment filename to extract
+        account: Account name (optional, speeds up lookup)
+        mailbox: Mailbox name (optional, speeds up lookup)
+
+    Returns:
+        Dict with filename, mime_type, size, and file_path
+        pointing to the saved file.
+
+    Example:
+        >>> get_email_attachment(12345, "invoice.pdf")
+        {"filename": "invoice.pdf", "file_path": "/...", ...}
+    """
+    # Clean up old cached attachments (best-effort)
+    try:
+        await asyncio.to_thread(_cleanup_old_attachments)
+    except Exception:
+        pass
+
+    emlx_path = await _resolve_emlx_path(message_id, account, mailbox)
     from .index.disk import get_attachment_content
 
     result = await asyncio.to_thread(
@@ -660,7 +681,7 @@ async def get_attachment(
     ATTACHMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENT_CACHE_DIR.chmod(0o700)
     save_dir = _Path(tempfile.mkdtemp(dir=ATTACHMENT_CACHE_DIR))
-    safe_name = _Path(filename).name  # strip directory components
+    safe_name = _Path(filename).name
     file_path = save_dir / safe_name
     file_path.write_bytes(raw_bytes)
 
@@ -673,6 +694,32 @@ async def get_attachment(
 
 
 @mcp.tool
+async def get_attachment(
+    message_id: int,
+    filename: str | None = None,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> AttachmentContent:
+    """
+    DEPRECATED: Use get_email_attachment() or get_email_links().
+
+    Extract resources from an email: attachments or links.
+    Delegates to get_email_links (filename omitted) or
+    get_email_attachment (filename provided).
+
+    Args:
+        message_id: The email's unique ID
+        filename: Attachment filename to extract. If omitted,
+            returns links instead.
+        account: Account name (optional)
+        mailbox: Mailbox name (optional)
+    """
+    if filename is None:
+        return await get_email_links(message_id, account, mailbox)
+    return await get_email_attachment(message_id, filename, account, mailbox)
+
+
+@mcp.tool
 async def search(
     query: str,
     account: str | None = None,
@@ -680,6 +727,9 @@ async def search(
     scope: Literal["all", "subject", "sender", "body", "attachments"] = "all",
     limit: int = 20,
     exclude_mailboxes: list[str] | None = None,
+    before: str | None = None,
+    after: str | None = None,
+    highlight: bool = False,
 ) -> list[SearchResult] | dict:
     """
     Search emails across all accounts and mailboxes.
@@ -707,6 +757,10 @@ async def search(
             - "attachments": Attachment filenames
         limit: Maximum results (default: 20)
         exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"])
+        before: Exclude emails on/after this date (YYYY-MM-DD).
+        after: Include only emails on/after this date (YYYY-MM-DD).
+        highlight: Wrap matched terms in **markers** in subject
+            and content_snippet (default: False).
 
     Returns:
         List of matching emails with id, subject, sender,
@@ -718,6 +772,7 @@ async def search(
         >>> search("quarterly budget")  # Keywords, not sentences
         >>> search('"project update"')  # Exact phrase
         >>> search("invoice.pdf", scope="attachments")
+        >>> search("budget", after="2026-01-01", before="2026-04-01")
     """
     if exclude_mailboxes is None:
         exclude_mailboxes = ["Drafts"]
@@ -750,6 +805,8 @@ async def search(
             mailbox=mailbox,
             limit=limit,
             exclude_mailboxes=exclude_mailboxes,
+            before=before,
+            after=after,
         )
 
         acct_map = _get_account_map()
@@ -809,6 +866,9 @@ async def search(
                     limit=limit,
                     exclude_mailboxes=exclude_mailboxes,
                     column=fts_column,
+                    before=before,
+                    after=after,
+                    highlight=highlight,
                 )
             except Exception as e:
                 err_msg = str(e) or repr(e)
@@ -836,6 +896,13 @@ async def search(
                     for r in results
                 ]
             )
+
+    # Date filtering and highlight require the FTS5 index
+    if before or after:
+        raise ValueError(
+            "Date filtering (before/after) requires the search "
+            "index. Run 'apple-mail-mcp index' to build it."
+        )
 
     # JXA-based search for subject/sender or when no index
     safe_query_js = json.dumps(query.lower())

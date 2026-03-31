@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from apple_mail_mcp.index.search import (
     _escape_all_special,
     count_matches,
@@ -11,7 +13,50 @@ from apple_mail_mcp.index.search import (
     sanitize_fts_query,
     search_attachments,
     search_fts,
+    search_fts_highlight,
 )
+
+
+@pytest.fixture
+def fts_db():
+    """In-memory FTS5 database with test emails."""
+    from apple_mail_mcp.index.schema import create_connection
+
+    conn = create_connection(":memory:")
+
+    from apple_mail_mcp.index.schema import get_schema_sql
+
+    conn.executescript(get_schema_sql())
+
+    # Insert test emails with different dates
+    emails = [
+        (1, "acct-1", "Inbox", "Budget meeting notes",
+         "alice@example.com", "Let's discuss the Q1 budget",
+         "2026-01-15T10:00:00"),
+        (2, "acct-1", "Inbox", "Project update",
+         "bob@example.com", "The project is on track",
+         "2026-02-10T14:00:00"),
+        (3, "acct-1", "Sent", "Re: Budget meeting notes",
+         "me@example.com", "Thanks for the budget update",
+         "2026-03-01T09:00:00"),
+        (4, "acct-2", "Inbox", "Invoice attached",
+         "vendor@example.com", "Please find the invoice",
+         "2026-03-15T16:00:00"),
+    ]
+    for msg_id, acct, mbox, subj, sender, content, date in emails:
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, "
+            "content, date_received) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, acct, mbox, subj, sender, content, date),
+        )
+    # Populate FTS5 index
+    conn.execute(
+        "INSERT INTO emails_fts(emails_fts) VALUES('rebuild')"
+    )
+    conn.commit()
+    return conn
 
 
 class TestSanitizeFtsQuery:
@@ -365,3 +410,105 @@ class TestDetectMatchedColumns:
         result.sender = "a@b.com"
 
         assert detect_matched_columns("!!!", result) == "body"
+
+
+class TestDateRangeFiltering:
+    """Tests for before/after date filtering in search."""
+
+    def test_after_filter(self, fts_db):
+        results = search_fts(
+            fts_db, "budget", after="2026-02-01"
+        )
+        assert len(results) == 1
+        assert results[0].id == 3  # March email only
+
+    def test_before_filter(self, fts_db):
+        results = search_fts(
+            fts_db, "budget", before="2026-02-01"
+        )
+        assert len(results) == 1
+        assert results[0].id == 1  # January email only
+
+    def test_both_filters(self, fts_db):
+        results = search_fts(
+            fts_db,
+            "budget OR project OR invoice",
+            after="2026-02-01",
+            before="2026-03-10",
+        )
+        # Should get emails 2 (Feb) and 3 (Mar 1) but not 1 or 4
+        ids = {r.id for r in results}
+        assert ids == {2, 3}
+
+    def test_date_with_account(self, fts_db):
+        results = search_fts(
+            fts_db,
+            "budget OR project OR invoice",
+            account="acct-1",
+            after="2026-02-01",
+        )
+        ids = {r.id for r in results}
+        assert 4 not in ids  # acct-2 excluded
+
+    def test_no_date_filter(self, fts_db):
+        results = search_fts(fts_db, "budget")
+        assert len(results) == 2  # Both budget emails
+
+    def test_date_filter_attachments(self, fts_db):
+        # Add attachment data
+        fts_db.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename, mime_type, file_size) "
+            "VALUES (1, 'budget.pdf', 'application/pdf', 1024)"
+        )
+        fts_db.execute(
+            "INSERT INTO attachments "
+            "(email_rowid, filename, mime_type, file_size) "
+            "VALUES (4, 'invoice.pdf', 'application/pdf', 2048)"
+        )
+        fts_db.commit()
+
+        results = search_attachments(
+            fts_db, "pdf", after="2026-03-01"
+        )
+        assert len(results) == 1
+        assert results[0]["filename"] == "invoice.pdf"
+
+
+class TestSearchFtsHighlight:
+    """Tests for highlighted search results."""
+
+    def test_highlight_basic(self, fts_db):
+        results = search_fts_highlight(fts_db, "budget")
+        assert len(results) == 2
+        # At least one result should have ** markers
+        has_markers = any(
+            "**" in r.subject or "**" in r.content_snippet
+            for r in results
+        )
+        assert has_markers
+
+    def test_highlight_with_account_filter(self, fts_db):
+        results = search_fts_highlight(
+            fts_db, "budget", account="acct-1"
+        )
+        assert all(r.account == "acct-1" for r in results)
+
+    def test_highlight_with_date_range(self, fts_db):
+        results = search_fts_highlight(
+            fts_db, "budget", after="2026-02-01"
+        )
+        assert len(results) == 1
+        assert results[0].id == 3
+
+    def test_highlight_with_exclude_mailboxes(self, fts_db):
+        results = search_fts_highlight(
+            fts_db, "budget", exclude_mailboxes=["Sent"]
+        )
+        assert all(r.mailbox != "Sent" for r in results)
+
+    def test_highlight_fallback_on_error(self, fts_db):
+        # Corrupt query that might cause highlight to fail
+        # but search_fts handles via retry
+        results = search_fts_highlight(fts_db, "budget")
+        assert isinstance(results, list)

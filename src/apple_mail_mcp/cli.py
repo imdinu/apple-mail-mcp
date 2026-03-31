@@ -57,12 +57,17 @@ def _progress_bar(current: int, total: int | None, width: int = 40) -> str:
     return f"[{bar}] {pct * 100:.0f}%"
 
 
-def _run_serve(watch: bool = False) -> None:
+def _run_serve(watch: bool = False, read_only: bool = False) -> None:
     """Internal function to run the MCP server."""
     import threading
 
+    from .config import set_read_only_mode
     from .index import IndexManager
     from .server import mcp
+
+    if read_only:
+        set_read_only_mode(True)
+        print("Read-only mode enabled", file=sys.stderr)
 
     manager = IndexManager.get_instance()
 
@@ -144,6 +149,13 @@ def serve(
             help="Enable verbose output",
         ),
     ] = False,
+    read_only: Annotated[
+        bool,
+        cyclopts.Parameter(
+            name=["--read-only", "-r"],
+            help="Disable write operations (v0.3.0+)",
+        ),
+    ] = False,
 ) -> None:
     """
     Run the MCP server.
@@ -155,7 +167,7 @@ def serve(
     Use --watch to enable real-time index updates when emails arrive.
     Requires Full Disk Access for the terminal.
     """
-    _run_serve(watch=watch)
+    _run_serve(watch=watch, read_only=read_only)
 
 
 @app.command
@@ -376,9 +388,321 @@ def default_handler(
             help="Enable verbose output",
         ),
     ] = False,
+    read_only: Annotated[
+        bool,
+        cyclopts.Parameter(
+            name=["--read-only", "-r"],
+            help="Disable write operations (v0.3.0+)",
+        ),
+    ] = False,
 ) -> None:
     """Run the MCP server (default when no command specified)."""
-    _run_serve(watch=watch)
+    _run_serve(watch=watch, read_only=read_only)
+
+
+# ========== Integration Generator ==========
+
+integrate_app = cyclopts.App(
+    name="integrate",
+    help="Generate integration files for AI tools.",
+)
+app.command(integrate_app)
+
+
+_CLAUDE_SKILL = """\
+---
+name: mail
+description: Search and read Apple Mail emails via CLI
+---
+
+Use `apple-mail-mcp` CLI to access emails on this Mac.
+
+## Search emails
+
+```
+!apple-mail-mcp search "keyword" --limit 20
+```
+
+Options:
+- `--scope` / `-s`: all (default), subject, sender, body, attachments
+- `--account` / `-a`: filter to a specific email account
+- `--after`: only emails on/after this date (YYYY-MM-DD)
+- `--before`: only emails before this date (YYYY-MM-DD)
+- `--limit` / `-n`: max results (default: 20)
+- `--no-highlight`: disable **term** markers in results
+
+Examples:
+```
+!apple-mail-mcp search "quarterly report" --scope subject
+!apple-mail-mcp search "invoice" --after 2026-01-01 --before 2026-04-01
+!apple-mail-mcp search "Kim Foulds" --account Work
+```
+
+## Read full email
+
+```
+!apple-mail-mcp read <message_id>
+```
+
+Use the `id` from search results. Returns full content, attachments list, \
+and metadata.
+
+## List emails
+
+```
+!apple-mail-mcp emails --filter unread --limit 10
+```
+
+Filters: all, unread, flagged, today, last_7_days
+
+## List accounts and mailboxes
+
+```
+!apple-mail-mcp accounts
+!apple-mail-mcp mailboxes --account Work
+```
+
+## Extract attachment or links
+
+```
+!apple-mail-mcp extract <message_id> <filename>
+!apple-mail-mcp extract <message_id>  # links mode
+```
+
+## Output format
+
+All commands return JSON. Use jq for filtering:
+```
+!apple-mail-mcp search "budget" | jq '.[].subject'
+```
+"""
+
+
+@integrate_app.command
+def claude() -> None:
+    """Generate a Claude Code skill file.
+
+    Outputs markdown to stdout. Pipe to a file:
+
+        apple-mail-mcp integrate claude \\
+            > ~/.claude/skills/apple-mail.md
+    """
+    print(_CLAUDE_SKILL)
+
+
+# ========== CLI Wrappers for MCP Tools ==========
+
+
+def _run_async(coro):
+    """Run an async MCP tool function synchronously."""
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def _print_json(data):
+    """Print data as formatted JSON to stdout."""
+    import json
+
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+@app.command(name="search")
+def cli_search(
+    query: str,
+    scope: Annotated[
+        str,
+        cyclopts.Parameter(
+            name=["--scope", "-s"],
+            help="all, subject, sender, body, attachments",
+        ),
+    ] = "all",
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--account", "-a"],
+            help="Filter to specific account",
+        ),
+    ] = None,
+    mailbox: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--mailbox", "-m"],
+            help="Filter to specific mailbox",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        cyclopts.Parameter(name=["--limit", "-n"], help="Max results"),
+    ] = 20,
+    before: Annotated[
+        str | None,
+        cyclopts.Parameter(help="Before date (YYYY-MM-DD)"),
+    ] = None,
+    after: Annotated[
+        str | None,
+        cyclopts.Parameter(help="After date (YYYY-MM-DD)"),
+    ] = None,
+    highlight: Annotated[
+        bool,
+        cyclopts.Parameter(help="Highlight matched terms"),
+    ] = True,
+) -> None:
+    """Search emails using the FTS5 index."""
+    from .server import search as _search
+
+    try:
+        result = _run_async(
+            _search(
+                query,
+                account=account,
+                mailbox=mailbox,
+                scope=scope,
+                limit=limit,
+                before=before,
+                after=after,
+                highlight=highlight,
+            )
+        )
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="read")
+def cli_read(
+    message_id: int,
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--account", "-a"],
+            help="Account name (speeds up lookup)",
+        ),
+    ] = None,
+    mailbox: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--mailbox", "-m"],
+            help="Mailbox name (speeds up lookup)",
+        ),
+    ] = None,
+) -> None:
+    """Read a single email with full content."""
+    from .server import get_email
+
+    try:
+        result = _run_async(
+            get_email(message_id, account=account, mailbox=mailbox)
+        )
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="emails")
+def cli_emails(
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--account", "-a"], help="Account name"),
+    ] = None,
+    mailbox: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--mailbox", "-m"], help="Mailbox name"),
+    ] = None,
+    filter: Annotated[
+        str,
+        cyclopts.Parameter(
+            name=["--filter", "-f"],
+            help="all, unread, flagged, today, last_7_days",
+        ),
+    ] = "all",
+    limit: Annotated[
+        int,
+        cyclopts.Parameter(name=["--limit", "-n"], help="Max results"),
+    ] = 50,
+) -> None:
+    """List emails from a mailbox."""
+    from .server import get_emails
+
+    try:
+        result = _run_async(
+            get_emails(account, mailbox, filter=filter, limit=limit)
+        )
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="accounts")
+def cli_accounts() -> None:
+    """List all email accounts."""
+    from .server import list_accounts
+
+    try:
+        result = _run_async(list_accounts())
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="mailboxes")
+def cli_mailboxes(
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--account", "-a"], help="Account name"),
+    ] = None,
+) -> None:
+    """List mailboxes for an account."""
+    from .server import list_mailboxes
+
+    try:
+        result = _run_async(list_mailboxes(account))
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="extract")
+def cli_extract(
+    message_id: int,
+    filename: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            help="Attachment filename (omit for links)",
+        ),
+    ] = None,
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--account", "-a"], help="Account name"),
+    ] = None,
+    mailbox: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--mailbox", "-m"], help="Mailbox name"),
+    ] = None,
+) -> None:
+    """Extract attachment or links from an email."""
+    from .server import get_email_attachment, get_email_links
+
+    try:
+        if filename:
+            result = _run_async(
+                get_email_attachment(
+                    message_id, filename, account=account, mailbox=mailbox
+                )
+            )
+        else:
+            result = _run_async(
+                get_email_links(message_id, account=account, mailbox=mailbox)
+            )
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main() -> None:

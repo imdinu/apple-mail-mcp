@@ -1017,3 +1017,72 @@ Content-Disposition: attachment; filename="doc.pdf"
         assert len(result) == 1
         assert result[0].filename == "doc.pdf"
         assert result[0].file_size > 0
+
+
+class TestDetectMailVersion:
+    """Tests for dynamic Mail.app version detection."""
+
+    def test_finds_highest_version(self, tmp_path: Path, monkeypatch):
+        """Returns the highest V* directory numerically."""
+        mail_base = tmp_path / "Library" / "Mail"
+        (mail_base / "V9").mkdir(parents=True)
+        (mail_base / "V10").mkdir()
+        (mail_base / "V11").mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from apple_mail_mcp.index.disk import _detect_mail_version
+
+        assert _detect_mail_version() == "V11"
+
+    def test_fallback_to_v10(self, tmp_path: Path, monkeypatch):
+        """Returns V10 when no V* directories exist."""
+        mail_base = tmp_path / "Library" / "Mail"
+        mail_base.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from apple_mail_mcp.index.disk import _detect_mail_version
+
+        assert _detect_mail_version() == "V10"
+
+    def test_ignores_non_version_dirs(self, tmp_path: Path, monkeypatch):
+        """Ignores directories that don't match V<number> pattern."""
+        mail_base = tmp_path / "Library" / "Mail"
+        (mail_base / "V10").mkdir(parents=True)
+        (mail_base / "Bundles").mkdir()
+        (mail_base / "Vx").mkdir()
+        (mail_base / "V").mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from apple_mail_mcp.index.disk import _detect_mail_version
+
+        assert _detect_mail_version() == "V10"
+
+    def test_fallback_when_no_mail_dir(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Returns V10 when ~/Library/Mail doesn't exist."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from apple_mail_mcp.index.disk import _detect_mail_version
+
+        assert _detect_mail_version() == "V10"
+
+    def test_find_mail_directory_caches(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """find_mail_directory() caches its result."""
+        import apple_mail_mcp.index.disk as disk_mod
+
+        mail_dir = tmp_path / "Library" / "Mail" / "V10"
+        mail_dir.mkdir(parents=True)
+        (mail_dir / "account-uuid").mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Clear cache
+        disk_mod._cached_mail_dir = None
+
+        result1 = disk_mod.find_mail_directory()
+        result2 = disk_mod.find_mail_directory()
+        assert result1 == result2 == mail_dir
+
+        # Clean up cache for other tests
+        disk_mod._cached_mail_dir = None
