@@ -152,13 +152,8 @@ def add_account_mailbox_filter(
         sql += f" AND LOWER({table_alias}.mailbox) = LOWER(?)"
         params.append(mailbox)
     if exclude_mailboxes:
-        placeholders = ", ".join(
-            "LOWER(?)" for _ in exclude_mailboxes
-        )
-        sql += (
-            f" AND LOWER({table_alias}.mailbox)"
-            f" NOT IN ({placeholders})"
-        )
+        placeholders = ", ".join("LOWER(?)" for _ in exclude_mailboxes)
+        sql += f" AND LOWER({table_alias}.mailbox) NOT IN ({placeholders})"
         params.extend(exclude_mailboxes)
     if after:
         sql += f" AND {table_alias}.date_received >= ?"
