@@ -12,6 +12,7 @@ Apple Mail MCP is configured via environment variables. All settings have sensib
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails per mailbox to index |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before index is considered stale |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip in search |
+| `APPLE_MAIL_READ_ONLY` | `false` | When `true`, disables any write operations |
 
 ### Per-Mailbox Email Limit
 
@@ -84,12 +85,35 @@ To keep the search index automatically updated:
 ## CLI Commands
 
 ```bash
-apple-mail-mcp            # Run MCP server (default)
-apple-mail-mcp serve      # Run MCP server explicitly
-apple-mail-mcp --watch    # Run with real-time index updates
-apple-mail-mcp index      # Build search index from disk
-apple-mail-mcp status     # Show index statistics
-apple-mail-mcp rebuild    # Force rebuild index
+apple-mail-mcp              # Run MCP server (default)
+apple-mail-mcp serve        # Run MCP server explicitly
+apple-mail-mcp serve -r     # Run in read-only mode
+apple-mail-mcp --watch      # Run with real-time index updates
+apple-mail-mcp index        # Build search index from disk
+apple-mail-mcp status       # Show index statistics
+apple-mail-mcp rebuild      # Force rebuild index
+apple-mail-mcp search       # Search emails (JSON output)
+apple-mail-mcp read         # Read a single email (JSON output)
+apple-mail-mcp emails       # List emails (JSON output)
+apple-mail-mcp accounts     # List accounts (JSON output)
+apple-mail-mcp mailboxes    # List mailboxes (JSON output)
+apple-mail-mcp extract      # Extract attachment (JSON output)
+apple-mail-mcp integrate claude  # Generate a Claude Code skill file
+```
+
+### Read-Only Mode
+
+Use `--read-only` (or `-r`) on the `serve` command to prevent any write operations. This can also be set via the `APPLE_MAIL_READ_ONLY` environment variable.
+
+```bash
+apple-mail-mcp serve --read-only
+```
+
+Or via environment variable:
+
+```bash
+export APPLE_MAIL_READ_ONLY=true
+apple-mail-mcp serve
 ```
 
 ## Index Location

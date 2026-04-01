@@ -1,6 +1,6 @@
 # Tools
 
-Apple Mail MCP provides **6 MCP tools** — a consolidated API designed for AI assistants.
+Apple Mail MCP provides **8 MCP tools** — a consolidated API designed for AI assistants.
 
 ## Overview
 
@@ -10,8 +10,10 @@ Apple Mail MCP provides **6 MCP tools** — a consolidated API designed for AI a
 | `list_mailboxes()` | List mailboxes | `account?` |
 | `get_emails()` | Get emails with filtering | `account?`, `mailbox?`, `filter?`, `limit?` |
 | `get_email()` | Get single email with content + attachments | `message_id`, `account?`, `mailbox?` |
-| `search()` | Search emails | `query`, `account?`, `mailbox?`, `scope?`, `limit?`, `exclude_mailboxes?` |
-| `get_attachment()` | Extract attachment content | `message_id`, `filename`, `account?`, `mailbox?` |
+| `search()` | Search emails | `query`, `account?`, `mailbox?`, `scope?`, `limit?`, `exclude_mailboxes?`, `before?`, `after?`, `highlight?` |
+| `get_email_links()` | Extract links from an email | `message_id`, `account?`, `mailbox?` |
+| `get_email_attachment()` | Extract attachment content | `message_id`, `filename`, `account?`, `mailbox?` |
+| `get_attachment()` | *Deprecated* — use `get_email_attachment()` | `message_id`, `filename`, `account?`, `mailbox?` |
 
 ---
 
@@ -137,6 +139,9 @@ Search emails with automatic FTS5 optimization. Uses the FTS5 index for fast sea
 | `scope` | `string?` | `all` | Search scope (see below) |
 | `limit` | `int?` | `20` | Max results |
 | `exclude_mailboxes` | `list?` | `["Drafts"]` | Mailboxes to exclude (FTS/attachment scopes only) |
+| `before` | `string?` | `None` | Only return emails before this date (YYYY-MM-DD) |
+| `after` | `string?` | `None` | Only return emails after this date (YYYY-MM-DD) |
+| `highlight` | `bool?` | `False` | Highlight matching terms in results |
 
 **Scopes:**
 
@@ -165,11 +170,38 @@ search("pdf", scope="attachments")
 
 search("deadline", limit=5)
 # Top 5 results
+
+search("invoice", after="2025-01-01", before="2025-12-31")
+# Emails from 2025 only
+
+search("meeting", highlight=True)
+# Results with matching terms highlighted
 ```
 
 ---
 
-## `get_attachment()`
+## `get_email_links()`
+
+Extract all links (URLs) from an email's body content.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `message_id` | `int` | *required* | Email ID |
+| `account` | `string?` | `None` | Account (helps disambiguate) |
+| `mailbox` | `string?` | `None` | Mailbox (helps disambiguate) |
+
+**Returns:** List of links found in the email body.
+
+```python
+get_email_links(12345)
+# → [{"url": "https://example.com/invoice", "text": "View Invoice"}, ...]
+```
+
+---
+
+## `get_email_attachment()`
 
 Extract attachment content from an email. Parses the raw `.emlx` MIME structure, so it works for all attachment types including inline images.
 
@@ -185,10 +217,19 @@ Extract attachment content from an email. Parses the raw `.emlx` MIME structure,
 **Returns:** Dictionary with `filename`, `mime_type`, `size`, and `content_base64`. If the attachment exceeds 10 MB, returns metadata only with `truncated: true`.
 
 ```python
-get_attachment(12345, "invoice.pdf")
+get_email_attachment(12345, "invoice.pdf")
 # → {"filename": "invoice.pdf", "mime_type": "application/pdf",
 #    "size": 52340, "content_base64": "JVBERi0x..."}
 ```
 
 !!! note
-    Requires the FTS5 search index. If upgrading from v0.1.2, run `apple-mail-mcp rebuild` to populate attachment metadata.
+    Requires the FTS5 search index. If upgrading from v0.1.x, run `apple-mail-mcp rebuild` to populate attachment metadata.
+
+---
+
+## `get_attachment()` *(Deprecated)*
+
+!!! warning
+    `get_attachment()` is deprecated since v0.2.0. Use `get_email_attachment()` instead. The old name still works but may be removed in a future release.
+
+Identical to `get_email_attachment()`. See above for parameters and return value.
