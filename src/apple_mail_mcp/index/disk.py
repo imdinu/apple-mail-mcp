@@ -42,7 +42,45 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 # Mail.app version folder (V10 for macOS Catalina+)
+# Deprecated: use find_mail_directory() which auto-detects.
 MAIL_VERSION = "V10"
+
+# Cached result of find_mail_directory()
+_cached_mail_dir: Path | None = None
+
+
+def _detect_mail_version() -> str:
+    """Auto-detect the highest Mail.app version directory.
+
+    Scans ``~/Library/Mail/`` for directories matching ``V<number>``
+    and returns the highest version (e.g. ``"V11"`` if V10 and V11
+    both exist).  Falls back to ``"V10"`` if none are found.
+
+    Returns:
+        Version string like ``"V10"`` or ``"V11"``.
+    """
+    mail_base = Path.home() / "Library" / "Mail"
+    if not mail_base.is_dir():
+        return MAIL_VERSION
+
+    versions: list[tuple[int, str]] = []
+    try:
+        for entry in mail_base.iterdir():
+            if (
+                entry.is_dir()
+                and entry.name.startswith("V")
+                and entry.name[1:].isdigit()
+            ):
+                versions.append((int(entry.name[1:]), entry.name))
+    except PermissionError:
+        return MAIL_VERSION
+
+    if not versions:
+        return MAIL_VERSION
+
+    # Return highest version
+    versions.sort()
+    return versions[-1][1]
 
 
 def extract_message_id(path: Path) -> int:
@@ -100,14 +138,23 @@ def find_mail_directory() -> Path:
     """
     Find the Apple Mail data directory.
 
+    Auto-detects the highest ``V*`` version directory under
+    ``~/Library/Mail/``.  The result is cached for the lifetime
+    of the process.
+
     Returns:
-        Path to ~/Library/Mail/V10/
+        Path to the Mail data directory (e.g. ``~/Library/Mail/V10/``)
 
     Raises:
         FileNotFoundError: If directory doesn't exist
         PermissionError: If Full Disk Access is not granted
     """
-    mail_dir = Path.home() / "Library" / "Mail" / MAIL_VERSION
+    global _cached_mail_dir
+    if _cached_mail_dir is not None:
+        return _cached_mail_dir
+
+    version = _detect_mail_version()
+    mail_dir = Path.home() / "Library" / "Mail" / version
 
     if not mail_dir.exists():
         raise FileNotFoundError(
@@ -122,9 +169,11 @@ def find_mail_directory() -> Path:
         raise PermissionError(
             f"Cannot access {mail_dir}\n"
             "Grant Full Disk Access to Terminal:\n"
-            "  System Settings → Privacy & Security → Full Disk Access"
+            "  System Settings → Privacy & Security → "
+            "Full Disk Access"
         ) from e
 
+    _cached_mail_dir = mail_dir
     return mail_dir
 
 

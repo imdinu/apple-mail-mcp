@@ -157,6 +157,35 @@ The file watcher monitors `~/Library/Mail/V10/` for:
 - Deleted `.emlx` files → remove from index
 - Moved `.emlx` files → update path in index
 
+## Date-Range Filtering
+
+Use the `before` and `after` parameters to restrict search results to a date range. Both accept dates in `YYYY-MM-DD` format.
+
+```python
+# Emails from Q1 2025
+search("invoice", after="2025-01-01", before="2025-03-31")
+
+# Emails received after a specific date
+search("shipping confirmation", after="2025-06-01")
+
+# Emails received before a specific date
+search("contract", before="2024-12-31")
+```
+
+Date filtering is applied at the SQL level when using the FTS5 index, so it does not impact search performance.
+
+## Highlighted Results
+
+Set `highlight=True` to have matching terms wrapped in highlight markers in the result snippets. This is useful for displaying search results in a UI or for quickly identifying why a result matched.
+
+```python
+search("quarterly report", highlight=True)
+# Results include highlighted snippets, e.g.:
+# "Please find the **quarterly report** attached..."
+```
+
+When highlighting is enabled, the `content_snippet` field in each result contains the matched terms wrapped in markers.
+
 ## Performance
 
 ### Search Speed

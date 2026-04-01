@@ -9,7 +9,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![CI](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml/badge.svg)](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml)
 
-The only Apple Mail MCP server with **full-text email search**. Reliable on large mailboxes where other servers timeout — with 6 tools for reading, searching, and extracting email content.
+The only Apple Mail MCP server with **full-text email search**. Reliable on large mailboxes where other servers timeout — with 8 tools for reading, searching, and extracting email content.
 
 **[Read the docs](https://imdinu.github.io/apple-mail-mcp/)** for the full guide.
 
@@ -48,8 +48,10 @@ apple-mail-mcp index --verbose
 | `list_mailboxes(account?)` | List mailboxes |
 | `get_emails(filter?, limit?)` | Get emails — all, unread, flagged, today, last_7_days |
 | `get_email(message_id)` | Get single email with full content + attachments |
-| `search(query, scope?)` | Search — all, subject, sender, body, attachments |
-| `get_attachment(message_id, filename)` | Extract attachment to disk, or extract links |
+| `search(query, scope?, before?, after?, highlight?)` | Search — all, subject, sender, body, attachments |
+| `get_email_links(message_id)` | Extract links from an email |
+| `get_email_attachment(message_id, filename)` | Extract attachment content |
+| `get_attachment(message_id, filename)` | *Deprecated* — use `get_email_attachment()` |
 
 ## Performance
 
@@ -71,6 +73,7 @@ Tested against [6 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | Index location |
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails indexed per mailbox |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Mailboxes to skip in search |
+| `APPLE_MAIL_READ_ONLY` | `false` | Disable write operations |
 
 ```json
 {

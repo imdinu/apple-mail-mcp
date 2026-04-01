@@ -423,6 +423,10 @@ class IndexManager:
         limit: int = 20,
         exclude_mailboxes: list[str] | None = None,
         column: str | None = None,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        highlight: bool = False,
     ) -> list[SearchResult]:
         """
         Search indexed emails using FTS5.
@@ -435,13 +439,17 @@ class IndexManager:
             exclude_mailboxes: Mailboxes to exclude from results
             column: Optional FTS5 column filter ("subject", "sender",
                 or "content")
+            before: Exclude emails on/after this date (YYYY-MM-DD)
+            after: Include emails on/after this date (YYYY-MM-DD)
+            highlight: Use FTS5 highlight/snippet for results
 
         Returns:
             List of SearchResult ordered by relevance (BM25 score)
         """
-        from .search import search_fts
+        from .search import search_fts, search_fts_highlight
 
-        return search_fts(
+        search_fn = search_fts_highlight if highlight else search_fts
+        return search_fn(
             self._get_conn(),
             query,
             account=account,
@@ -449,6 +457,8 @@ class IndexManager:
             limit=limit,
             column=column,
             exclude_mailboxes=exclude_mailboxes,
+            before=before,
+            after=after,
         )
 
     def rebuild(
@@ -604,6 +614,9 @@ class IndexManager:
         mailbox: str | None = None,
         limit: int = 20,
         exclude_mailboxes: list[str] | None = None,
+        *,
+        before: str | None = None,
+        after: str | None = None,
     ) -> list[dict]:
         """Search attachments by filename using SQL LIKE.
 
@@ -613,6 +626,8 @@ class IndexManager:
             mailbox: Optional mailbox filter
             limit: Maximum results
             exclude_mailboxes: Mailboxes to exclude from results
+            before: Exclude emails on/after this date (YYYY-MM-DD)
+            after: Include emails on/after this date (YYYY-MM-DD)
 
         Returns:
             List of dicts with message_id, account, mailbox,
@@ -627,6 +642,8 @@ class IndexManager:
             mailbox=mailbox,
             limit=limit,
             exclude_mailboxes=exclude_mailboxes,
+            before=before,
+            after=after,
         )
 
     def get_email_attachments(

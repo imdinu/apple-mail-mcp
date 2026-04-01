@@ -122,9 +122,12 @@ def add_account_mailbox_filter(
     mailbox: str | None,
     table_alias: str = "e",
     exclude_mailboxes: list[str] | None = None,
+    *,
+    before: str | None = None,
+    after: str | None = None,
 ) -> str:
     """
-    Add account/mailbox WHERE clauses to a SQL query.
+    Add account/mailbox/date WHERE clauses to a SQL query.
 
     This helper reduces repetition when building filtered queries.
     Modifies params in-place and returns the updated SQL string.
@@ -136,6 +139,8 @@ def add_account_mailbox_filter(
         mailbox: Optional mailbox filter
         table_alias: Table alias prefix (default: "e")
         exclude_mailboxes: Optional list of mailboxes to exclude
+        before: Exclude emails on/after this date (YYYY-MM-DD)
+        after: Include emails on/after this date (YYYY-MM-DD)
 
     Returns:
         Updated SQL string with added WHERE clauses
@@ -144,12 +149,18 @@ def add_account_mailbox_filter(
         sql += f" AND {table_alias}.account = ?"
         params.append(account)
     if mailbox:
-        sql += f" AND {table_alias}.mailbox = ?"
+        sql += f" AND LOWER({table_alias}.mailbox) = LOWER(?)"
         params.append(mailbox)
     if exclude_mailboxes:
-        placeholders = ", ".join("?" for _ in exclude_mailboxes)
-        sql += f" AND {table_alias}.mailbox NOT IN ({placeholders})"
+        placeholders = ", ".join("LOWER(?)" for _ in exclude_mailboxes)
+        sql += f" AND LOWER({table_alias}.mailbox) NOT IN ({placeholders})"
         params.extend(exclude_mailboxes)
+    if after:
+        sql += f" AND {table_alias}.date_received >= ?"
+        params.append(after)
+    if before:
+        sql += f" AND {table_alias}.date_received < ?"
+        params.append(before)
     return sql
 
 
@@ -225,6 +236,8 @@ def search_fts(
     *,
     column: str | None = None,
     exclude_mailboxes: list[str] | None = None,
+    before: str | None = None,
+    after: str | None = None,
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -239,6 +252,8 @@ def search_fts(
         column: Optional FTS5 column filter ("subject", "sender",
             or "content"). Prepended as ``column:query`` after
             sanitization so the prefix isn't escaped.
+        before: Exclude emails on/after this date (YYYY-MM-DD)
+        after: Include emails on/after this date (YYYY-MM-DD)
 
     Returns:
         List of SearchResult ordered by relevance (BM25 score)
@@ -285,6 +300,8 @@ def search_fts(
         account,
         mailbox,
         exclude_mailboxes=exclude_mailboxes,
+        before=before,
+        after=after,
     )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
@@ -322,6 +339,8 @@ def search_fts(
                 limit=limit,
                 column=column,
                 exclude_mailboxes=exclude_mailboxes,
+                before=before,
+                after=after,
                 _is_retry=True,
             )
         raise
@@ -333,12 +352,19 @@ def search_fts_highlight(
     account: str | None = None,
     mailbox: str | None = None,
     limit: int = 20,
+    *,
+    column: str | None = None,
+    exclude_mailboxes: list[str] | None = None,
+    before: str | None = None,
+    after: str | None = None,
+    _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
     Search with highlighted snippets showing match context.
 
-    Similar to search_fts but uses FTS5 highlight() function
-    to mark matched terms in the content.
+    Uses FTS5 ``highlight()`` and ``snippet()`` to wrap matched
+    terms in ``**`` markers.  Falls back to :func:`search_fts`
+    on any FTS5 error.
 
     Args:
         conn: Database connection
@@ -346,6 +372,10 @@ def search_fts_highlight(
         account: Optional account filter
         mailbox: Optional mailbox filter
         limit: Maximum results
+        column: Optional FTS5 column filter
+        exclude_mailboxes: Mailboxes to exclude
+        before: Exclude emails on/after this date (YYYY-MM-DD)
+        after: Include emails on/after this date (YYYY-MM-DD)
 
     Returns:
         List of SearchResult with highlighted content_snippet
@@ -353,11 +383,14 @@ def search_fts_highlight(
     if not query or not query.strip():
         return []
 
-    safe_query = sanitize_fts_query(query)
+    safe_query = query if _is_retry else sanitize_fts_query(query)
+
+    if column and column in ("subject", "sender", "content"):
+        safe_query = f"{column}:({safe_query})"
+
     if not safe_query:
         return []
 
-    # Use highlight() to mark matches with ** markers
     sql = """
         SELECT
             e.message_id,
@@ -365,7 +398,8 @@ def search_fts_highlight(
             e.mailbox,
             highlight(emails_fts, 0, '**', '**') as subject_hl,
             e.sender,
-            snippet(emails_fts, 2, '**', '**', '...', 32) as content_snippet,
+            snippet(emails_fts, 2, '**', '**', '...', 32)
+                as content_snippet,
             e.date_received,
             -bm25(emails_fts, 1.0, 0.5, 2.0) as score
         FROM emails_fts
@@ -374,7 +408,15 @@ def search_fts_highlight(
     """
 
     params: list = [safe_query]
-    sql = add_account_mailbox_filter(sql, params, account, mailbox)
+    sql = add_account_mailbox_filter(
+        sql,
+        params,
+        account,
+        mailbox,
+        exclude_mailboxes=exclude_mailboxes,
+        before=before,
+        after=after,
+    )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
 
@@ -385,22 +427,46 @@ def search_fts_highlight(
         for row in cursor:
             results.append(
                 SearchResult(
-                    id=row[0],
-                    account=row[1],
-                    mailbox=row[2],
-                    subject=row[3] or "",
-                    sender=row[4] or "",
-                    content_snippet=row[5] or "",
-                    date_received=row[6] or "",
-                    score=round(row[7], 3),
+                    id=row["message_id"],
+                    account=row["account"],
+                    mailbox=row["mailbox"],
+                    subject=row["subject_hl"] or "",
+                    sender=row["sender"] or "",
+                    content_snippet=row["content_snippet"] or "",
+                    date_received=row["date_received"] or "",
+                    score=round(row["score"], 3),
                 )
             )
 
         return results
 
-    except sqlite3.OperationalError:
-        # Fall back to basic search
-        return search_fts(conn, query, account, mailbox, limit)
+    except sqlite3.OperationalError as e:
+        if "fts5: syntax error" in str(e).lower() and not _is_retry:
+            escaped = _escape_all_special(query)
+            return search_fts_highlight(
+                conn,
+                escaped,
+                account=account,
+                mailbox=mailbox,
+                limit=limit,
+                column=column,
+                exclude_mailboxes=exclude_mailboxes,
+                before=before,
+                after=after,
+                _is_retry=True,
+            )
+        # Fall back to basic search on other errors
+        return search_fts(
+            conn,
+            query,
+            account,
+            mailbox,
+            limit,
+            column=column,
+            exclude_mailboxes=exclude_mailboxes,
+            before=before,
+            after=after,
+        )
 
 
 def count_matches(
@@ -454,6 +520,9 @@ def search_attachments(
     mailbox: str | None = None,
     limit: int = 20,
     exclude_mailboxes: list[str] | None = None,
+    *,
+    before: str | None = None,
+    after: str | None = None,
 ) -> list[dict]:
     """Search attachments by filename using SQL LIKE.
 
@@ -466,6 +535,8 @@ def search_attachments(
         mailbox: Optional mailbox filter
         limit: Maximum results
         exclude_mailboxes: Mailboxes to exclude
+        before: Exclude emails on/after this date (YYYY-MM-DD)
+        after: Include emails on/after this date (YYYY-MM-DD)
 
     Returns:
         List of dicts with message_id, account, mailbox,
@@ -482,7 +553,13 @@ def search_attachments(
     """
     params: list = [like_pattern]
     sql = add_account_mailbox_filter(
-        sql, params, account, mailbox, exclude_mailboxes=exclude_mailboxes
+        sql,
+        params,
+        account,
+        mailbox,
+        exclude_mailboxes=exclude_mailboxes,
+        before=before,
+        after=after,
     )
     sql += " ORDER BY e.date_received DESC LIMIT ?"
     params.append(limit)

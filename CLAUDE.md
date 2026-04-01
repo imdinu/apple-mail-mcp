@@ -10,7 +10,7 @@ The only Apple Mail MCP server with full-text email search. Reliable on large ma
 src/apple_mail_mcp/
 ├── __init__.py         # CLI entry point, exports main()
 ├── cli.py              # CLI commands (index, status, rebuild, serve)
-├── server.py           # FastMCP server with 6 MCP tools
+├── server.py           # FastMCP server with 8 MCP tools
 ├── config.py           # Environment variable configuration
 ├── builders.py         # QueryBuilder, AccountsQueryBuilder
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
@@ -27,7 +27,7 @@ src/apple_mail_mcp/
     └── mail_core.js    # Shared JXA utilities (MailCore object)
 ```
 
-## MCP Tools (6 total)
+## MCP Tools (8 total)
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
@@ -35,8 +35,10 @@ src/apple_mail_mcp/
 | `list_mailboxes(account?)` | List mailboxes | account (optional) |
 | `get_emails(...)` | Unified listing | filter: all/unread/flagged/today/last_7_days |
 | `get_email(id)` | Full email content + attachments | message_id |
-| `search(query, ...)` | Unified search | scope: all/subject/sender/body/attachments |
-| `get_attachment(id, filename)` | Extract attachment content | message_id, filename |
+| `search(query, ...)` | Unified search | scope, before, after, highlight |
+| `get_email_links(id)` | Extract links from an email | message_id |
+| `get_email_attachment(id, filename)` | Extract attachment content | message_id, filename |
+| `get_attachment(id, filename)` | *Deprecated* — use `get_email_attachment()` | message_id, filename |
 
 ### get_emails() Filters
 
@@ -56,6 +58,8 @@ search("john@", scope="sender")            # Sender only (JXA)
 search("meeting", scope="subject")         # Subject only (JXA)
 search("deadline", scope="body")           # Body only (FTS5)
 search("pdf", scope="attachments")         # By attachment filename (SQL)
+search("invoice", after="2025-01-01")      # Date-range filtering
+search("meeting", highlight=True)          # Highlighted results
 ```
 
 ## Architecture
@@ -87,7 +91,7 @@ Startup Sync Flow:
 ### Layer Separation
 
 1. **cli.py** - CLI entry point, commands for indexing
-2. **server.py** - 6 MCP tools, uses builders and index
+2. **server.py** - 8 MCP tools, uses builders and index
 3. **builders.py** - Constructs JXA scripts from Python, type-safe
 4. **executor.py** - Runs scripts via osascript, handles JSON parsing
 5. **index/** - FTS5 search index with disk-based sync
@@ -320,12 +324,20 @@ MailCore.formatDate(date)  // ISO string or null
 ## CLI Commands
 
 ```bash
-apple-mail-mcp            # Run MCP server (default)
-apple-mail-mcp serve      # Run MCP server explicitly
-apple-mail-mcp --watch    # Run with real-time index updates
-apple-mail-mcp index      # Build search index from disk
-apple-mail-mcp status     # Show index statistics
-apple-mail-mcp rebuild    # Force rebuild index
+apple-mail-mcp              # Run MCP server (default)
+apple-mail-mcp serve        # Run MCP server explicitly
+apple-mail-mcp serve -r     # Run in read-only mode
+apple-mail-mcp --watch      # Run with real-time index updates
+apple-mail-mcp index        # Build search index from disk
+apple-mail-mcp status       # Show index statistics
+apple-mail-mcp rebuild      # Force rebuild index
+apple-mail-mcp search       # Search emails (JSON output)
+apple-mail-mcp read         # Read a single email (JSON output)
+apple-mail-mcp emails       # List emails (JSON output)
+apple-mail-mcp accounts     # List accounts (JSON output)
+apple-mail-mcp mailboxes    # List mailboxes (JSON output)
+apple-mail-mcp extract      # Extract attachment (JSON output)
+apple-mail-mcp integrate claude  # Generate a Claude Code skill file
 ```
 
 ## Testing
@@ -438,6 +450,7 @@ for (let i = 0; i < data.sender.length; i++) {
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails per mailbox |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before refresh |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip |
+| `APPLE_MAIL_READ_ONLY` | `false` | Disable write operations |
 
 ## Benchmarks
 
@@ -471,7 +484,7 @@ Chart PNGs are committed (they ARE the results). JSON and HTML in `benchmarks/re
 ## Known Limitations
 
 1. **macOS Only** - Requires Apple Mail and `osascript`
-2. **Mail Version** - Hardcoded to `~/Library/Mail/V10/` (macOS Ventura+)
+2. **Mail Version** - Auto-detects highest `~/Library/Mail/V*/` directory (dynamic V10+ detection)
 3. **Full Disk Access** - Required for disk-based indexing and sync
 
 ## Security

@@ -5,21 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.8] - Unreleased
+## [0.2.0] - Unreleased
 
-### Fixed
+### Added
+
+- **Date-range filtering for search** — new `before` and `after` parameters (YYYY-MM-DD) on `search()`. Filter results by date across all scopes including attachments. (#9)
+- **Highlighted search results** — new `highlight` parameter on `search()`. When enabled, matched terms are wrapped in `**markers**` in subject and content_snippet using FTS5 `highlight()` and `snippet()`. (#11)
+- **`get_email_links()` tool** — extracts hyperlinks from an email's HTML content. Replaces the links mode of `get_attachment()`. (#55)
+- **`get_email_attachment()` tool** — extracts a named file attachment and saves to disk. Replaces the attachment mode of `get_attachment()`. (#55)
+- **CLI wrappers** — all MCP tools now accessible as CLI commands: `search`, `read`, `emails`, `accounts`, `mailboxes`, `extract`. Output JSON to stdout. (#61)
+- **Skill generator** — `apple-mail-mcp integrate claude` generates a Claude Code skill file for CLI-based email access. (#62)
+- **`--read-only` server flag** — `apple-mail-mcp serve --read-only` (or `APPLE_MAIL_READ_ONLY=true`) prepares for v0.3.0 write operations. (#63)
+- **Dynamic Mail version detection** — auto-detects the highest `V*` directory under `~/Library/Mail/` instead of hardcoding `V10`. (#57)
+
+### Changed
+
+- **`get_attachment()` deprecated** — still registered for backwards compatibility, but delegates to `get_email_links()` or `get_email_attachment()`. Will be removed in v0.3.0.
+
+### Fixed (from v0.1.8)
 
 - **Watcher crash on file add** — `parse_emlx()` exceptions beyond `OSError`/`ValueError`/`UnicodeDecodeError` (e.g. malformed plist, missing headers) no longer kill the watcher thread. The watcher now skips unparseable files and continues processing.
 - **Attachment cache leak** — `_cleanup_old_attachments()` is now called automatically when extracting attachments, preventing unbounded disk usage from cached files.
 - **Attachment cache permissions** — cache directory is now created with `0o700` permissions to protect sensitive email attachment content.
 - **Empty search error messages** — search index errors (corrupt DB, SQLite issues) now return actionable error messages instead of empty strings. Suggests `apple-mail-mcp rebuild` when the index is broken.
 - **Misleading get_email timeout message** — when `get_email` times out, the error now checks whether account/mailbox were already provided and gives context-appropriate advice instead of always saying "Provide account/mailbox".
-
-### Changed
-
-- **Renamed `this_week` filter to `last_7_days`** — the filter returns a rolling 7-day window, not the current calendar week. `this_week` is still accepted as an alias for backwards compatibility. (#49)
-- **Updated patrickfreyer benchmark config** — `search_email_content` tool renamed to `search_emails` with new parameter names to match their latest API.
-- **Added `rusty_apple_mail_mcp` to benchmarks** — Rust-based competitor that reads Apple's Envelope Index directly (no JXA). First non-AppleScript competitor in the benchmark suite.
+- **Renamed `this_week` filter to `last_7_days`** — `this_week` kept as alias for backwards compatibility. (#49)
+- **`search_fts_highlight()` bugs** — fixed missing account/mailbox/exclude_mailboxes filters, integer row indexing, and missing FTS5 retry logic.
+- **Case-sensitive mailbox filtering** — `search(mailbox="INBOX")` now matches `Inbox`, `inbox`, etc. Previously returned zero results on case mismatch. (#67)
+- **Updated patrickfreyer benchmark config** and added `rusty_apple_mail_mcp` to benchmarks.
 
 ## [0.1.7] - 2026-03-11
 
@@ -116,7 +129,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disk-based sync for index building
 - Real-time file watcher for index updates
 
-[0.1.8]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.7...HEAD
+[0.2.0]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.4...v0.1.5
