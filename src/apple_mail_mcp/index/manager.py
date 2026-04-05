@@ -54,6 +54,8 @@ class IndexStats:
     db_size_mb: float
     staleness_hours: float | None
     capped_mailboxes: int = 0
+    attachment_count: int = 0
+    disk_email_count: int | None = None
 
 
 # SearchResult is imported from .search to avoid duplication
@@ -167,6 +169,20 @@ class IndexManager:
         )
         capped_mailboxes = cursor.fetchone()[0]
 
+        # Attachment count
+        cursor = conn.execute("SELECT COUNT(*) FROM attachments")
+        attachment_count = cursor.fetchone()[0]
+
+        # Disk email count (best-effort, skip if no FDA)
+        disk_email_count = None
+        try:
+            from .disk import find_mail_directory, get_disk_inventory
+
+            mail_dir = find_mail_directory()
+            disk_email_count = len(get_disk_inventory(mail_dir))
+        except (FileNotFoundError, PermissionError):
+            pass
+
         return IndexStats(
             email_count=email_count,
             mailbox_count=mailbox_count,
@@ -174,6 +190,8 @@ class IndexManager:
             db_size_mb=db_size_mb,
             staleness_hours=staleness_hours,
             capped_mailboxes=capped_mailboxes,
+            attachment_count=attachment_count,
+            disk_email_count=disk_email_count,
         )
 
     def is_stale(self) -> bool:
@@ -426,6 +444,7 @@ class IndexManager:
         *,
         before: str | None = None,
         after: str | None = None,
+        offset: int = 0,
         highlight: bool = False,
     ) -> list[SearchResult]:
         """
@@ -441,6 +460,7 @@ class IndexManager:
                 or "content")
             before: Exclude emails on/after this date (YYYY-MM-DD)
             after: Include emails on/after this date (YYYY-MM-DD)
+            offset: Skip first N results (default: 0)
             highlight: Use FTS5 highlight/snippet for results
 
         Returns:
@@ -459,6 +479,7 @@ class IndexManager:
             exclude_mailboxes=exclude_mailboxes,
             before=before,
             after=after,
+            offset=offset,
         )
 
     def rebuild(
@@ -617,6 +638,7 @@ class IndexManager:
         *,
         before: str | None = None,
         after: str | None = None,
+        offset: int = 0,
     ) -> list[dict]:
         """Search attachments by filename using SQL LIKE.
 
@@ -628,6 +650,7 @@ class IndexManager:
             exclude_mailboxes: Mailboxes to exclude from results
             before: Exclude emails on/after this date (YYYY-MM-DD)
             after: Include emails on/after this date (YYYY-MM-DD)
+            offset: Skip first N results (default: 0)
 
         Returns:
             List of dicts with message_id, account, mailbox,
@@ -644,6 +667,7 @@ class IndexManager:
             exclude_mailboxes=exclude_mailboxes,
             before=before,
             after=after,
+            offset=offset,
         )
 
     def get_email_attachments(

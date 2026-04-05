@@ -238,6 +238,7 @@ def search_fts(
     exclude_mailboxes: list[str] | None = None,
     before: str | None = None,
     after: str | None = None,
+    offset: int = 0,
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -305,6 +306,9 @@ def search_fts(
     )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
+    if offset:
+        sql += " OFFSET ?"
+        params.append(offset)
 
     try:
         cursor = conn.execute(sql, params)
@@ -341,6 +345,7 @@ def search_fts(
                 exclude_mailboxes=exclude_mailboxes,
                 before=before,
                 after=after,
+                offset=offset,
                 _is_retry=True,
             )
         raise
@@ -357,6 +362,7 @@ def search_fts_highlight(
     exclude_mailboxes: list[str] | None = None,
     before: str | None = None,
     after: str | None = None,
+    offset: int = 0,
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -419,6 +425,9 @@ def search_fts_highlight(
     )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
+    if offset:
+        sql += " OFFSET ?"
+        params.append(offset)
 
     try:
         cursor = conn.execute(sql, params)
@@ -453,6 +462,7 @@ def search_fts_highlight(
                 exclude_mailboxes=exclude_mailboxes,
                 before=before,
                 after=after,
+                offset=offset,
                 _is_retry=True,
             )
         # Fall back to basic search on other errors
@@ -466,6 +476,7 @@ def search_fts_highlight(
             exclude_mailboxes=exclude_mailboxes,
             before=before,
             after=after,
+            offset=offset,
         )
 
 
@@ -523,6 +534,7 @@ def search_attachments(
     *,
     before: str | None = None,
     after: str | None = None,
+    offset: int = 0,
 ) -> list[dict]:
     """Search attachments by filename using SQL LIKE.
 
@@ -563,6 +575,9 @@ def search_attachments(
     )
     sql += " ORDER BY e.date_received DESC LIMIT ?"
     params.append(limit)
+    if offset:
+        sql += " OFFSET ?"
+        params.append(offset)
 
     cursor = conn.execute(sql, params)
     return [

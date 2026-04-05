@@ -1,6 +1,6 @@
 [project]
 name = "apple-mail-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Apple Mail MCP server with full-text email search. The only one that works reliably on large mailboxes."
 readme = "README.md"
 license = "GPL-3.0-or-later"

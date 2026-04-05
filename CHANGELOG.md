@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - Unreleased
+## [0.2.1] - Unreleased
+
+### Added
+
+- **Search pagination** — new `offset` parameter on `search()` for paginated results. Use with `limit` to page through large result sets. (#8)
+- **Status command completeness** — `apple-mail-mcp status` now reports attachment count, disk email count, and index coverage percentage. (#43)
+
+### Changed
+
+- **Strategy 3 JXA moved to builders.py** — the inline JXA script for iterating all mailboxes is now a `GetEmailBuilder` class, consistent with the existing builder pattern. (#56)
+
+### Fixed
+
+- **Case-insensitive attachment filename matching** — `get_email_attachment` now matches filenames regardless of case or whitespace, fixing failures when LLM clients re-serialize filenames with minor differences. (#71)
+
+## [0.2.0] - 2026-04-01
 
 ### Added
 
@@ -129,7 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disk-based sync for index building
 - Real-time file watcher for index updates
 
-[0.2.0]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.8...HEAD
+[0.2.1]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.5...v0.1.6

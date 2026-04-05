@@ -280,6 +280,17 @@ def status(
     print("=" * 40)
     print(f"Location:     {get_index_path()}")
     print(f"Emails:       {stats.email_count:,}")
+    if stats.disk_email_count is not None:
+        coverage = (
+            stats.email_count / stats.disk_email_count * 100
+            if stats.disk_email_count > 0
+            else 0
+        )
+        print(
+            f"On disk:      {stats.disk_email_count:,}"
+            f" ({coverage:.0f}% indexed)"
+        )
+    print(f"Attachments:  {stats.attachment_count:,}")
     print(f"Mailboxes:    {stats.mailbox_count}")
     print(f"Database:     {_format_size(stats.db_size_mb)}")
     print()
@@ -535,6 +546,10 @@ def cli_search(
         int,
         cyclopts.Parameter(name=["--limit", "-n"], help="Max results"),
     ] = 20,
+    offset: Annotated[
+        int,
+        cyclopts.Parameter(name="--offset", help="Skip first N results"),
+    ] = 0,
     before: Annotated[
         str | None,
         cyclopts.Parameter(help="Before date (YYYY-MM-DD)"),
@@ -559,6 +574,7 @@ def cli_search(
                 mailbox=mailbox,
                 scope=scope,
                 limit=limit,
+                offset=offset,
                 before=before,
                 after=after,
                 highlight=highlight,

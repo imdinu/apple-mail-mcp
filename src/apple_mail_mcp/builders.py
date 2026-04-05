@@ -241,3 +241,66 @@ class AccountsQueryBuilder:
 const account = MailCore.getAccount({account_json});
 JSON.stringify(MailCore.listMailboxes(account));
 """
+
+
+@dataclass
+class GetEmailBuilder:
+    """Builder for Strategy 3: find a single email by iterating mailboxes.
+
+    Generates a JXA script that iterates up to ``max_mailboxes``
+    mailboxes looking for an email by ID, then returns its full
+    content with attachments.
+    """
+
+    message_id: int
+    account: str | None = None
+    max_mailboxes: int = 50
+    attachment_js: str = ""
+
+    def build(self) -> str:
+        """Generate the JXA script string."""
+        acct_setup = (
+            f"const account = Mail.accounts.byName({json.dumps(self.account)});"
+            if self.account
+            else "const account = Mail.accounts[0];"
+        )
+        return f"""
+const targetId = {self.message_id};
+let msg = null;
+{acct_setup}
+
+const allMailboxes = account.mailboxes();
+const mbLimit = Math.min(allMailboxes.length, {self.max_mailboxes});
+for (let i = 0; i < mbLimit && !msg; i++) {{
+    try {{
+        const mb = allMailboxes[i];
+        const mbIds = mb.messages.id();
+        const mbIdx = mbIds.indexOf(targetId);
+        if (mbIdx !== -1) {{
+            msg = mb.messages[mbIdx];
+        }}
+    }} catch(e) {{
+        // Skip inaccessible mailboxes (Junk/Drafts -1728)
+    }}
+}}
+
+if (!msg) {{
+    throw new Error('Message not found with ID: ' + targetId);
+}}
+
+{self.attachment_js}
+
+JSON.stringify({{
+    id: msg.id(),
+    subject: msg.subject(),
+    sender: msg.sender(),
+    content: msg.content(),
+    date_received: MailCore.formatDate(msg.dateReceived()),
+    date_sent: MailCore.formatDate(msg.dateSent()),
+    read: msg.readStatus(),
+    flagged: msg.flaggedStatus(),
+    reply_to: msg.replyTo(),
+    message_id: msg.messageId(),
+    attachments: attachments
+}});
+"""

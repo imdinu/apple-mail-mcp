@@ -476,52 +476,14 @@ async def get_email(
 
     # Strategy 3: Iterate all mailboxes with per-mailbox error handling
     # Guarded with a timeout and mailbox limit to prevent runaway scans
-    acct_setup = (
-        f"const account = Mail.accounts.byName({json.dumps(resolved_account)});"
-        if resolved_account
-        else "const account = Mail.accounts[0];"
-    )
-    att_js = _build_attachment_js()
-    script = f"""
-const targetId = {message_id};
-let msg = null;
-{acct_setup}
+    from .builders import GetEmailBuilder
 
-const allMailboxes = account.mailboxes();
-const mbLimit = Math.min(allMailboxes.length, {STRATEGY3_MAX_MAILBOXES});
-for (let i = 0; i < mbLimit && !msg; i++) {{
-    try {{
-        const mb = allMailboxes[i];
-        const mbIds = mb.messages.id();
-        const mbIdx = mbIds.indexOf(targetId);
-        if (mbIdx !== -1) {{
-            msg = mb.messages[mbIdx];
-        }}
-    }} catch(e) {{
-        // Skip inaccessible mailboxes (Junk/Drafts -1728)
-    }}
-}}
-
-if (!msg) {{
-    throw new Error('Message not found with ID: ' + targetId);
-}}
-
-{att_js}
-
-JSON.stringify({{
-    id: msg.id(),
-    subject: msg.subject(),
-    sender: msg.sender(),
-    content: msg.content(),
-    date_received: MailCore.formatDate(msg.dateReceived()),
-    date_sent: MailCore.formatDate(msg.dateSent()),
-    read: msg.readStatus(),
-    flagged: msg.flaggedStatus(),
-    reply_to: msg.replyTo(),
-    message_id: msg.messageId(),
-    attachments: attachments
-}});
-"""
+    script = GetEmailBuilder(
+        message_id=message_id,
+        account=resolved_account,
+        max_mailboxes=STRATEGY3_MAX_MAILBOXES,
+        attachment_js=_build_attachment_js(),
+    ).build()
     try:
         result = await execute_with_core_async(
             script, timeout=STRATEGY3_TIMEOUT
@@ -726,6 +688,7 @@ async def search(
     mailbox: str | None = None,
     scope: Literal["all", "subject", "sender", "body", "attachments"] = "all",
     limit: int = 20,
+    offset: int = 0,
     exclude_mailboxes: list[str] | None = None,
     before: str | None = None,
     after: str | None = None,
@@ -756,6 +719,7 @@ async def search(
             - "body": Body text only
             - "attachments": Attachment filenames
         limit: Maximum results (default: 20)
+        offset: Skip first N results for pagination (default: 0)
         exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"])
         before: Exclude emails on/after this date (YYYY-MM-DD).
         after: Include only emails on/after this date (YYYY-MM-DD).
@@ -807,6 +771,7 @@ async def search(
             exclude_mailboxes=exclude_mailboxes,
             before=before,
             after=after,
+            offset=offset,
         )
 
         acct_map = _get_account_map()
@@ -868,6 +833,7 @@ async def search(
                     column=fts_column,
                     before=before,
                     after=after,
+                    offset=offset,
                     highlight=highlight,
                 )
             except Exception as e:
