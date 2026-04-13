@@ -120,6 +120,14 @@ class TestSanitizeFtsQuery:
     def test_strips_whitespace(self):
         assert sanitize_fts_query("  hello  ") == "hello"
 
+    def test_bare_wildcard_stripped(self):
+        """Bare * is invalid FTS5 — must be stripped."""
+        assert sanitize_fts_query("*") == ""
+
+    def test_bare_wildcard_in_multi_term(self):
+        """Bare * among other terms is dropped, rest preserved."""
+        assert sanitize_fts_query("hello * world") == "hello world"
+
 
 class TestEscapeAllSpecial:
     """Tests for aggressive last-resort quoting."""

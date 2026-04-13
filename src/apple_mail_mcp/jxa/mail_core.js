@@ -27,11 +27,86 @@ const MailCore = {
 
     /**
      * Get a mailbox from an account.
+     *
+     * Tries an exact match first, then falls back to
+     * case-insensitive matching and common aliases
+     * (e.g. "Sent Messages" → "Sent Items").
+     *
      * @param {Account} account - Mail account object
      * @param {string} name - Mailbox name (e.g., "INBOX", "Sent")
      * @returns {Mailbox} Mailbox object
      */
     getMailbox(account, name) {
+        // Fast path: exact match
+        try {
+            const mb = account.mailboxes.byName(name);
+            // Force evaluation to detect -1728 early
+            mb.name();
+            return mb;
+        } catch (_) {
+            // Fall through to fuzzy matching
+        }
+
+        // Alias groups: names that refer to the same logical
+        // mailbox across different providers/locales
+        const aliases = [
+            ["INBOX", "Inbox"],
+            [
+                "Sent",
+                "Sent Items",
+                "Sent Messages",
+                "Sent Mail",
+            ],
+            [
+                "Trash",
+                "Deleted Items",
+                "Deleted Messages",
+                "Bin",
+            ],
+            [
+                "Drafts",
+                "Draft",
+            ],
+            [
+                "Junk",
+                "Junk Email",
+                "Spam",
+            ],
+            [
+                "Archive",
+                "All Mail",
+            ],
+        ];
+
+        const lower = name.toLowerCase();
+        const names = account.mailboxes.name();
+
+        // Find which alias group the requested name belongs to
+        let candidates = null;
+        for (const group of aliases) {
+            if (group.some((a) => a.toLowerCase() === lower)) {
+                candidates = group;
+                break;
+            }
+        }
+
+        // Try alias group members first
+        if (candidates) {
+            for (const alt of candidates) {
+                if (names.some((n) => n === alt)) {
+                    return account.mailboxes.byName(alt);
+                }
+            }
+        }
+
+        // Last resort: case-insensitive match on actual names
+        for (const actual of names) {
+            if (actual.toLowerCase() === lower) {
+                return account.mailboxes.byName(actual);
+            }
+        }
+
+        // Nothing found — throw the standard error
         return account.mailboxes.byName(name);
     },
 

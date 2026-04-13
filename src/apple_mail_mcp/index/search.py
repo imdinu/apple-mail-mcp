@@ -82,6 +82,10 @@ def _sanitize_bare_token(token: str) -> str:
     if token in _FTS5_OPERATORS:
         return token
 
+    # Reject bare wildcards — FTS5 requires a prefix term
+    if token == "*":
+        return ""
+
     # Check for trailing wildcard
     has_wildcard = token.endswith("*") and len(token) > 1
     core = token[:-1] if has_wildcard else token
@@ -207,7 +211,9 @@ def sanitize_fts_query(query: str) -> str:
             # Already a balanced phrase — pass through
             sanitized_parts.append(token)
         else:
-            sanitized_parts.append(_sanitize_bare_token(token))
+            cleaned = _sanitize_bare_token(token)
+            if cleaned:
+                sanitized_parts.append(cleaned)
 
     return " ".join(sanitized_parts)
 
