@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - Unreleased
 
+### Changed
+
+- **`cyclopts` constraint relaxed to stable** — was `>=5.0.0a1` (pre-release), now `>=4.10`. Removes the need for `--prerelease=allow` in `claude_desktop_config.json` and other install configs. No API changes; the cyclopts surface used by `cli.py` is identical between 4.x and 5.x. (#75)
+
 ### Added
 
 - **Benchmark suite expansion** — added `sweetrb/apple-mail-mcp` (TypeScript, AppleScript-based, 40+ tools, npm) and `BastianZim/apple-mail-mcp` (Python, reads Envelope Index SQLite + `.emlx` directly, no AppleScript) to the competitor list. BastianZim is the closest head-to-head test of the indexed FTS5 vs. live `.emlx` scan body search comparison.

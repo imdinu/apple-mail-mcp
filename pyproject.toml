@@ -35,7 +35,7 @@ classifiers = [
 ]
 dependencies = [
     "fastmcp>=3.0.0b1,<4",
-    "cyclopts>=5.0.0a1",
+    "cyclopts>=4.10",
     "beautifulsoup4>=4.12",
 ]
 
