@@ -131,6 +131,40 @@ install_rusty() {
 }
 install_or_skip "rusty_apple_mail_mcp" install_rusty
 
+# ─── 8. sweetrb/apple-mail-mcp (TypeScript, npm) ─────────────
+install_sweetrb() {
+    if ! command -v npm &>/dev/null; then
+        warn "npm not found — skipping sweetrb"
+        return 1
+    fi
+    local dir="$CACHE_DIR/sweetrb-apple-mail-mcp"
+    if [ -d "$dir" ]; then
+        cd "$dir" && git pull --quiet
+    else
+        git clone --quiet --depth 1 \
+            https://github.com/sweetrb/apple-mail-mcp.git "$dir"
+    fi
+    cd "$dir"
+    npm install --silent 2>/dev/null
+    npm run build --silent 2>/dev/null
+}
+install_or_skip "sweetrb/apple-mail-mcp" install_sweetrb
+
+# ─── 9. BastianZim/apple-mail-mcp (Python, SQLite + .emlx) ───
+install_bastianzim() {
+    local dir="$CACHE_DIR/bastianzim-apple-mail-mcp"
+    if [ -d "$dir" ]; then
+        cd "$dir" && git pull --quiet
+    else
+        git clone --quiet --depth 1 \
+            https://github.com/BastianZim/apple-mail-mcp.git "$dir"
+    fi
+    cd "$dir"
+    python3 -m venv .venv 2>/dev/null || true
+    .venv/bin/pip install -q -e . 2>/dev/null
+}
+install_or_skip "BastianZim/apple-mail-mcp" install_bastianzim
+
 # ─── Summary ─────────────────────────────────────────────────
 echo ""
 log "Setup complete"
