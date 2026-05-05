@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] - Unreleased
+## [0.2.2] - 2026-04-13
+
+### Added
+
+- **Mailbox name alias resolution** — JXA `getMailbox()` now resolves common cross-provider aliases (e.g., `Sent Messages` → `Sent Items` on Outlook, `Trash` → `Deleted Items`) and falls back to case-insensitive matching. (#73)
+- **Configurable Strategy 3 timeout** — Strategy 3 (iterate-all-mailboxes fallback in `get_email`) now exposes `APPLE_MAIL_STRATEGY3_TIMEOUT` and `APPLE_MAIL_STRATEGY3_MAX_MAILBOXES` environment variables.
+
+### Fixed
+
+- **Bare wildcard `*` query** — no longer crashes FTS5 with a syntax error. (#72)
+
+### Tests
+
+- Added watcher tests for noisy events, nested mbox, V11 directory layouts, and pending-changes limits.
+- Added corrupt `.emlx` parser tests (bad byte counts, truncated content, empty files, missing newline). +10 tests; total 325 passing.
+
+## [0.2.1] - 2026-04-05
 
 ### Added
 
