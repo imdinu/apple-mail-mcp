@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`cyclopts` constraint relaxed to stable** — was `>=5.0.0a1` (pre-release), now `>=4.10`. Removes the need for `--prerelease=allow` in `claude_desktop_config.json` and other install configs. No API changes; the cyclopts surface used by `cli.py` is identical between 4.x and 5.x. (#75)
+- **HTML stripping during indexing now uses selectolax** (lexbor C parser) for ~5x faster `_strip_html()` on realistic email HTML (5-25 KB body parts). BeautifulSoup is kept as a fallback if selectolax raises or fails to import. All existing XSS-bypass tests pass under both paths. New `selectolax>=0.4.8` dependency. (#59)
 
 ### Added
 

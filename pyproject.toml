@@ -37,6 +37,7 @@ dependencies = [
     "fastmcp>=3.0.0b1,<4",
     "cyclopts>=4.10",
     "beautifulsoup4>=4.12",
+    "selectolax>=0.4.8",
 ]
 
 [project.optional-dependencies]
