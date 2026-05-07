@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`cyclopts` constraint relaxed to stable** — was `>=5.0.0a1` (pre-release), now `>=4.10`. Removes the need for `--prerelease=allow` in `claude_desktop_config.json` and other install configs. No API changes; the cyclopts surface used by `cli.py` is identical between 4.x and 5.x. (#75)
 - **HTML stripping during indexing now uses selectolax** (lexbor C parser) for ~5x faster `_strip_html()` on realistic email HTML (5-25 KB body parts). BeautifulSoup is kept as a fallback if selectolax raises or fails to import. All existing XSS-bypass tests pass under both paths. New `selectolax>=0.4.8` dependency. (#59)
+- **`sync_from_disk()` now uses a SQL temp table for diffing** instead of materializing the full disk and DB inventories as Python dicts. Memory at sync time stays flat (~2-3 MB delta) regardless of mailbox size; previously the dicts grew linearly to ~116 MB at 200K emails. Time cost is ~1.8x (sub-second even at 200K). Adds `iter_disk_inventory()` streaming variant of `get_disk_inventory()` in `disk.py`. All existing sync tests pass — behavior is preserved (added/deleted/moved counts, mtime sort, per-mailbox cap). (#60)
 
 ### Added
 

@@ -79,10 +79,18 @@ def sync_from_disk(
     Sync index with disk using state reconciliation.
 
     This is the PRIMARY sync method (replaces JXA-based sync).
-    Compares disk inventory with DB inventory to detect:
+    Compares disk inventory with DB inventory via SQL diffing on a
+    temp table to detect:
     - NEW: on disk, not in DB → parse & insert
     - DELETED: in DB, not on disk → remove from DB
     - MOVED: same ID, different path → update path
+
+    Memory: streams disk entries directly into a TEMP table rather than
+    materializing the full inventory in a Python dict. SQLite handles
+    the diffing on disk (or in WAL paging), so peak RAM is bounded by
+    the size of the result sets (NEW/DELETED/MOVED) rather than the
+    full mailbox inventory. This matters at 200K+ emails where the
+    Python-dict approach used 50-100 MB.
 
     Args:
         conn: Database connection
@@ -92,50 +100,104 @@ def sync_from_disk(
     Returns:
         SyncResult with counts of added/deleted/moved emails
     """
-    from .disk import get_disk_inventory, parse_emlx
+    from .disk import iter_disk_inventory, parse_emlx
 
     if progress_callback:
         progress_callback(0, None, "Scanning disk inventory...")
 
-    # Get current state from disk (fast - no content parsing)
-    disk_inv = get_disk_inventory(mail_dir)
+    # Build a TEMP table of (account, mailbox, msg_id, emlx_path) tuples
+    # by streaming the disk walk. WITHOUT ROWID + composite PK lets the
+    # diff queries below use the index for the JOINs.
+    conn.executescript("""
+        CREATE TEMP TABLE IF NOT EXISTS disk_inventory_temp (
+            account TEXT NOT NULL,
+            mailbox TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            emlx_path TEXT NOT NULL,
+            PRIMARY KEY(account, mailbox, message_id)
+        ) WITHOUT ROWID;
+        DELETE FROM disk_inventory_temp;
+    """)
+
+    INSERT_TEMP_SQL = (
+        "INSERT OR REPLACE INTO disk_inventory_temp "
+        "(account, mailbox, message_id, emlx_path) VALUES (?, ?, ?, ?)"
+    )
+    BATCH_SIZE = 1000
+    batch: list[tuple[str, str, int, str]] = []
+    inserted = 0
+    for entry in iter_disk_inventory(mail_dir):
+        batch.append(entry)
+        if len(batch) >= BATCH_SIZE:
+            conn.executemany(INSERT_TEMP_SQL, batch)
+            inserted += len(batch)
+            batch.clear()
+            if progress_callback and inserted % 5000 == 0:
+                progress_callback(
+                    inserted, None, f"Scanned {inserted} files..."
+                )
+    if batch:
+        conn.executemany(INSERT_TEMP_SQL, batch)
+        inserted += len(batch)
 
     if progress_callback:
-        progress_callback(0, None, "Loading database inventory...")
+        progress_callback(inserted, None, "Computing diff...")
 
-    # Get current state from database
-    db_inv = get_db_inventory(conn)
+    # NEW: in disk, not in DB
+    new_rows = list(
+        conn.execute("""
+            SELECT t.account, t.mailbox, t.message_id, t.emlx_path
+            FROM disk_inventory_temp t
+            LEFT JOIN emails e ON
+                e.account = t.account AND
+                e.mailbox = t.mailbox AND
+                e.message_id = t.message_id
+            WHERE e.rowid IS NULL
+        """)
+    )
 
-    # Calculate diffs
-    disk_keys = set(disk_inv.keys())
-    db_keys = set(db_inv.keys())
+    # DELETED: in DB, not in disk
+    deleted_rows = list(
+        conn.execute("""
+            SELECT e.account, e.mailbox, e.message_id
+            FROM emails e
+            LEFT JOIN disk_inventory_temp t ON
+                t.account = e.account AND
+                t.mailbox = e.mailbox AND
+                t.message_id = e.message_id
+            WHERE t.message_id IS NULL
+        """)
+    )
 
-    new_keys = disk_keys - db_keys
-    deleted_keys = db_keys - disk_keys
-    common_keys = disk_keys & db_keys
+    # MOVED: in both, paths differ (and DB had a non-NULL path to begin with)
+    moved_rows = list(
+        conn.execute("""
+            SELECT t.account, t.mailbox, t.message_id, t.emlx_path
+            FROM disk_inventory_temp t
+            INNER JOIN emails e ON
+                e.account = t.account AND
+                e.mailbox = t.mailbox AND
+                e.message_id = t.message_id
+            WHERE e.emlx_path IS NOT NULL
+              AND e.emlx_path != t.emlx_path
+        """)
+    )
 
-    # Check for moved emails (same key, different path)
-    moved_keys = {
-        key
-        for key in common_keys
-        if db_inv[key] and disk_inv[key] != db_inv[key]
-    }
-
-    total_ops = len(new_keys) + len(deleted_keys) + len(moved_keys)
+    total_ops = len(new_rows) + len(deleted_rows) + len(moved_rows)
 
     if progress_callback:
         progress_callback(
             0,
             total_ops,
-            f"Syncing: {len(new_keys)} new, {len(deleted_keys)} deleted, "
-            f"{len(moved_keys)} moved",
+            f"Syncing: {len(new_rows)} new, {len(deleted_rows)} deleted, "
+            f"{len(moved_rows)} moved",
         )
 
     logger.info(
         "Sync diff: %d new, %d deleted, %d moved",
-        len(new_keys),
-        len(deleted_keys),
-        len(moved_keys),
+        len(new_rows),
+        len(deleted_rows),
+        len(moved_rows),
     )
 
     added = 0
@@ -155,23 +217,28 @@ def sync_from_disk(
     for row in cursor:
         mailbox_counts[(row["account"], row["mailbox"])] = row["cnt"]
 
-    # Sort new emails by mtime (newest first) so the cap keeps recent ones.
-    # Wrap stat() in try/except to handle files deleted between discovery
-    # and sorting (race-tolerant).
-    def _safe_mtime(k: tuple) -> float:
+    # Sort new emails by mtime (newest first) so the per-mailbox cap keeps
+    # the recent ones. Race-tolerant: files deleted between discovery and
+    # sort get mtime=0 and sink to the bottom.
+    def _safe_mtime(p: str) -> float:
         try:
-            return Path(disk_inv[k]).stat().st_mtime
+            return Path(p).stat().st_mtime
         except OSError:
             return 0
 
-    sorted_new = sorted(new_keys, key=_safe_mtime, reverse=True)
+    sorted_new = sorted(
+        new_rows,
+        key=lambda r: _safe_mtime(r["emlx_path"]),
+        reverse=True,
+    )
 
     skipped_per_mailbox: dict[tuple[str, str], int] = {}
 
     # Process NEW emails (parse content and insert)
-    for key in sorted_new:
-        account, mailbox, msg_id = key
-        path = disk_inv[key]
+    for row in sorted_new:
+        account = row["account"]
+        mailbox = row["mailbox"]
+        path = row["emlx_path"]
 
         # Check mailbox limit
         mb_key = (account, mailbox)
@@ -184,7 +251,7 @@ def sync_from_disk(
             parsed = parse_emlx(Path(path))
             if parsed:
                 attachments = parsed.attachments or []
-                row = email_to_row(
+                insert_row = email_to_row(
                     {
                         "id": parsed.id,
                         "subject": parsed.subject,
@@ -197,7 +264,7 @@ def sync_from_disk(
                     path,
                     attachment_count=len(attachments),
                 )
-                conn.execute(INSERT_EMAIL_SQL, row)
+                conn.execute(INSERT_EMAIL_SQL, insert_row)
 
                 # Insert attachment metadata
                 if attachments:
@@ -246,8 +313,10 @@ def sync_from_disk(
             )
 
     # Process DELETED emails (remove from DB)
-    for key in deleted_keys:
-        account, mailbox, msg_id = key
+    for row in deleted_rows:
+        account = row["account"]
+        mailbox = row["mailbox"]
+        msg_id = row["message_id"]
         try:
             conn.execute(
                 "DELETE FROM emails WHERE account = ? AND mailbox = ? "
@@ -256,15 +325,23 @@ def sync_from_disk(
             )
             deleted += 1
         except sqlite3.Error as e:
-            logger.debug("Failed to delete %s: %s", key, e)
+            logger.debug(
+                "Failed to delete (%s, %s, %s): %s",
+                account,
+                mailbox,
+                msg_id,
+                e,
+            )
             errors += 1
 
         processed += 1
 
     # Process MOVED emails (update path)
-    for key in moved_keys:
-        account, mailbox, msg_id = key
-        new_path = disk_inv[key]
+    for row in moved_rows:
+        account = row["account"]
+        mailbox = row["mailbox"]
+        msg_id = row["message_id"]
+        new_path = row["emlx_path"]
         try:
             conn.execute(
                 "UPDATE emails SET emlx_path = ? WHERE account = ? "
@@ -273,16 +350,26 @@ def sync_from_disk(
             )
             moved += 1
         except sqlite3.Error as e:
-            logger.debug("Failed to update path for %s: %s", key, e)
+            logger.debug(
+                "Failed to update path for (%s, %s, %s): %s",
+                account,
+                mailbox,
+                msg_id,
+                e,
+            )
             errors += 1
 
         processed += 1
 
     # Update sync state
     now = datetime.now().isoformat()
-    affected_mailboxes = set()
-    for key in new_keys | deleted_keys | moved_keys:
-        affected_mailboxes.add((key[0], key[1]))
+    affected_mailboxes: set[tuple[str, str]] = set()
+    for row in new_rows:
+        affected_mailboxes.add((row["account"], row["mailbox"]))
+    for row in deleted_rows:
+        affected_mailboxes.add((row["account"], row["mailbox"]))
+    for row in moved_rows:
+        affected_mailboxes.add((row["account"], row["mailbox"]))
 
     for account, mailbox in affected_mailboxes:
         count = mailbox_counts.get((account, mailbox), 0)
@@ -293,7 +380,7 @@ def sync_from_disk(
             (account, mailbox, now, count),
         )
 
-    # If no changes but we did a sync, still update a sync timestamp
+    # If no changes but we did a sync, still record a global timestamp
     if not affected_mailboxes:
         conn.execute(
             """INSERT OR REPLACE INTO sync_state
@@ -302,11 +389,17 @@ def sync_from_disk(
             ("_global", "_sync", now, 0),
         )
 
+    # Free the temp table contents so a long-lived connection doesn't
+    # keep the temp pages around between syncs.
+    conn.execute("DELETE FROM disk_inventory_temp")
+
     conn.commit()
 
     if progress_callback:
         progress_callback(
-            total_ops, total_ops, f"Sync complete: +{added} -{deleted} ~{moved}"
+            total_ops,
+            total_ops,
+            f"Sync complete: +{added} -{deleted} ~{moved}",
         )
 
     logger.info(
