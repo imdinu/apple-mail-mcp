@@ -318,18 +318,16 @@ class IndexManager:
                     )
                 conn.commit()
 
-            # Rebuild FTS index (must run even if scan crashed
-            # mid-iteration, otherwise emails table has rows
-            # but FTS5 is empty)
-            if total_indexed > 0:
-                if progress_callback:
-                    msg = "Building search index..."
-                    progress_callback(total_indexed, total_indexed, msg)
-
-                rebuild_fts_index(conn)
-                optimize_fts_index(conn)
-
-            # Re-enable triggers (use rowid, not message_id)
+            # Re-enable triggers BEFORE rebuilding FTS to close the
+            # watcher race condition: if the file watcher (or any other
+            # writer) inserts a row after the bulk loop ends but before
+            # the FTS rebuild — or between rebuild and trigger
+            # recreation in the original ordering — that row would land
+            # in `emails` but never enter `emails_fts`. By recreating
+            # triggers first, any concurrent INSERT after this point
+            # fires the trigger normally; the subsequent FTS rebuild
+            # then re-syncs everything in `emails`, double-covering rows
+            # added during the rebuild call itself.
             conn.executescript("""
                 CREATE TRIGGER IF NOT EXISTS emails_ai
                 AFTER INSERT ON emails BEGIN
@@ -359,6 +357,17 @@ class IndexManager:
                     VALUES (new.rowid, new.subject, new.sender, new.content);
                 END;
             """)
+
+            # Rebuild FTS index (must run even if scan crashed
+            # mid-iteration, otherwise emails table has rows
+            # but FTS5 is empty)
+            if total_indexed > 0:
+                if progress_callback:
+                    msg = "Building search index..."
+                    progress_callback(total_indexed, total_indexed, msg)
+
+                rebuild_fts_index(conn)
+                optimize_fts_index(conn)
 
             # Log cap warnings (aggregate summary)
             if capped_mailboxes:

@@ -436,6 +436,135 @@ class TestDeleteEmail:
         assert remaining[0]["account"] == "uuid-B"
 
 
+class TestBuildFromDiskTriggers:
+    """Verify FTS5 triggers are reactivated after build_from_disk.
+
+    Regression for the watcher race: if triggers were recreated AFTER
+    rebuild_fts_index (the old order), any INSERT that landed between
+    rebuild and recreation would never enter emails_fts. The reorder
+    in build_from_disk fixes that — this test verifies the invariant
+    that any INSERT after build_from_disk fires the trigger.
+    """
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_after_insert_trigger_active_post_build(
+        self, tmp_path, temp_db_path, monkeypatch
+    ):
+        manager = IndexManager(db_path=temp_db_path)
+
+        # Empty mail dir — build_from_disk traverses nothing.
+        empty_mail = tmp_path / "Mail" / "V10"
+        empty_mail.mkdir(parents=True)
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: empty_mail,
+        )
+        manager.build_from_disk()
+
+        conn = manager._get_conn()
+
+        # Post-build INSERT should fire the AFTER INSERT trigger and
+        # land in emails_fts.
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, content) "
+            "VALUES (1, 'acc', 'INBOX', 'Hello world', 's@x.com', 'Body')"
+        )
+        conn.commit()
+
+        match_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM emails_fts "
+            "WHERE emails_fts MATCH 'Hello'"
+        ).fetchone()["n"]
+        assert match_count == 1, (
+            "AFTER INSERT trigger missing — emails_fts not populated. "
+            "Likely the trigger recreation order regressed."
+        )
+
+    def test_after_delete_trigger_active_post_build(
+        self, tmp_path, temp_db_path, monkeypatch
+    ):
+        manager = IndexManager(db_path=temp_db_path)
+
+        empty_mail = tmp_path / "Mail" / "V10"
+        empty_mail.mkdir(parents=True)
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: empty_mail,
+        )
+        manager.build_from_disk()
+
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, content) "
+            "VALUES (2, 'acc', 'INBOX', 'Goodbye', 's@x.com', 'Body')"
+        )
+        conn.execute("DELETE FROM emails WHERE message_id = 2")
+        conn.commit()
+
+        match_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM emails_fts "
+            "WHERE emails_fts MATCH 'Goodbye'"
+        ).fetchone()["n"]
+        assert match_count == 0, (
+            "AFTER DELETE trigger missing — emails_fts retained a "
+            "deleted row."
+        )
+
+    def test_triggers_present_when_rebuild_fts_runs(
+        self, tmp_path, temp_db_path, monkeypatch
+    ):
+        """Order regression: triggers must be recreated BEFORE
+        rebuild_fts_index runs. If the order is reversed, any
+        concurrent INSERT during the rebuild window lands in `emails`
+        but never reaches `emails_fts`.
+        """
+        manager = IndexManager(db_path=temp_db_path)
+
+        # Fake mail dir with one valid .emlx so total_indexed > 0
+        # and rebuild_fts_index actually runs.
+        mail_dir = tmp_path / "Mail" / "V10"
+        mbox = mail_dir / "acc1" / "INBOX.mbox" / "Data" / "Messages"
+        mbox.mkdir(parents=True)
+        emlx = mbox / "1001.emlx"
+        emlx.write_bytes(
+            b"100\nFrom: t@t.com\nSubject: Test\n\nBody"
+        )
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: mail_dir,
+        )
+
+        triggers_at_rebuild_time: list[str] = []
+
+        def hook_rebuild(conn):
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='trigger' "
+                "AND name IN ('emails_ai', 'emails_ad', 'emails_au')"
+            ).fetchall()
+            triggers_at_rebuild_time.extend(r[0] for r in rows)
+            # Skip the actual rebuild — we only want to inspect state.
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.manager.rebuild_fts_index",
+            hook_rebuild,
+        )
+
+        manager.build_from_disk()
+
+        assert "emails_ai" in triggers_at_rebuild_time, (
+            "AFTER INSERT trigger missing when rebuild_fts_index ran "
+            "— trigger recreation order regressed."
+        )
+        assert "emails_ad" in triggers_at_rebuild_time
+        assert "emails_au" in triggers_at_rebuild_time
+
+
 class TestParseFailureDLQ:
     """Tests for record_parse_failure / clear_parse_failure (#58)."""
 
