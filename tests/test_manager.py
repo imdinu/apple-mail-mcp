@@ -436,6 +436,109 @@ class TestDeleteEmail:
         assert remaining[0]["account"] == "uuid-B"
 
 
+class TestParseFailureDLQ:
+    """Tests for record_parse_failure / clear_parse_failure (#58)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_record_inserts_new_failure(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+
+        manager.record_parse_failure(
+            "/Library/Mail/V10/uuid/INBOX/Messages/42.emlx",
+            "uuid-1",
+            "INBOX",
+            ValueError("malformed plist"),
+        )
+
+        conn = manager._get_conn()
+        row = conn.execute(
+            "SELECT account, mailbox, error_type, error_message, "
+            "attempt_count FROM failed_index_jobs"
+        ).fetchone()
+        assert row["account"] == "uuid-1"
+        assert row["mailbox"] == "INBOX"
+        assert row["error_type"] == "ValueError"
+        assert row["error_message"] == "malformed plist"
+        assert row["attempt_count"] == 1
+
+    def test_record_idempotent_increments_attempt_count(
+        self, temp_db_path
+    ):
+        manager = IndexManager(db_path=temp_db_path)
+        path = "/path/42.emlx"
+
+        manager.record_parse_failure(
+            path, "uuid-1", "INBOX", ValueError("first")
+        )
+        manager.record_parse_failure(
+            path, "uuid-1", "INBOX", OSError("second")
+        )
+        manager.record_parse_failure(
+            path, "uuid-1", "INBOX", OSError("third")
+        )
+
+        conn = manager._get_conn()
+        row = conn.execute(
+            "SELECT attempt_count, error_type, error_message, "
+            "first_seen, last_seen FROM failed_index_jobs"
+        ).fetchone()
+        assert row["attempt_count"] == 3
+        # Latest error wins on type/message; first_seen survives
+        assert row["error_type"] == "OSError"
+        assert row["error_message"] == "third"
+
+    def test_record_truncates_long_messages(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        long_msg = "x" * 1000
+
+        manager.record_parse_failure(
+            "/path/42.emlx",
+            "uuid-1",
+            "INBOX",
+            ValueError(long_msg),
+        )
+
+        conn = manager._get_conn()
+        stored = conn.execute(
+            "SELECT error_message FROM failed_index_jobs"
+        ).fetchone()["error_message"]
+        assert len(stored) == 500
+
+    def test_clear_removes_entry(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        path = "/path/42.emlx"
+        manager.record_parse_failure(
+            path, "uuid-1", "INBOX", ValueError("oops")
+        )
+
+        deleted = manager.clear_parse_failure(path)
+
+        assert deleted == 1
+        conn = manager._get_conn()
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM failed_index_jobs"
+        ).fetchone()["n"]
+        assert count == 0
+
+    def test_clear_returns_zero_when_absent(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        assert manager.clear_parse_failure("/never/seen.emlx") == 0
+
+    def test_get_stats_includes_failed_jobs_count(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        manager.record_parse_failure(
+            "/a.emlx", "u", "INBOX", ValueError("a")
+        )
+        manager.record_parse_failure(
+            "/b.emlx", "u", "INBOX", ValueError("b")
+        )
+
+        stats = manager.get_stats()
+        assert stats.failed_jobs_count == 2
+
+
 class TestSearchAttachments:
     """Tests for search_attachments (#37)."""
 

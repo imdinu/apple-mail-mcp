@@ -998,6 +998,7 @@ async def index_status() -> str:
             "disk_email_count": stats.disk_email_count,
             "db_size_mb": round(stats.db_size_mb, 2),
             "capped_mailboxes": stats.capped_mailboxes,
+            "failed_jobs_count": stats.failed_jobs_count,
             "last_sync": (
                 stats.last_sync.isoformat() if stats.last_sync else None
             ),

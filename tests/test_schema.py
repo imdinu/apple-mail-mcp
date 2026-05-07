@@ -330,6 +330,92 @@ class TestMigrationV3ToV4:
         assert cursor.fetchone()[0] == SCHEMA_VERSION
 
 
+class TestMigrationV4ToV5:
+    """Tests for v4→v5 schema migration (failed_index_jobs DLQ, #58)."""
+
+    @pytest.fixture
+    def v4_db(self):
+        """Create a v4 database (before DLQ support)."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY
+            );
+            CREATE TABLE emails (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                account TEXT NOT NULL,
+                mailbox TEXT NOT NULL,
+                subject TEXT,
+                sender TEXT,
+                content TEXT,
+                date_received TEXT,
+                emlx_path TEXT,
+                attachment_count INTEGER DEFAULT 0,
+                indexed_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(account, mailbox, message_id)
+            );
+            CREATE TABLE attachments (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_rowid INTEGER NOT NULL
+                    REFERENCES emails(rowid) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                mime_type TEXT,
+                file_size INTEGER,
+                content_id TEXT
+            );
+            CREATE TABLE sync_state (
+                account TEXT NOT NULL,
+                mailbox TEXT NOT NULL,
+                last_sync TEXT,
+                message_count INTEGER DEFAULT 0,
+                PRIMARY KEY(account, mailbox)
+            );
+        """)
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (4,))
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject) "
+            "VALUES (1, 'acc', 'INBOX', 'Pre-existing email')"
+        )
+        conn.commit()
+        yield conn
+        conn.close()
+
+    def test_migration_creates_failed_jobs_table(self, v4_db):
+        _run_migrations(v4_db, 4, SCHEMA_VERSION)
+
+        cursor = v4_db.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='failed_index_jobs'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_migration_creates_failed_jobs_index(self, v4_db):
+        _run_migrations(v4_db, 4, SCHEMA_VERSION)
+
+        cursor = v4_db.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='idx_failed_jobs_mailbox'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_migration_preserves_existing_data(self, v4_db):
+        _run_migrations(v4_db, 4, SCHEMA_VERSION)
+
+        cursor = v4_db.execute(
+            "SELECT subject FROM emails WHERE message_id = 1"
+        )
+        assert cursor.fetchone()[0] == "Pre-existing email"
+
+    def test_migration_updates_version(self, v4_db):
+        _run_migrations(v4_db, 4, SCHEMA_VERSION)
+
+        cursor = v4_db.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == SCHEMA_VERSION
+
+
 class TestInsertAttachments:
     """Tests for the shared insert_attachments() helper."""
 

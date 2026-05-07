@@ -17,7 +17,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import get_index_max_emails
-from .schema import INSERT_EMAIL_SQL, email_to_row, insert_attachments
+from .schema import (
+    CLEAR_PARSE_FAILURE_SQL,
+    INSERT_EMAIL_SQL,
+    RECORD_PARSE_FAILURE_SQL,
+    email_to_row,
+    insert_attachments,
+    parse_failure_row,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -199,11 +206,22 @@ def sync_from_disk(
                     ).fetchone()[0]
                     insert_attachments(conn, rowid, attachments)
 
+                # Clear any prior DLQ entry — this path parses now.
+                conn.execute(CLEAR_PARSE_FAILURE_SQL, (path,))
+
                 added += 1
                 mailbox_counts[mb_key] = current_count + 1
         except (OSError, ValueError, UnicodeDecodeError) as e:
             logger.debug("Failed to parse %s: %s", path, e)
             errors += 1
+            # Record into the DLQ for visibility / future retry.
+            try:
+                conn.execute(
+                    RECORD_PARSE_FAILURE_SQL,
+                    parse_failure_row(path, account, mailbox, e),
+                )
+            except Exception:
+                pass
 
         processed += 1
         if progress_callback and processed % 100 == 0:

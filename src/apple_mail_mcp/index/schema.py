@@ -17,7 +17,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Current schema version for migrations
-SCHEMA_VERSION = 4  # Bumped for attachment support
+SCHEMA_VERSION = 5  # Bumped for failed_index_jobs (DLQ) support
 
 # Default PRAGMAs for all connections (centralized to avoid drift)
 DEFAULT_PRAGMAS = {
@@ -38,6 +38,40 @@ INSERT_EMAIL_SQL = """INSERT OR REPLACE INTO emails
 INSERT_ATTACHMENT_SQL = """INSERT INTO attachments
     (email_rowid, filename, mime_type, file_size, content_id)
     VALUES (?, ?, ?, ?, ?)"""
+
+# SQL for the failed_index_jobs (DLQ) upsert. Used by manager, watcher,
+# and sync — all paths that call parse_emlx and need to record failures.
+RECORD_PARSE_FAILURE_SQL = """INSERT INTO failed_index_jobs
+    (emlx_path, account, mailbox, error_type, error_message)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(emlx_path) DO UPDATE SET
+        error_type = excluded.error_type,
+        error_message = excluded.error_message,
+        last_seen = datetime('now'),
+        attempt_count = attempt_count + 1"""
+
+CLEAR_PARSE_FAILURE_SQL = "DELETE FROM failed_index_jobs WHERE emlx_path = ?"
+
+
+def parse_failure_row(
+    emlx_path: str,
+    account: str,
+    mailbox: str,
+    error: BaseException,
+) -> tuple[str, str, str, str, str]:
+    """Build the parameter tuple for `RECORD_PARSE_FAILURE_SQL`.
+
+    Truncates `str(error)` to 500 characters to bound DB size.
+    Used by both IndexManager (sync DB conn) and the watcher (its own
+    thread-local conn).
+    """
+    return (
+        emlx_path,
+        account,
+        mailbox,
+        type(error).__name__,
+        str(error)[:500],
+    )
 
 
 def insert_attachments(
@@ -217,6 +251,23 @@ CREATE TABLE IF NOT EXISTS sync_state (
     message_count INTEGER DEFAULT 0,
     PRIMARY KEY(account, mailbox)
 );
+
+-- Dead letter queue for .emlx files that failed to parse.
+-- Populated by the watcher and disk-sync paths so operators can audit
+-- which messages are missing from the index. Cleared automatically
+-- when a previously failing path parses successfully.
+CREATE TABLE IF NOT EXISTS failed_index_jobs (
+    emlx_path TEXT PRIMARY KEY,
+    account TEXT NOT NULL,
+    mailbox TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    first_seen TEXT DEFAULT (datetime('now')),
+    last_seen TEXT DEFAULT (datetime('now')),
+    attempt_count INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_failed_jobs_mailbox
+    ON failed_index_jobs(account, mailbox);
 """
 
 
@@ -369,6 +420,25 @@ def _run_migrations(
             "  indexed emails.\n",
             file=sys.stderr,
         )
+
+    if from_version < 5:
+        # Migration from v4 to v5: Add failed_index_jobs (DLQ) table
+        logger.info("Migrating schema v4→v5: adding failed_index_jobs table")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS failed_index_jobs (
+                emlx_path TEXT PRIMARY KEY,
+                account TEXT NOT NULL,
+                mailbox TEXT NOT NULL,
+                error_type TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                first_seen TEXT DEFAULT (datetime('now')),
+                last_seen TEXT DEFAULT (datetime('now')),
+                attempt_count INTEGER DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_failed_jobs_mailbox
+                ON failed_index_jobs(account, mailbox);
+        """)
+        logger.info("Migration v4→v5 complete.")
 
     conn.execute("UPDATE schema_version SET version = ?", (to_version,))
     conn.commit()
