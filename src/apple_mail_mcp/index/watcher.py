@@ -316,8 +316,16 @@ class IndexWatcher:
                             ),
                         )
                     except sqlite3.Error as e:
-                        logger.warning(
-                            "Could not record parse failure for %s: %s",
+                        # The DLQ insert itself failed — the failure
+                        # signal is now lost. Likely indicates a deeper
+                        # problem (disk full, DB corruption,
+                        # schema-version mismatch). Log at ERROR so it
+                        # surfaces in default-config logging instead of
+                        # being swallowed at WARNING level. (#77)
+                        logger.error(
+                            "DLQ write failed for %s — parse failure "
+                            "signal lost (cause: %s). Check disk "
+                            "space and DB integrity.",
                             path,
                             e,
                         )

@@ -287,8 +287,19 @@ def sync_from_disk(
                     RECORD_PARSE_FAILURE_SQL,
                     parse_failure_row(path, account, mailbox, e),
                 )
-            except Exception:
-                pass
+            except sqlite3.Error as dlq_err:
+                # The DLQ insert itself failed — the failure signal is
+                # now lost. Likely indicates a deeper problem (disk
+                # full, DB corruption, schema-version mismatch). Log at
+                # ERROR so it surfaces in default-config logging
+                # instead of being swallowed silently. (#77)
+                logger.error(
+                    "DLQ write failed for %s — parse failure signal "
+                    "lost (cause: %s). Check disk space and DB "
+                    "integrity.",
+                    path,
+                    dlq_err,
+                )
 
         processed += 1
         if progress_callback and processed % 100 == 0:
