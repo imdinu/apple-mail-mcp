@@ -1085,3 +1085,86 @@ class TestStrategy3Timeout:
             result = await get_email(42)
             assert result["subject"] == "Found"
             assert call_count == 2  # Strategy 1 + Strategy 3
+
+
+class TestIndexStatusResource:
+    """Tests for the index://status MCP resource (#12)."""
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_index_manager")
+    async def test_no_index(self, mock_mgr):
+        """Returns has_index=False when the index hasn't been built."""
+        import json
+
+        mock_mgr.return_value.has_index.return_value = False
+
+        from apple_mail_mcp.server import index_status
+
+        result = await index_status()
+        data = json.loads(result)
+
+        assert data["has_index"] is False
+        assert "apple-mail-mcp index" in data["message"]
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_index_manager")
+    async def test_with_index(self, mock_mgr):
+        """Returns the stats payload with all expected fields."""
+        import json
+        from datetime import datetime
+
+        from apple_mail_mcp.index.manager import IndexStats
+
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.get_stats.return_value = IndexStats(
+            email_count=12345,
+            mailbox_count=8,
+            last_sync=datetime(2026, 5, 1, 12, 0, 0),
+            db_size_mb=42.5678,
+            staleness_hours=2.4567,
+            capped_mailboxes=1,
+            attachment_count=42,
+            disk_email_count=12400,
+        )
+
+        from apple_mail_mcp.server import index_status
+
+        result = await index_status()
+        data = json.loads(result)
+
+        assert data["has_index"] is True
+        assert data["email_count"] == 12345
+        assert data["mailbox_count"] == 8
+        assert data["attachment_count"] == 42
+        assert data["disk_email_count"] == 12400
+        assert data["db_size_mb"] == 42.57  # rounded
+        assert data["capped_mailboxes"] == 1
+        assert data["last_sync"] == "2026-05-01T12:00:00"
+        assert data["staleness_hours"] == 2.46  # rounded
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_index_manager")
+    async def test_handles_none_optional_fields(self, mock_mgr):
+        """last_sync and staleness_hours can be None on a fresh DB."""
+        import json
+
+        from apple_mail_mcp.index.manager import IndexStats
+
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.get_stats.return_value = IndexStats(
+            email_count=0,
+            mailbox_count=0,
+            last_sync=None,
+            db_size_mb=0.0,
+            staleness_hours=None,
+            disk_email_count=None,
+        )
+
+        from apple_mail_mcp.server import index_status
+
+        result = await index_status()
+        data = json.loads(result)
+
+        assert data["last_sync"] is None
+        assert data["staleness_hours"] is None
+        assert data["disk_email_count"] is None
