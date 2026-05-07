@@ -52,7 +52,10 @@ install_patrickfreyer() {
     fi
     cd "$dir"
     python3 -m venv .venv 2>/dev/null || true
-    .venv/bin/pip install -q -r requirements.txt 2>/dev/null
+    # v3.x switched from requirements.txt to a hatch-built package
+    # at plugin/apple_mail_mcp; install editable so the
+    # mcp-apple-mail entrypoint script lands in .venv/bin/
+    .venv/bin/pip install -q -e . 2>/dev/null
 }
 install_or_skip "patrickfreyer/apple-mail-mcp" install_patrickfreyer
 

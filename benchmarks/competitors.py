@@ -93,8 +93,8 @@ _register(
         name="patrickfreyer/apple-mail-mcp",
         key="patrickfreyer",
         command=[
-            f"{CACHE_DIR}/patrickfreyer-apple-mail-mcp/.venv/bin/python",
-            "apple_mail_mcp.py",
+            f"{CACHE_DIR}/patrickfreyer-apple-mail-mcp"
+            "/.venv/bin/mcp-apple-mail",
         ],
         cwd=f"{CACHE_DIR}/patrickfreyer-apple-mail-mcp",
         tool_mapping={
