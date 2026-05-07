@@ -77,9 +77,15 @@ def generate_chart(
 
     Returns the PNG path or None if no data.
     """
-    # Filter to successful results for this scenario
+    # Filter to successful results for this scenario, dropping any
+    # competitor explicitly excluded for this scenario
+    excluded = BAR_CHART_EXCLUDE.get(scenario, set())
     scenario_data = [
-        r for r in results if r["scenario"] == scenario and r["success"]
+        r
+        for r in results
+        if r["scenario"] == scenario
+        and r["success"]
+        and r["competitor"] not in excluded
     ]
     if not scenario_data:
         return None
@@ -174,8 +180,10 @@ def generate_chart(
 # Friendly display names for the overview chart
 COMPETITOR_LABELS = {
     "imdinu": "apple-mail-mcp (ours)",
+    "bastianzim": "BastianZim",
     "rusty": "rusty (Rust)",
     "patrickfreyer": "patrickfreyer",
+    "sweetrb": "sweetrb",
     "dhravya": "dhravya (archived)",
     "smorgan": "s-morgan-jeffries",
     "attilagyorffy": "attilagyorffy (Go)",
@@ -185,12 +193,34 @@ COMPETITOR_LABELS = {
 # Display order: us first, then by interest
 COMPETITOR_ORDER = [
     "imdinu",
+    "bastianzim",
     "rusty",
     "patrickfreyer",
+    "sweetrb",
     "attilagyorffy",
     "smorgan",
     "dhravya",
 ]
+
+# Per-scenario overrides: classify a (competitor, scenario) cell with a
+# code+label that doesn't match the raw bench result. Used when a
+# competitor technically returned a number but the comparison would be
+# misleading.
+#
+# BastianZim's search_body live-scans only the 5000 most recent
+# messages (per their README). On a 72K mailbox that's ~7% coverage —
+# fast but incomplete. Showing their median ms next to ours would
+# imply apples-to-apples; it isn't.
+SCENARIO_OVERRIDES: dict[tuple[str, str], tuple[int, str]] = {
+    ("bastianzim", "search_body"): (2, "5K cap"),
+}
+
+# Per-scenario competitor exclusions for the bar charts (per-scenario
+# views). The matrix still shows the override label; the bar chart
+# omits the bar entirely so the visual comparison stays honest.
+BAR_CHART_EXCLUDE: dict[str, set[str]] = {
+    "search_body": {"bastianzim"},
+}
 
 SCENARIO_SHORT = {
     "cold_start": "Cold Start",
@@ -211,7 +241,14 @@ def _classify_result(
     """Classify a benchmark result as (code, label).
 
     Returns (0, "Xms"), (1, "TIMEOUT"), (1, "ERROR"), or (2, "—").
+    Per-scenario overrides (`SCENARIO_OVERRIDES`) take precedence over
+    the raw bench result — used when the result number would be
+    misleading without context (e.g. capped scans).
     """
+    override = SCENARIO_OVERRIDES.get((competitor, scenario))
+    if override is not None:
+        return override
+
     matches = [
         r
         for r in results
@@ -299,7 +336,13 @@ def generate_overview_chart(
 
     fig.update_layout(
         title=dict(
-            text="Apple Mail MCP Servers — Capability Matrix (30K+ mailbox)",
+            text=(
+                "Apple Mail MCP Servers — Capability Matrix (72K mailbox)"
+                "<br><sup style='color:#6b7280'>"
+                "“5K cap” = competitor only scans the 5000 most recent "
+                "messages (silent miss on older mail)."
+                "</sup>"
+            ),
             font=dict(size=16, color="#111827"),
             x=0.0,
         ),

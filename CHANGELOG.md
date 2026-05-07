@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`index://status` MCP resource** — read-only JSON snapshot of the FTS5 search index (counts, size, last sync, staleness). Lets MCP clients assess index health without invoking a tool. (#12)
-- **Benchmark suite expansion** — added `sweetrb/apple-mail-mcp` (TypeScript, AppleScript-based, 40+ tools, npm) and `BastianZim/apple-mail-mcp` (Python, reads Envelope Index SQLite + `.emlx` directly, no AppleScript) to the competitor list. BastianZim is the closest head-to-head test of the indexed FTS5 vs. live `.emlx` scan body search comparison.
+- **Benchmark suite expansion + refresh** — added `sweetrb/apple-mail-mcp` (TypeScript, AppleScript-based, 40+ tools, npm) and `BastianZim/apple-mail-mcp` (Python, reads Envelope Index SQLite + `.emlx` directly, no AppleScript) to the competitor list, then re-ran the full sweep on a 72K-message mailbox. Charts and the benchmarks doc are refreshed; positioning copy updated to reflect that the FTS5 differentiator is now precisely "full-coverage body search" — BastianZim implements a body parameter but caps live-scanning at the 5000 most recent messages (silent miss on older mail). Per-scenario charts now mark BastianZim as "5K cap" in the capability matrix and exclude it from the body-search bar chart so the comparison stays apples-to-apples.
 
 ## [0.2.2] - 2026-04-13
 
