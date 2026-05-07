@@ -79,7 +79,7 @@ Instead, translation happens at search time via `AccountMap` (`index/accounts.py
 The index uses SQLite with FTS5 external content tables:
 
 ```sql
--- Email content cache (schema v4)
+-- Email content cache (schema v5)
 CREATE TABLE emails (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id INTEGER NOT NULL,
@@ -121,7 +121,30 @@ CREATE TABLE sync_state (
     message_count INTEGER DEFAULT 0,
     PRIMARY KEY(account, mailbox)
 );
+
+-- Dead letter queue for `.emlx` parse failures (added v0.3.0).
+-- Populated by the watcher and disk-sync paths so operators can
+-- audit which messages are missing from the index. Cleared on a
+-- successful re-parse of the same path.
+CREATE TABLE failed_index_jobs (
+    emlx_path TEXT PRIMARY KEY,
+    account TEXT NOT NULL,
+    mailbox TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    first_seen TEXT DEFAULT (datetime('now')),
+    last_seen TEXT DEFAULT (datetime('now')),
+    attempt_count INTEGER DEFAULT 1
+);
 ```
+
+## Parse Failure Tracking (DLQ)
+
+Files that fail to parse during sync or live watching aren't silently dropped — they land in `failed_index_jobs` (above). The schema captures error type, message, and first/last seen timestamps so operators can audit which messages are missing from the index.
+
+- **View counts**: `apple-mail-mcp status` displays `Failed parse: N (.emlx files in DLQ)` when N > 0. Same number is exposed via the `index://status` MCP resource as `failed_jobs_count`.
+- **Self-healing**: a successful re-parse of the same path automatically clears the DLQ entry. So transient causes (Mail.app mid-write, permissions glitches) resolve on the next watcher tick without operator intervention.
+- **Failure of the DLQ itself** (disk full, DB corrupted): logged at `ERROR` level rather than swallowed. Look for `"DLQ write failed"` in logs.
 
 The `porter unicode61` tokenizer provides:
 

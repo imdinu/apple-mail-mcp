@@ -1,17 +1,17 @@
 # Apple Mail MCP
 
-The only Apple Mail MCP server with **full-text email search**. Reliable on large mailboxes where other servers timeout — with 8 tools for reading, searching, and extracting email content. Also works as a standalone CLI.
+The only Apple Mail MCP server with **full-coverage FTS5 body search**. Reliable on large mailboxes where AppleScript-based servers timeout — with 8 tools for reading, searching, and extracting email content. Also works as a standalone CLI.
 
 ---
 
 ## Why Apple Mail MCP?
 
-Tested against [6 other Apple Mail MCP servers](benchmarks.md) on a 30K+ email mailbox:
+Tested against [8 other Apple Mail MCP servers](benchmarks.md) on a real ~72K-message mailbox:
 
-- **Only server** that completes all operations without timing out
-- **Only server** with full-text body search (FTS5 index, ~20ms)
-- **5ms** single email fetch via disk-first `.emlx` reading
-- **7–9ms** subject search via FTS5 (vs 230ms+ for AppleScript-based servers)
+- **Only server with full-coverage body search.** Most competitors don't support body search at all; the one that does (BastianZim) caps at the 5000 most recent messages — silent miss on older mail. Our FTS5 covers the entire mailbox.
+- **~3ms** single email fetch via disk-first `.emlx` reading.
+- **~7ms** subject search via FTS5 — competitive with native Rust on the same operation.
+- **Reliable across all 6 benchmarked operations** at this mailbox size — AppleScript-based servers timeout, throw syntax errors, or skip operations.
 
 ![Capability Matrix](benchmark_overview.png)
 

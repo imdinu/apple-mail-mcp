@@ -8,13 +8,13 @@ Apple Mail MCP uses a **3-layer hybrid access pattern** — disk-first reads for
 src/apple_mail_mcp/
 ├── __init__.py         # CLI entry point, exports main()
 ├── cli.py              # CLI commands (index, status, rebuild, serve)
-├── server.py           # FastMCP server with 6 MCP tools
+├── server.py           # FastMCP server with 8 MCP tools + 1 resource
 ├── config.py           # Environment variable configuration
 ├── builders.py         # QueryBuilder, AccountsQueryBuilder
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
 ├── index/              # FTS5 search index module
 │   ├── __init__.py     # Exports IndexManager
-│   ├── schema.py       # SQLite schema v4 (attachment support)
+│   ├── schema.py       # SQLite schema v5 (DLQ + attachments)
 │   ├── manager.py      # IndexManager class (singleton)
 │   ├── disk.py         # .emlx reading + get_disk_inventory()
 │   ├── sync.py         # Disk-based state reconciliation
@@ -38,9 +38,13 @@ src/apple_mail_mcp/
 
 ### 1. MCP Tools (`server.py`)
 
-The 6 MCP tools are the public API. Each tool resolves defaults, picks the right access method, and returns typed results.
+The 8 MCP tools are the public API. Each tool resolves defaults, picks the right access method, and returns typed results.
 
-### 2. Query Builder (`builders.py`)
+### 2. MCP Resources (`server.py`)
+
+`index://status` is the only resource — a read-only JSON snapshot of FTS5 index health (counts, size, last sync, staleness, DLQ failure count). Lets MCP clients assess index state without invoking a tool. Wraps `IndexManager.get_stats()`; the disk-walk for `disk_email_count` runs via `asyncio.to_thread` so it doesn't block the event loop.
+
+### 3. Query Builder (`builders.py`)
 
 Constructs JXA scripts from Python using a builder pattern. Prevents JXA injection by design — all user input is serialized via `json.dumps()`.
 
@@ -55,11 +59,11 @@ query = (
 )
 ```
 
-### 3. JXA Executor (`executor.py`)
+### 4. JXA Executor (`executor.py`)
 
 Runs JXA scripts via `osascript -l JavaScript` as async subprocesses. Every script gets `MAIL_CORE_JS` prepended — a shared library that provides batch property fetching and date helpers.
 
-### 4. Index Module (`index/`)
+### 5. Index Module (`index/`)
 
 Self-contained SQLite + FTS5 search system:
 

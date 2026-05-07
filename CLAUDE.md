@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-The only Apple Mail MCP server with full-text email search. Reliable on large mailboxes (30K+) where other servers timeout. Disk-first email reads (~5ms via .emlx parsing), batch JXA property fetching, and an FTS5 search index for full-text body search (~20ms).
+The only Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes (tested at ~72K messages) where AppleScript-based servers timeout, and the only one whose body search has no recency cap. Disk-first email reads (~3ms via .emlx parsing), batch JXA property fetching, and an FTS5 search index for full-text body search (~20ms).
 
 ## Project Structure
 
@@ -16,7 +16,7 @@ src/apple_mail_mcp/
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
 ├── index/              # FTS5 search index module
 │   ├── __init__.py     # Exports IndexManager
-│   ├── schema.py       # SQLite schema v4 (attachment support)
+│   ├── schema.py       # SQLite schema v5 (DLQ + attachments)
 │   ├── manager.py      # IndexManager class (disk-based sync)
 │   ├── disk.py         # .emlx reading + get_disk_inventory()
 │   ├── sync.py         # Disk-based state reconciliation
@@ -39,6 +39,12 @@ src/apple_mail_mcp/
 | `get_email_links(id)` | Extract links from an email | message_id |
 | `get_email_attachment(id, filename)` | Extract attachment content | message_id, filename |
 | `get_attachment(id, filename)` | *Deprecated* — use `get_email_attachment()` | message_id, filename |
+
+## MCP Resources (1 total)
+
+| URI | Purpose | MIME |
+|-----|---------|------|
+| `index://status` | Read-only JSON snapshot of FTS5 index health: `email_count`, `mailbox_count`, `attachment_count`, `disk_email_count`, `db_size_mb`, `capped_mailboxes`, `failed_jobs_count`, `last_sync`, `staleness_hours`. Lets MCP clients assess index state without invoking a tool. | `application/json` |
 
 ### get_emails() Filters
 
@@ -164,7 +170,7 @@ reply_to, message_id from MIME headers.
 
 ## FTS5 Search Index
 
-### Database Schema (v4)
+### Database Schema (v5)
 
 ```sql
 -- Email content cache
@@ -214,6 +220,23 @@ CREATE TABLE sync_state (
     message_count INTEGER DEFAULT 0,
     PRIMARY KEY(account, mailbox)
 );
+
+-- Dead letter queue for `.emlx` parse failures (added v5).
+-- Populated by the watcher and disk-sync paths so operators can
+-- audit which messages are missing from the index. Cleared
+-- automatically on a successful re-parse of the same path.
+CREATE TABLE failed_index_jobs (
+    emlx_path TEXT PRIMARY KEY,
+    account TEXT NOT NULL,
+    mailbox TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    first_seen TEXT DEFAULT (datetime('now')),
+    last_seen TEXT DEFAULT (datetime('now')),
+    attempt_count INTEGER DEFAULT 1
+);
+CREATE INDEX idx_failed_jobs_mailbox
+    ON failed_index_jobs(account, mailbox);
 ```
 
 ### IndexManager API
@@ -232,12 +255,17 @@ changes = manager.sync_updates()  # Returns total changes count
 # Search indexed content
 results = manager.search(query, account=None, mailbox=None, limit=20)
 
-# Get statistics
+# Get statistics (includes failed_jobs_count from DLQ)
 stats = manager.get_stats()  # IndexStats dataclass
 
 # Check staleness
 if manager.is_stale():
     manager.sync_updates()
+
+# Single-row primitives (added v0.3.0)
+manager.delete_email(message_id, account=None, mailbox=None)
+manager.record_parse_failure(emlx_path, account, mailbox, error)
+manager.clear_parse_failure(emlx_path)  # called on successful re-parse
 ```
 
 ### Disk Functions
@@ -247,7 +275,8 @@ from apple_mail_mcp.index.disk import (
     find_mail_directory,      # → ~/Library/Mail/V10/
     parse_emlx,               # Parse single .emlx file
     scan_all_emails,          # Iterator over all emails (with content)
-    get_disk_inventory,       # Fast walk, NO content parsing
+    get_disk_inventory,       # Fast walk, NO content parsing → dict
+    iter_disk_inventory,      # Streaming variant → generator (added v0.3.0)
     read_envelope_index,      # Query metadata DB
 )
 
