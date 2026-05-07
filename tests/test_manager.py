@@ -382,6 +382,60 @@ class TestFindEmailPath:
         assert manager.find_email_path(42) is None
 
 
+class TestDeleteEmail:
+    """Tests for delete_email (#74)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_deletes_matching_row(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails "
+            "(message_id, account, mailbox, subject, sender, content) "
+            "VALUES (42, 'uuid-1', 'INBOX', 'Hello', 'a@b.com', 'body')"
+        )
+        conn.commit()
+
+        deleted = manager.delete_email(42)
+
+        assert deleted == 1
+        assert manager.find_email_path(42) is None
+        # FTS5 row should be gone too via the AFTER DELETE trigger
+        fts_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM emails_fts WHERE subject MATCH 'Hello'"
+        ).fetchone()["n"]
+        assert fts_count == 0
+
+    def test_returns_zero_when_no_match(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        assert manager.delete_email(999) == 0
+
+    def test_scopes_by_account_and_mailbox(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (42, 'uuid-A', 'INBOX')"
+        )
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (42, 'uuid-B', 'INBOX')"
+        )
+        conn.commit()
+
+        deleted = manager.delete_email(42, account="uuid-A", mailbox="INBOX")
+
+        assert deleted == 1
+        # The uuid-B row survives
+        remaining = conn.execute(
+            "SELECT account FROM emails WHERE message_id = 42"
+        ).fetchall()
+        assert len(remaining) == 1
+        assert remaining[0]["account"] == "uuid-B"
+
+
 class TestSearchAttachments:
     """Tests for search_attachments (#37)."""
 

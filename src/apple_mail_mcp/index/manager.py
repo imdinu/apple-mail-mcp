@@ -628,6 +628,45 @@ class IndexManager:
             return Path(row["emlx_path"])
         return None
 
+    def delete_email(
+        self,
+        message_id: int,
+        account: str | None = None,
+        mailbox: str | None = None,
+    ) -> int:
+        """Delete a single email entry from the index.
+
+        Used to clean up stale entries when the indexed `.emlx` file
+        no longer exists on disk (the message was deleted or moved
+        between syncs). The `AFTER DELETE ON emails` trigger handles
+        FTS5 cleanup; the `attachments` table cascades via
+        `ON DELETE CASCADE`.
+
+        Args:
+            message_id: Mail.app message ID
+            account: Optional account filter (UUID) — narrows the
+                delete when the same message_id appears in multiple
+                accounts (rare).
+            mailbox: Optional mailbox filter
+
+        Returns:
+            Number of rows deleted (typically 0 or 1).
+        """
+        conn = self._get_conn()
+        where = ["message_id = ?"]
+        params: list = [message_id]
+        if account:
+            where.append("account = ?")
+            params.append(account)
+        if mailbox:
+            where.append("mailbox = ?")
+            params.append(mailbox)
+
+        sql = "DELETE FROM emails WHERE " + " AND ".join(where)
+        cursor = conn.execute(sql, params)
+        conn.commit()
+        return cursor.rowcount
+
     def search_attachments(
         self,
         query: str,

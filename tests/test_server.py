@@ -353,6 +353,44 @@ class TestGetEmail:
         mock_exec.assert_called()
 
     @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_cleans_stale_index_entry(
+        self, mock_exec, mock_mgr, mock_acct_map
+    ):
+        """Stale FTS5 entry is auto-cleaned and a clear error is raised
+        without falling through to JXA cascade. (#74)
+        """
+        from unittest.mock import AsyncMock
+        from pathlib import Path
+
+        # Strategy 0: index has a path, but the file is gone on disk
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.find_email_path.return_value = (
+            Path("/nonexistent/42.emlx")
+        )
+        mock_mgr.return_value.delete_email.return_value = 1
+
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.name_to_uuid.return_value = "uuid-1"
+
+        from apple_mail_mcp.server import get_email
+
+        with patch("pathlib.Path.exists", return_value=False):
+            with pytest.raises(ValueError, match="deleted or moved"):
+                await get_email(42, account="Work", mailbox="INBOX")
+
+        # The stale entry was cleaned up with the resolved account UUID
+        mock_mgr.return_value.delete_email.assert_called_once_with(
+            42, account="uuid-1", mailbox="INBOX"
+        )
+        # JXA cascade was skipped — no point trying strategies that will
+        # all fail on a deleted message
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_get_email_uses_index_for_fallback(self):
         """B1: Strategy 2 uses index lookup when strategy 1 fails."""
         call_count = 0

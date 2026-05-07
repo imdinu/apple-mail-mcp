@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - Unreleased
 
+### Fixed
+
+- **Stale FTS5 entry auto-cleanup** — when `get_email()` Strategy 0 finds an indexed `.emlx` path that no longer exists on disk (the message was deleted or moved between syncs), the dead row is now removed from the index and a clear `"deleted or moved"` error is returned. Previously the cascade fell through to Strategy 3 and timed out (~1.3% of `get_email` calls in observed traffic). Adds `IndexManager.delete_email()` primitive. (#74)
+
 ### Changed
 
 - **`cyclopts` constraint relaxed to stable** — was `>=5.0.0a1` (pre-release), now `>=4.10`. Removes the need for `--prerelease=allow` in `claude_desktop_config.json` and other install configs. No API changes; the cyclopts surface used by `cli.py` is identical between 4.x and 5.x. (#75)
