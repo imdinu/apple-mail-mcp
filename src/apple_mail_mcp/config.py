@@ -52,17 +52,20 @@ def get_index_path() -> Path:
     return DEFAULT_INDEX_PATH
 
 
-def get_index_max_emails() -> int:
+def get_index_max_emails() -> int | None:
     """
     Get the maximum number of emails to index per mailbox.
 
-    Set APPLE_MAIL_INDEX_MAX_EMAILS to customize.
-    Defaults to 5000 emails per mailbox.
+    Set APPLE_MAIL_INDEX_MAX_EMAILS to opt in to a per-mailbox ceiling.
+    Defaults to None (uncapped) — the index covers the entire mailbox.
 
     Returns:
-        Maximum emails per mailbox.
+        Maximum emails per mailbox, or None for no cap.
     """
-    return int(os.environ.get("APPLE_MAIL_INDEX_MAX_EMAILS", "5000"))
+    raw = os.environ.get("APPLE_MAIL_INDEX_MAX_EMAILS")
+    if raw is None or raw == "":
+        return None
+    return int(raw)
 
 
 def get_index_exclude_mailboxes() -> set[str]:

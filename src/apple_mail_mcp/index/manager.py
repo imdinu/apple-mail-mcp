@@ -69,7 +69,7 @@ class IndexManager:
     The index is stored at ~/.apple-mail-mcp/index.db by default.
     Use environment variables to customize:
     - APPLE_MAIL_INDEX_PATH: Database location
-    - APPLE_MAIL_INDEX_MAX_EMAILS: Max emails per mailbox (5000)
+    - APPLE_MAIL_INDEX_MAX_EMAILS: Optional per-mailbox cap (default: uncapped)
     - APPLE_MAIL_INDEX_STALENESS_HOURS: Hours before stale (24)
 
     Thread Safety:
@@ -158,17 +158,20 @@ class IndexManager:
         if self._db_path.exists():
             db_size_mb = self._db_path.stat().st_size / (1024 * 1024)
 
-        # Count mailboxes at or above the per-mailbox cap
+        # Count mailboxes at or above the per-mailbox cap.
+        # Default is uncapped (None) — only query when a cap is set.
         max_per_mailbox = get_index_max_emails()
-        cursor = conn.execute(
-            "SELECT COUNT(*) FROM ("
-            "  SELECT account, mailbox FROM emails"
-            "  GROUP BY account, mailbox"
-            "  HAVING COUNT(*) >= ?"
-            ")",
-            (max_per_mailbox,),
-        )
-        capped_mailboxes = cursor.fetchone()[0]
+        capped_mailboxes = 0
+        if max_per_mailbox is not None:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT account, mailbox FROM emails"
+                "  GROUP BY account, mailbox"
+                "  HAVING COUNT(*) >= ?"
+                ")",
+                (max_per_mailbox,),
+            )
+            capped_mailboxes = cursor.fetchone()[0]
 
         # Attachment count
         cursor = conn.execute("SELECT COUNT(*) FROM attachments")
@@ -266,7 +269,7 @@ class IndexManager:
                 key = (email_data["account"], email_data["mailbox"])
                 count = mailbox_counts.get(key, 0)
 
-                if count >= max_per_mailbox:
+                if max_per_mailbox is not None and count >= max_per_mailbox:
                     capped_mailboxes.add(key)
                     continue
 

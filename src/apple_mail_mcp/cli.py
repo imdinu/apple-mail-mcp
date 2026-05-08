@@ -295,6 +295,11 @@ def status(
     print(f"Database:     {_format_size(stats.db_size_mb)}")
     if stats.failed_jobs_count > 0:
         print(f"Failed parse: {stats.failed_jobs_count:,} (.emlx files in DLQ)")
+    if stats.capped_mailboxes > 0:
+        print(
+            f"Capped:       {stats.capped_mailboxes} mailbox(es) at"
+            " APPLE_MAIL_INDEX_MAX_EMAILS — raise or unset to index more"
+        )
     print()
 
     if stats.last_sync:

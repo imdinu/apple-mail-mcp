@@ -240,10 +240,10 @@ def sync_from_disk(
         mailbox = row["mailbox"]
         path = row["emlx_path"]
 
-        # Check mailbox limit
+        # Check mailbox limit (None means uncapped)
         mb_key = (account, mailbox)
         current_count = mailbox_counts.get(mb_key, 0)
-        if current_count >= max_per_mailbox:
+        if max_per_mailbox is not None and current_count >= max_per_mailbox:
             skipped_per_mailbox[mb_key] = skipped_per_mailbox.get(mb_key, 0) + 1
             continue
 

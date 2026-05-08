@@ -9,23 +9,21 @@ Apple Mail MCP is configured via environment variables. All settings have sensib
 | `APPLE_MAIL_DEFAULT_ACCOUNT` | First account | Default email account for all tools |
 | `APPLE_MAIL_DEFAULT_MAILBOX` | `INBOX` | Default mailbox when none specified |
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | SQLite index database location |
-| `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails per mailbox to index |
+| `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before index is considered stale |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip in search |
 | `APPLE_MAIL_READ_ONLY` | `false` | When `true`, disables any write operations |
 
-### Per-Mailbox Email Limit
+### Per-Mailbox Email Limit (Optional)
 
-`APPLE_MAIL_INDEX_MAX_EMAILS` (default: 5,000) limits how many emails are indexed per mailbox. When a mailbox exceeds this limit, the most recent emails by file modification time are kept.
-
-This prevents the index from growing unbounded for large mailboxes. To index more:
+By default the index covers every email in every mailbox — there is no per-mailbox cap. Set `APPLE_MAIL_INDEX_MAX_EMAILS` to opt in to a ceiling, useful if you want to bound index size on machines with many large mailboxes:
 
 ```bash
 export APPLE_MAIL_INDEX_MAX_EMAILS=10000
 apple-mail-mcp rebuild
 ```
 
-The `rebuild` command will report how many mailboxes hit the cap. Use `apple-mail-mcp status` to check your current index size.
+When a cap is set and a mailbox exceeds it, the most recent emails by file modification time are kept. `apple-mail-mcp rebuild` reports how many mailboxes hit the cap, and `apple-mail-mcp status` surfaces the same information after the fact.
 
 ## MCP Client Configuration
 

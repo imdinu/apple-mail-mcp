@@ -477,7 +477,7 @@ for (let i = 0; i < data.sender.length; i++) {
 | `APPLE_MAIL_DEFAULT_ACCOUNT` | First account | Default email account |
 | `APPLE_MAIL_DEFAULT_MAILBOX` | `INBOX` | Default mailbox |
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | Index database location |
-| `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails per mailbox |
+| `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before refresh |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip |
 | `APPLE_MAIL_READ_ONLY` | `false` | Disable write operations |

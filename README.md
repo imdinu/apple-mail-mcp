@@ -71,7 +71,7 @@ Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
 | `APPLE_MAIL_DEFAULT_ACCOUNT` | First account | Default email account |
 | `APPLE_MAIL_DEFAULT_MAILBOX` | `INBOX` | Default mailbox |
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | Index location |
-| `APPLE_MAIL_INDEX_MAX_EMAILS` | `5000` | Max emails indexed per mailbox |
+| `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Mailboxes to skip in search |
 | `APPLE_MAIL_READ_ONLY` | `false` | Disable write operations |
 
@@ -108,18 +108,6 @@ All commands output JSON. Generate a [Claude Code skill](https://imdinu.github.i
 ```bash
 apple-mail-mcp integrate claude > ~/.claude/skills/apple-mail.md
 ```
-
-## Migrating from apple-mcp?
-
-If you used [supermemoryai/apple-mcp](https://github.com/supermemoryai/apple-mcp) (archived January 2026), apple-mail-mcp is a maintained alternative for the **Mail portion** specifically. Notes, Messages, Contacts, Calendar, and Reminders are out of scope.
-
-| apple-mcp (`mail` tool, action) | apple-mail-mcp |
-|----------------------------------|----------------|
-| `read_emails` | `get_emails(filter?, limit?)` + `get_email(message_id)` |
-| `search_emails` | `search(query, scope?)` — 5 scopes: all, subject, sender, body, attachments |
-| `send_email` | Not yet supported (planned) |
-
-**What's different:** available on PyPI (`pipx install apple-mail-mcp`), full-coverage FTS5 body search (~20ms, no recency cap), disk-first single-email reads (~3ms), reliable on large mailboxes (tested at 72K messages) where AppleScript-based servers timeout.
 
 ## Development
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-08
+
+### Changed
+
+- **`APPLE_MAIL_INDEX_MAX_EMAILS` is now uncapped by default** — the per-mailbox ceiling that silently truncated large mailboxes at 5000 messages is gone. The env var still works as an opt-in ceiling for users who want to bound disk/memory usage; setting it to an integer enforces the same per-mailbox limit as before. `get_index_max_emails()` returns `int | None` and all consumers (sync, build_from_disk, get_stats) treat `None` as no cap. The 5000 default predated disk-first sync (when JXA timed out at 60s and 5000 was the realistic indexable count); the bottleneck has long since moved, and the silent default no longer matched the README's "full-coverage body search" claim. Existing indexes built under the old default will *not* automatically backfill older messages — run `apple-mail-mcp rebuild` to re-index without the cap.
+- **`apple-mail-mcp status` surfaces capped mailboxes** — when `APPLE_MAIL_INDEX_MAX_EMAILS` is set and any mailbox is at the ceiling, `status` now prints a "Capped: N mailbox(es)" line with a hint to raise or unset the env var. Previously this state was only visible via the `index://status` MCP resource.
+
+### Documentation
+
+- **Removed the "Migrating from apple-mcp?" README section** — the `supermemoryai/apple-mcp` migration table was kept for compatibility framing during the early v0.x cycle. The reference is no longer load-bearing for new users; dropping it tightens the README without losing information that's still findable in v0.3.0 release notes if needed.
+
 ## [0.3.0] - 2026-05-07
 
 ### Fixed
@@ -187,7 +198,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disk-based sync for index building
 - Real-time file watcher for index updates
 
-[0.2.1]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.0...HEAD
+[0.3.1]: https://github.com/imdinu/apple-mail-mcp/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.8...v0.2.0
 [0.1.8]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/imdinu/apple-mail-mcp/compare/v0.1.6...v0.1.7
