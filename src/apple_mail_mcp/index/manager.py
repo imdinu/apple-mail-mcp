@@ -56,6 +56,7 @@ class IndexStats:
     capped_mailboxes: int = 0
     attachment_count: int = 0
     disk_email_count: int | None = None
+    failed_jobs_count: int = 0
 
 
 # SearchResult is imported from .search to avoid duplication
@@ -173,6 +174,16 @@ class IndexManager:
         cursor = conn.execute("SELECT COUNT(*) FROM attachments")
         attachment_count = cursor.fetchone()[0]
 
+        # Failed parse jobs count (DLQ)
+        # The table may not exist on a stale connection still on schema v4
+        # — guard with try/except rather than coupling to schema version.
+        failed_jobs_count = 0
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM failed_index_jobs")
+            failed_jobs_count = cursor.fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+
         # Disk email count (best-effort, skip if no FDA)
         disk_email_count = None
         try:
@@ -192,6 +203,7 @@ class IndexManager:
             capped_mailboxes=capped_mailboxes,
             attachment_count=attachment_count,
             disk_email_count=disk_email_count,
+            failed_jobs_count=failed_jobs_count,
         )
 
     def is_stale(self) -> bool:
@@ -306,18 +318,16 @@ class IndexManager:
                     )
                 conn.commit()
 
-            # Rebuild FTS index (must run even if scan crashed
-            # mid-iteration, otherwise emails table has rows
-            # but FTS5 is empty)
-            if total_indexed > 0:
-                if progress_callback:
-                    msg = "Building search index..."
-                    progress_callback(total_indexed, total_indexed, msg)
-
-                rebuild_fts_index(conn)
-                optimize_fts_index(conn)
-
-            # Re-enable triggers (use rowid, not message_id)
+            # Re-enable triggers BEFORE rebuilding FTS to close the
+            # watcher race condition: if the file watcher (or any other
+            # writer) inserts a row after the bulk loop ends but before
+            # the FTS rebuild — or between rebuild and trigger
+            # recreation in the original ordering — that row would land
+            # in `emails` but never enter `emails_fts`. By recreating
+            # triggers first, any concurrent INSERT after this point
+            # fires the trigger normally; the subsequent FTS rebuild
+            # then re-syncs everything in `emails`, double-covering rows
+            # added during the rebuild call itself.
             conn.executescript("""
                 CREATE TRIGGER IF NOT EXISTS emails_ai
                 AFTER INSERT ON emails BEGIN
@@ -347,6 +357,17 @@ class IndexManager:
                     VALUES (new.rowid, new.subject, new.sender, new.content);
                 END;
             """)
+
+            # Rebuild FTS index (must run even if scan crashed
+            # mid-iteration, otherwise emails table has rows
+            # but FTS5 is empty)
+            if total_indexed > 0:
+                if progress_callback:
+                    msg = "Building search index..."
+                    progress_callback(total_indexed, total_indexed, msg)
+
+                rebuild_fts_index(conn)
+                optimize_fts_index(conn)
 
             # Log cap warnings (aggregate summary)
             if capped_mailboxes:
@@ -627,6 +648,78 @@ class IndexManager:
         if row and row["emlx_path"]:
             return Path(row["emlx_path"])
         return None
+
+    def delete_email(
+        self,
+        message_id: int,
+        account: str | None = None,
+        mailbox: str | None = None,
+    ) -> int:
+        """Delete a single email entry from the index.
+
+        Used to clean up stale entries when the indexed `.emlx` file
+        no longer exists on disk (the message was deleted or moved
+        between syncs). The `AFTER DELETE ON emails` trigger handles
+        FTS5 cleanup; the `attachments` table cascades via
+        `ON DELETE CASCADE`.
+
+        Args:
+            message_id: Mail.app message ID
+            account: Optional account filter (UUID) — narrows the
+                delete when the same message_id appears in multiple
+                accounts (rare).
+            mailbox: Optional mailbox filter
+
+        Returns:
+            Number of rows deleted (typically 0 or 1).
+        """
+        conn = self._get_conn()
+        where = ["message_id = ?"]
+        params: list = [message_id]
+        if account:
+            where.append("account = ?")
+            params.append(account)
+        if mailbox:
+            where.append("mailbox = ?")
+            params.append(mailbox)
+
+        sql = "DELETE FROM emails WHERE " + " AND ".join(where)
+        cursor = conn.execute(sql, params)
+        conn.commit()
+        return cursor.rowcount
+
+    def record_parse_failure(
+        self,
+        emlx_path: str,
+        account: str,
+        mailbox: str,
+        error: BaseException,
+    ) -> None:
+        """Record an `.emlx` parse failure into the dead letter queue.
+
+        Idempotent — repeated failures on the same path bump
+        `attempt_count` and refresh `last_seen` / `error_*` columns
+        without losing `first_seen`.
+        """
+        from .schema import RECORD_PARSE_FAILURE_SQL, parse_failure_row
+
+        conn = self._get_conn()
+        conn.execute(
+            RECORD_PARSE_FAILURE_SQL,
+            parse_failure_row(emlx_path, account, mailbox, error),
+        )
+        conn.commit()
+
+    def clear_parse_failure(self, emlx_path: str) -> int:
+        """Remove a path from the dead letter queue (e.g. after a
+        successful retry). Returns the number of rows removed.
+        """
+        from .schema import CLEAR_PARSE_FAILURE_SQL
+
+        conn = self._get_conn()
+        cursor = conn.execute(CLEAR_PARSE_FAILURE_SQL, (emlx_path,))
+        conn.commit()
+        return cursor.rowcount
 
     def search_attachments(
         self,

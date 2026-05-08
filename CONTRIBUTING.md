@@ -68,7 +68,7 @@ Tests use `pytest` with `pytest-asyncio`. Most tests mock JXA execution so they 
 
 ### Architecture Notes
 
-- **`server.py`** contains the 6 MCP tools — this is the public API surface. Changes here affect what LLMs see and call.
+- **`server.py`** contains the 8 MCP tools and 1 resource (`index://status`) — this is the public API surface. Changes here affect what LLMs see and call.
 - **`get_email()` uses a strategy cascade**: Strategy 0 (disk) → Strategy 1 (JXA specified mailbox) → Strategy 2 (index lookup) → Strategy 3 (iterate all). Each must return the same response schema.
 - **`parse_emlx()`** in `disk.py` handles the `.emlx` format: byte count line, MIME content, plist footer. The plist footer contains Apple Mail metadata (flags bitmask, date-received timestamp).
 - **JXA scripts must use batch property fetching** via `MailCore.batchFetch()` — never iterate messages individually (87x performance difference).

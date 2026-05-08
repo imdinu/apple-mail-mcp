@@ -22,10 +22,13 @@ from typing import TYPE_CHECKING
 
 from .disk import find_mail_directory, parse_emlx
 from .schema import (
+    CLEAR_PARSE_FAILURE_SQL,
     INSERT_EMAIL_SQL,
+    RECORD_PARSE_FAILURE_SQL,
     create_connection,
     email_to_row,
     insert_attachments,
+    parse_failure_row,
 )
 
 if TYPE_CHECKING:
@@ -271,6 +274,7 @@ class IndexWatcher:
             for key, path in adds.items():
                 account, mailbox, _ = key
                 email = None
+                last_error: BaseException | None = None
 
                 # Retry logic for race condition with Mail.app writing
                 for attempt in range(MAX_FILE_RETRIES):
@@ -279,6 +283,7 @@ class IndexWatcher:
                         if email:
                             break
                     except OSError as e:
+                        last_error = e
                         if attempt < MAX_FILE_RETRIES - 1:
                             logger.debug(
                                 "Retry %d for %s: %s", attempt + 1, path, e
@@ -289,13 +294,48 @@ class IndexWatcher:
                                 "Failed to parse %s after retries: %s", path, e
                             )
                     except (ValueError, UnicodeDecodeError) as e:
+                        last_error = e
                         logger.warning("Error parsing %s: %s", path, e)
                         break
                     except Exception as e:
+                        last_error = e
                         logger.warning(
                             "Unexpected error parsing %s: %s", path, e
                         )
                         break
+
+                # Record (or clear) the DLQ entry for this path. Doing this
+                # inside the loop iteration keeps the same conn / batch as
+                # the email insert below.
+                if email is None and last_error is not None:
+                    try:
+                        conn.execute(
+                            RECORD_PARSE_FAILURE_SQL,
+                            parse_failure_row(
+                                str(path), account, mailbox, last_error
+                            ),
+                        )
+                    except sqlite3.Error as e:
+                        # The DLQ insert itself failed — the failure
+                        # signal is now lost. Likely indicates a deeper
+                        # problem (disk full, DB corruption,
+                        # schema-version mismatch). Log at ERROR so it
+                        # surfaces in default-config logging instead of
+                        # being swallowed at WARNING level. (#77)
+                        logger.error(
+                            "DLQ write failed for %s — parse failure "
+                            "signal lost (cause: %s). Check disk "
+                            "space and DB integrity.",
+                            path,
+                            e,
+                        )
+                elif email is not None:
+                    # Successful parse — clear any prior DLQ entry. Cheap
+                    # no-op DELETE when the path was never in the DLQ.
+                    try:
+                        conn.execute(CLEAR_PARSE_FAILURE_SQL, (str(path),))
+                    except sqlite3.Error:
+                        pass
 
                 if email:
                     try:

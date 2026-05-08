@@ -5,7 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] - Unreleased
+## [0.3.0] - 2026-05-07
+
+### Fixed
+
+- **Watcher race during `build_from_disk()`** — in `IndexManager.build_from_disk` the FTS5 sync triggers were dropped for the bulk-insert pass and recreated *after* `rebuild_fts_index()`. Any concurrent INSERT (file watcher, separate process holding `--watch`) that landed between the FTS rebuild and the trigger recreation entered `emails` but never reached `emails_fts`, leaving the row permanently unsearchable. The trigger recreation now happens *before* the FTS rebuild — concurrent inserts during the rebuild fire the recreated trigger, and the rebuild itself re-syncs everything in `emails`, double-covering the window. (Surfaced via Gemini code review.)
+- **Stale FTS5 entry auto-cleanup** — when `get_email()` Strategy 0 finds an indexed `.emlx` path that no longer exists on disk (the message was deleted or moved between syncs), the dead row is now removed from the index and a clear `"deleted or moved"` error is returned. Previously the cascade fell through to Strategy 3 and timed out (~1.3% of `get_email` calls in observed traffic). Adds `IndexManager.delete_email()` primitive. (#74)
+- **Dead letter queue for `.emlx` parse failures** — files that fail to parse in the watcher or disk-sync paths are now recorded in a new `failed_index_jobs` table (path, account, mailbox, error type/message, first/last seen, attempt count). Previously such failures were swallowed silently after the v0.1.8 watcher hardening. Successful re-parses automatically clear the entry. Surfaced in `apple-mail-mcp status` and the `index://status` resource via a new `failed_jobs_count`. Schema bumped to v5 with a forward-only migration. (#58)
+- **DLQ write failures now log at ERROR level** — when the `failed_index_jobs` INSERT itself fails (disk full, DB corruption, schema mismatch), both the watcher and disk-sync paths now log at ERROR with diagnostic context instead of swallowing silently (sync) or emitting WARNING (watcher). Surfaces operationally-significant failure modes that were previously invisible. (#77)
+
+### Changed
+
+- **`cyclopts` constraint relaxed to stable** — was `>=5.0.0a1` (pre-release), now `>=4.10`. Removes the need for `--prerelease=allow` in `claude_desktop_config.json` and other install configs. No API changes; the cyclopts surface used by `cli.py` is identical between 4.x and 5.x. (#75)
+- **HTML stripping during indexing now uses selectolax** (lexbor C parser) for ~5x faster `_strip_html()` on realistic email HTML (5-25 KB body parts). BeautifulSoup is kept as a fallback if selectolax raises or fails to import. All existing XSS-bypass tests pass under both paths. New `selectolax>=0.4.8` dependency. (#59)
+- **`sync_from_disk()` now uses a SQL temp table for diffing** instead of materializing the full disk and DB inventories as Python dicts. Memory at sync time stays flat (~2-3 MB delta) regardless of mailbox size; previously the dicts grew linearly to ~116 MB at 200K emails. Time cost is ~1.8x (sub-second even at 200K). Adds `iter_disk_inventory()` streaming variant of `get_disk_inventory()` in `disk.py`. All existing sync tests pass — behavior is preserved (added/deleted/moved counts, mtime sort, per-mailbox cap). (#60)
+
+### Added
+
+- **`index://status` MCP resource** — read-only JSON snapshot of the FTS5 search index (counts, size, last sync, staleness). Lets MCP clients assess index health without invoking a tool. (#12)
+- **Benchmark suite expansion + refresh** — added `sweetrb/apple-mail-mcp` (TypeScript, AppleScript-based, 40+ tools, npm) and `BastianZim/apple-mail-mcp` (Python, reads Envelope Index SQLite + `.emlx` directly, no AppleScript) to the competitor list, then re-ran the full sweep on a 72K-message mailbox. Charts and the benchmarks doc are refreshed; positioning copy updated to reflect that the FTS5 differentiator is now precisely "full-coverage body search" — BastianZim implements a body parameter but caps live-scanning at the 5000 most recent messages (silent miss on older mail). Per-scenario charts now mark BastianZim as "5K cap" in the capability matrix and exclude it from the body-search bar chart so the comparison stays apples-to-apples.
+- **`server.json` declares `runtimeHint: "uvx"`** — spec-compliant signal to MCP registries that the canonical launch command is `uvx apple-mail-mcp`. No effect on existing clients that already invoke the package directly.
+
+### Documentation
+
+- **Discovery descriptions refreshed** — `pyproject.toml`, `server.json`, and `mkdocs.yml` all now describe the project as "Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes where AppleScript-based servers timeout." Replaces the older "the only one that works reliably" wording, which the v0.3.0 bench refresh showed was no longer uniquely ours (BastianZim also handles large mailboxes — just with a 5000-message body-search cap).
+- **Schema-version references updated to v5** across `CLAUDE.md`, `docs/architecture.md`, and `docs/search.md`.
+- **New documentation sections** for the `index://status` MCP resource (`CLAUDE.md`, `docs/architecture.md`, `docs/tools.md`) and the `failed_index_jobs` DLQ (`docs/search.md`, `docs/troubleshooting.md`).
+
+## [0.2.2] - 2026-04-13
+
+### Added
+
+- **Mailbox name alias resolution** — JXA `getMailbox()` now resolves common cross-provider aliases (e.g., `Sent Messages` → `Sent Items` on Outlook, `Trash` → `Deleted Items`) and falls back to case-insensitive matching. (#73)
+- **Configurable Strategy 3 timeout** — Strategy 3 (iterate-all-mailboxes fallback in `get_email`) now exposes `APPLE_MAIL_STRATEGY3_TIMEOUT` and `APPLE_MAIL_STRATEGY3_MAX_MAILBOXES` environment variables.
+
+### Fixed
+
+- **Bare wildcard `*` query** — no longer crashes FTS5 with a syntax error. (#72)
+
+### Tests
+
+- Added watcher tests for noisy events, nested mbox, V11 directory layouts, and pending-changes limits.
+- Added corrupt `.emlx` parser tests (bad byte counts, truncated content, empty files, missing newline). +10 tests; total 325 passing.
+
+## [0.2.1] - 2026-04-05
 
 ### Added
 

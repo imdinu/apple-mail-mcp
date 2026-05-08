@@ -524,36 +524,51 @@ def _extract_body_text(msg: email.message.Message) -> str:
 
 def _strip_html(html: str) -> str:
     """
-    Robust HTML to text conversion using BeautifulSoup.
+    Robust HTML to text conversion.
 
-    Uses a proper HTML parser instead of regex to prevent XSS bypass
-    attacks from malformed HTML like <<script> or nested tags.
+    Uses selectolax (lexbor C parser) for ~5x faster stripping than
+    BeautifulSoup on realistic email HTML. Falls back to BeautifulSoup
+    if selectolax raises — this path also covers environments where the
+    selectolax C extension didn't install. A real HTML parser (vs.
+    regex) is required to prevent XSS-style bypass via malformed HTML
+    like `<<script>` or unbalanced nesting.
     """
+    text: str | None = None
+
+    # Fast path: selectolax
     try:
-        from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+        from selectolax.parser import HTMLParser
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
-            soup = BeautifulSoup(html, "html.parser")
-
-        # Remove script and style elements completely
-        for element in soup(["script", "style"]):
-            element.decompose()
-
-        # Get text with newlines as separators
-        text = soup.get_text(separator="\n", strip=True)
-
-        # Collapse multiple newlines
-        text = re.sub(r"\n\s*\n", "\n\n", text)
-        text = re.sub(r" +", " ", text)
-
-        return text.strip()
-
+        tree = HTMLParser(html)
+        for tag in tree.css("script, style"):
+            tag.decompose()
+        body = tree.body
+        text = body.text(separator="\n", strip=True) if body else ""
     except Exception:
-        # Fallback: return empty string if parsing fails entirely.
-        # Covers ParserRejectedMarkup from malformed HTML and
-        # any other parser errors that shouldn't crash the scan.
-        return ""
+        text = None
+
+    # Fallback: BeautifulSoup
+    if text is None:
+        try:
+            from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=XMLParsedAsHTMLWarning
+                )
+                soup = BeautifulSoup(html, "html.parser")
+            for element in soup(["script", "style"]):
+                element.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+        except Exception:
+            # Both parsers failed — return empty string so a single bad
+            # email doesn't crash the scan.
+            return ""
+
+    # Common post-processing: collapse runs of whitespace.
+    text = re.sub(r"\n\s*\n", "\n\n", text)
+    text = re.sub(r" +", " ", text)
+    return text.strip()
 
 
 def _estimate_attachment_size(part: email.message.Message) -> int:
@@ -1066,6 +1081,27 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
         }
 
 
+def iter_disk_inventory(
+    mail_dir: Path,
+) -> Iterator[tuple[str, str, int, str]]:
+    """Stream the disk inventory as `(account, mailbox, msg_id, path)` tuples.
+
+    Streaming variant of `get_disk_inventory()`. Use when you don't need
+    O(1) lookups and want bounded memory — e.g. bulk-loading into a
+    SQL temp table for diffing.
+
+    Yields tuples instead of building a full dict. Files with non-numeric
+    or unparseable names are skipped silently.
+    """
+    for emlx_path in scan_emlx_files(mail_dir):
+        try:
+            msg_id = extract_message_id(emlx_path)
+            account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
+        except (ValueError, AttributeError):
+            continue
+        yield (account, mailbox, msg_id, str(emlx_path))
+
+
 def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
     """
     Fast inventory of all emails on disk WITHOUT parsing content.
@@ -1083,23 +1119,10 @@ def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
     Returns:
         Dict mapping (account, mailbox, msg_id) -> emlx_path string
     """
-    inventory: dict[tuple[str, str, int], str] = {}
-
-    for emlx_path in scan_emlx_files(mail_dir):
-        try:
-            # Extract message ID from filename (handles .partial.emlx)
-            msg_id = extract_message_id(emlx_path)
-
-            # Infer account/mailbox from path
-            account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
-
-            inventory[(account, mailbox, msg_id)] = str(emlx_path)
-
-        except (ValueError, AttributeError):
-            # Skip files with non-numeric names
-            continue
-
-    return inventory
+    return {
+        (account, mailbox, msg_id): path
+        for account, mailbox, msg_id, path in iter_disk_inventory(mail_dir)
+    }
 
 
 def _infer_account_mailbox(emlx_path: Path, mail_dir: Path) -> tuple[str, str]:

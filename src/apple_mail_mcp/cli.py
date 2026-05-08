@@ -293,6 +293,8 @@ def status(
     print(f"Attachments:  {stats.attachment_count:,}")
     print(f"Mailboxes:    {stats.mailbox_count}")
     print(f"Database:     {_format_size(stats.db_size_mb)}")
+    if stats.failed_jobs_count > 0:
+        print(f"Failed parse: {stats.failed_jobs_count:,} (.emlx files in DLQ)")
     print()
 
     if stats.last_sync:

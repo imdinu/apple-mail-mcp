@@ -237,3 +237,39 @@ get_email_attachment(12345, "invoice.pdf")
     `get_attachment()` is deprecated since v0.2.0. Use `get_email_attachment()` instead. The old name still works but may be removed in a future release.
 
 Identical to `get_email_attachment()`. See above for parameters and return value.
+
+---
+
+## MCP Resources
+
+Tools are model-invoked (the LLM calls them). **Resources** are typically client-polled — read-only data the MCP client can pull as context without an LLM round-trip.
+
+### `index://status` *(added v0.3.0)*
+
+Read-only JSON snapshot of FTS5 search-index health. Lets clients render an "index OK" indicator or surface staleness without invoking a tool.
+
+**MIME type:** `application/json`
+
+**Payload (when index exists):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `has_index` | `bool` | Always `true` when index file is present |
+| `email_count` | `int` | Number of indexed emails |
+| `mailbox_count` | `int` | Number of distinct (account, mailbox) pairs |
+| `attachment_count` | `int` | Total attachment metadata rows |
+| `disk_email_count` | `int?` | Total `.emlx` files on disk (best-effort; `null` if Full Disk Access denied) |
+| `db_size_mb` | `float` | Size of index DB on disk, rounded to 0.01 MB |
+| `capped_mailboxes` | `int` | Number of mailboxes that hit `APPLE_MAIL_INDEX_MAX_EMAILS` cap |
+| `failed_jobs_count` | `int` | Rows in the dead-letter queue (`.emlx` parses that failed) |
+| `last_sync` | `string?` | ISO-8601 of last sync, or `null` if never synced |
+| `staleness_hours` | `float?` | Hours since `last_sync`, rounded to 0.01 |
+
+**Payload (when no index):**
+
+```json
+{
+  "has_index": false,
+  "message": "No index found. Run 'apple-mail-mcp index' to build it."
+}
+```

@@ -6,13 +6,18 @@ Apple Mail MCP Server
 2. FTS5 search — full-text body search in ~20ms with BM25 ranking
 3. JXA fallback — batch property fetching for multi-email listing
 
-TOOLS (6 total):
+TOOLS (8 total):
 - list_accounts() - List email accounts
 - list_mailboxes(account?) - List mailboxes
 - get_emails(..., filter?) - Unified email listing with filters
 - get_email(id) - Get single email with content (disk-first)
 - search(query, ...) - Unified search with FTS5 support
-- get_attachment(id, filename?) - Extract attachment or links
+- get_email_links(id) - Extract hyperlinks from an email
+- get_email_attachment(id, filename) - Extract a file attachment
+- get_attachment(id, filename?) - Deprecated alias
+
+RESOURCES (1 total):
+- index://status - JSON snapshot of search-index health
 """
 
 from __future__ import annotations
@@ -166,7 +171,7 @@ def _detect_matched_columns(query: str, result) -> str:
     return detect_matched_columns(query, result)
 
 
-# ========== MCP Tools (6 total) ==========
+# ========== MCP Tools (8 total) ==========
 
 
 @mcp.tool
@@ -385,6 +390,10 @@ async def get_email(
         return result
 
     # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
+    # Stale-entry detection: if find_email_path returns a path but the file
+    # is gone (deleted/moved between syncs), capture the (account, mailbox)
+    # for cleanup outside the broad except block.
+    stale_index_entry: tuple[str | None, str | None] | None = None
     try:
         manager = _get_index_manager()
         if manager.has_index():
@@ -400,39 +409,70 @@ async def get_email(
             emlx_path = manager.find_email_path(
                 message_id, account=idx_acct, mailbox=mailbox
             )
-            if emlx_path and emlx_path.exists():
-                parsed = await asyncio.to_thread(parse_emlx, emlx_path)
-                if parsed:
-                    result = {
-                        "id": parsed.id,
-                        "subject": parsed.subject,
-                        "sender": parsed.sender,
-                        "content": parsed.content,
-                        "date_received": parsed.date_received,
-                        "date_sent": parsed.date_sent,
-                        "read": parsed.read
-                        if parsed.read is not None
-                        else False,
-                        "flagged": parsed.flagged
-                        if parsed.flagged is not None
-                        else False,
-                        "reply_to": parsed.reply_to,
-                        "message_id": parsed.message_id_header,
-                        "attachments": [
-                            {
-                                "filename": a.filename,
-                                "mime_type": a.mime_type,
-                                "size": a.file_size,
-                            }
-                            for a in (parsed.attachments or [])
-                        ],
-                    }
-                    return _enrich_attachments(result)
+            if emlx_path:
+                if emlx_path.exists():
+                    parsed = await asyncio.to_thread(parse_emlx, emlx_path)
+                    if parsed:
+                        result = {
+                            "id": parsed.id,
+                            "subject": parsed.subject,
+                            "sender": parsed.sender,
+                            "content": parsed.content,
+                            "date_received": parsed.date_received,
+                            "date_sent": parsed.date_sent,
+                            "read": parsed.read
+                            if parsed.read is not None
+                            else False,
+                            "flagged": parsed.flagged
+                            if parsed.flagged is not None
+                            else False,
+                            "reply_to": parsed.reply_to,
+                            "message_id": parsed.message_id_header,
+                            "attachments": [
+                                {
+                                    "filename": a.filename,
+                                    "mime_type": a.mime_type,
+                                    "size": a.file_size,
+                                }
+                                for a in (parsed.attachments or [])
+                            ],
+                        }
+                        return _enrich_attachments(result)
+                else:
+                    stale_index_entry = (idx_acct, mailbox)
     except Exception:
         logger.debug(
             "Strategy 0 (disk) failed for %s, falling through",
             message_id,
             exc_info=True,
+        )
+
+    # Stale-entry handling: clean up the dead row and fail fast with a
+    # clear message. Skipping Strategies 1-3 here is intentional — they
+    # would also fail (the message is gone from Mail.app), with Strategy 3
+    # eating its full timeout before doing so.
+    if stale_index_entry is not None:
+        stale_acct, stale_mb = stale_index_entry
+        try:
+            manager = _get_index_manager()
+            deleted = manager.delete_email(
+                message_id, account=stale_acct, mailbox=stale_mb
+            )
+            logger.info(
+                "Cleaned %d stale index entry/entries for message %s",
+                deleted,
+                message_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to clean stale index entry for %s",
+                message_id,
+                exc_info=True,
+            )
+        raise ValueError(
+            f"Message {message_id} was deleted or moved since the last "
+            f"index sync. Run 'apple-mail-mcp rebuild' to refresh "
+            f"the index."
         )
 
     # Strategy 1: Try specified mailbox
@@ -915,6 +955,59 @@ async def search(
             }
             for e in emails
         ]
+    )
+
+
+# ========== MCP Resources ==========
+
+
+@mcp.resource(
+    uri="index://status",
+    name="IndexStatus",
+    description=(
+        "Read-only snapshot of the FTS5 search index: counts, size, "
+        "last sync timestamp, and staleness in hours. Clients can use "
+        "this to assess index health without invoking a tool."
+    ),
+    mime_type="application/json",
+    tags={"index", "monitoring"},
+)
+async def index_status() -> str:
+    """JSON snapshot of search-index health and counts."""
+    manager = _get_index_manager()
+    if not manager.has_index():
+        return json.dumps(
+            {
+                "has_index": False,
+                "message": (
+                    "No index found. Run 'apple-mail-mcp index' to build it."
+                ),
+            }
+        )
+
+    # get_stats() walks ~/Library/Mail/V*/ for disk_email_count, which
+    # can be slow on large mailboxes — push to a worker thread.
+    stats = await asyncio.to_thread(manager.get_stats)
+
+    return json.dumps(
+        {
+            "has_index": True,
+            "email_count": stats.email_count,
+            "mailbox_count": stats.mailbox_count,
+            "attachment_count": stats.attachment_count,
+            "disk_email_count": stats.disk_email_count,
+            "db_size_mb": round(stats.db_size_mb, 2),
+            "capped_mailboxes": stats.capped_mailboxes,
+            "failed_jobs_count": stats.failed_jobs_count,
+            "last_sync": (
+                stats.last_sync.isoformat() if stats.last_sync else None
+            ),
+            "staleness_hours": (
+                round(stats.staleness_hours, 2)
+                if stats.staleness_hours is not None
+                else None
+            ),
+        }
     )
 
 

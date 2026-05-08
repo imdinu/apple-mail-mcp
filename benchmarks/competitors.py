@@ -93,8 +93,8 @@ _register(
         name="patrickfreyer/apple-mail-mcp",
         key="patrickfreyer",
         command=[
-            f"{CACHE_DIR}/patrickfreyer-apple-mail-mcp/.venv/bin/python",
-            "apple_mail_mcp.py",
+            f"{CACHE_DIR}/patrickfreyer-apple-mail-mcp"
+            "/.venv/bin/mcp-apple-mail",
         ],
         cwd=f"{CACHE_DIR}/patrickfreyer-apple-mail-mcp",
         tool_mapping={
@@ -252,5 +252,74 @@ _register(
             ),
         },
         notes="Rust binary, reads Apple Envelope Index directly",
+    )
+)
+
+# 8. sweetrb/apple-mail-mcp (TypeScript, npm, AppleScript)
+_register(
+    Competitor(
+        name="sweetrb/apple-mail-mcp",
+        key="sweetrb",
+        command=[
+            "node",
+            f"{CACHE_DIR}/sweetrb-apple-mail-mcp/build/index.js",
+        ],
+        tool_mapping={
+            "list_accounts": ToolCall("list-accounts"),
+            "get_emails": ToolCall(
+                "list-messages",
+                {"limit": 50},
+            ),
+            "get_email": ToolCall(
+                "get-message",
+                {"id": None},
+            ),  # id discovered at runtime
+            "search_subject": ToolCall(
+                "search-messages",
+                {"subject": SEARCH_QUERY, "limit": 50},
+            ),
+        },
+        notes=(
+            "TypeScript/AppleScript, 40+ tools, mail-merge. "
+            "No body search — query filter is subject/sender only."
+        ),
+    )
+)
+
+# 9. BastianZim/apple-mail-mcp (Python, no AppleScript, SQLite + .emlx)
+_register(
+    Competitor(
+        name="BastianZim/apple-mail-mcp",
+        key="bastianzim",
+        command=[
+            f"{CACHE_DIR}/bastianzim-apple-mail-mcp/.venv/bin/python",
+            "-m",
+            "apple_mail_mcp.server",
+        ],
+        cwd=f"{CACHE_DIR}/bastianzim-apple-mail-mcp",
+        tool_mapping={
+            "list_accounts": ToolCall("list_accounts"),
+            "get_emails": ToolCall(
+                "search_emails",
+                {"limit": 50},
+            ),
+            "get_email": ToolCall(
+                "read_email",
+                {"message_id": None},
+            ),  # message_id discovered at runtime
+            "search_subject": ToolCall(
+                "search_emails",
+                {"subject": SEARCH_QUERY, "limit": 50},
+            ),
+            "search_body": ToolCall(
+                "search_emails",
+                {"body": SEARCH_QUERY, "limit": 50},
+            ),
+        },
+        notes=(
+            "Reads Envelope Index SQLite + .emlx directly, no AppleScript. "
+            "No FTS5 — body search live-scans up to 5000 .emlx files. "
+            "Closest head-to-head for the indexing thesis."
+        ),
     )
 )

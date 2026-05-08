@@ -53,7 +53,7 @@ pipx upgrade apple-mail-mcp
 
 **Symptom:** After upgrading, search returns unexpected results or `get_attachment()` doesn't work.
 
-**Cause:** Schema changes between versions (e.g., v0.1.3 added attachment metadata in schema v4).
+**Cause:** Schema changes between versions (e.g., v0.1.3 added attachment metadata in schema v4; v0.3.0 added the failed-parse DLQ in schema v5). Migrations are forward-only and run automatically; a manual rebuild is only needed if existing rows lack new columns (attachments, paths).
 
 **Fix:**
 
@@ -62,6 +62,25 @@ apple-mail-mcp rebuild
 ```
 
 This drops and recreates the index from scratch.
+
+## Failed Parse Counter ("Failed parse: N (.emlx files in DLQ)")
+
+**Symptom:** `apple-mail-mcp status` shows a non-zero `Failed parse:` line, or the `index://status` MCP resource reports `failed_jobs_count > 0`.
+
+**Cause:** One or more `.emlx` files couldn't be parsed during sync or by the live watcher (corrupt content, unsupported MIME structure, disk read errors, etc.). They're recorded in the DLQ (`failed_index_jobs` table) so operators have visibility into what's missing from the index.
+
+**Fix options:**
+
+- **Wait for self-healing.** Successful re-parses clear DLQ entries automatically. If the cause was transient (Mail.app was mid-writing the file), the next watcher tick will resolve it.
+- **Inspect the DLQ** to see error types:
+  ```sql
+  -- ~/.apple-mail-mcp/index.db
+  SELECT emlx_path, error_type, error_message, attempt_count
+  FROM failed_index_jobs
+  ORDER BY last_seen DESC;
+  ```
+- **Force a retry** by rebuilding the index: `apple-mail-mcp rebuild`. This re-parses every `.emlx` from disk; entries that succeed are removed from the DLQ.
+- **DLQ writes themselves failing** (logged at `ERROR` level with `"DLQ write failed"`): indicates a deeper problem — disk full or DB corruption. Check disk space and SQLite integrity (`PRAGMA integrity_check;`).
 
 ## Mail.app Not Running
 

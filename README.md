@@ -55,12 +55,12 @@ apple-mail-mcp index --verbose
 
 ## Performance
 
-Tested against [6 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) on a 30K+ email mailbox:
+Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) on a real **~72K-message** mailbox:
 
-- **Only server** that completes all operations without timing out
-- **Only server** with full-text body search (FTS5 index, ~20ms)
-- **5ms** single email fetch via disk-first `.emlx` reading
-- **7–9ms** subject search via FTS5 (vs 230ms+ for AppleScript-based servers)
+- **Only server with full-coverage body search.** Most competitors don't support body search at all; the one that does (BastianZim) live-scans only the 5000 most recent messages — silent miss on anything older. Our FTS5 index covers the entire mailbox.
+- **~3ms single email fetch** via disk-first `.emlx` reading (no JXA round-trip).
+- **~7ms subject search** via FTS5 — competitive with native Rust on the same operation.
+- **Reliable across all 6 benchmarked operations** on a 72K mailbox; AppleScript-based servers timeout, throw syntax errors, or skip operations they don't support.
 
 ![Capability Matrix](docs/benchmark_overview.png)
 
@@ -119,7 +119,7 @@ If you used [supermemoryai/apple-mcp](https://github.com/supermemoryai/apple-mcp
 | `search_emails` | `search(query, scope?)` — 5 scopes: all, subject, sender, body, attachments |
 | `send_email` | Not yet supported (planned) |
 
-**What's different:** available on PyPI (`pipx install apple-mail-mcp`), full-text body search via FTS5 (~20ms), disk-first single-email reads (~5ms), reliable on large mailboxes (30K+) where AppleScript-based servers timeout.
+**What's different:** available on PyPI (`pipx install apple-mail-mcp`), full-coverage FTS5 body search (~20ms, no recency cap), disk-first single-email reads (~3ms), reliable on large mailboxes (tested at 72K messages) where AppleScript-based servers timeout.
 
 ## Development
 
