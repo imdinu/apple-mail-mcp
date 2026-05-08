@@ -1,6 +1,6 @@
 site_name: Apple Mail MCP
 site_url: https://imdinu.github.io/apple-mail-mcp/
-site_description: Apple Mail MCP server with full-text email search. The only one that works reliably on large mailboxes.
+site_description: Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes where AppleScript-based servers timeout.
 site_author: Ioan-Mihail Dinu
 
 repo_name: imdinu/apple-mail-mcp

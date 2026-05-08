@@ -1,7 +1,7 @@
 [project]
 name = "apple-mail-mcp"
 version = "0.3.0"
-description = "Apple Mail MCP server with full-text email search. The only one that works reliably on large mailboxes."
+description = "Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes where AppleScript-based servers timeout."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"

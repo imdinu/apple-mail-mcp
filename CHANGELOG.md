@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`index://status` MCP resource** — read-only JSON snapshot of the FTS5 search index (counts, size, last sync, staleness). Lets MCP clients assess index health without invoking a tool. (#12)
 - **Benchmark suite expansion + refresh** — added `sweetrb/apple-mail-mcp` (TypeScript, AppleScript-based, 40+ tools, npm) and `BastianZim/apple-mail-mcp` (Python, reads Envelope Index SQLite + `.emlx` directly, no AppleScript) to the competitor list, then re-ran the full sweep on a 72K-message mailbox. Charts and the benchmarks doc are refreshed; positioning copy updated to reflect that the FTS5 differentiator is now precisely "full-coverage body search" — BastianZim implements a body parameter but caps live-scanning at the 5000 most recent messages (silent miss on older mail). Per-scenario charts now mark BastianZim as "5K cap" in the capability matrix and exclude it from the body-search bar chart so the comparison stays apples-to-apples.
+- **`server.json` declares `runtimeHint: "uvx"`** — spec-compliant signal to MCP registries that the canonical launch command is `uvx apple-mail-mcp`. No effect on existing clients that already invoke the package directly.
+
+### Documentation
+
+- **Discovery descriptions refreshed** — `pyproject.toml`, `server.json`, and `mkdocs.yml` all now describe the project as "Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes where AppleScript-based servers timeout." Replaces the older "the only one that works reliably" wording, which the v0.3.0 bench refresh showed was no longer uniquely ours (BastianZim also handles large mailboxes — just with a 5000-message body-search cap).
+- **Schema-version references updated to v5** across `CLAUDE.md`, `docs/architecture.md`, and `docs/search.md`.
+- **New documentation sections** for the `index://status` MCP resource (`CLAUDE.md`, `docs/architecture.md`, `docs/tools.md`) and the `failed_index_jobs` DLQ (`docs/search.md`, `docs/troubleshooting.md`).
 
 ## [0.2.2] - 2026-04-13
 
