@@ -168,8 +168,16 @@ breakdown*, not just *what is the largest line*. Some patterns:
 
 ## What this project knows so far
 
-A profile of `apple-mail-mcp index` on a real ~60k-message mailbox
-shows roughly balanced overhead across multiple layers:
+A reference profile of `apple-mail-mcp index` on a real ~60k-message
+mailbox (M1 Pro, internal SSD, macOS 26.4):
+
+![Reference flame chart from a 60k-message index run](img/profile_flame_example.png)
+
+The chart's two halves answer different questions (top: cumulative time
+through the call stack; bottom: self-time spent inside each function).
+See "Flame chart (visual)" above for how to read each.
+
+Aggregated by component:
 
 | Component | Approximate share of self-time |
 |---|---|
