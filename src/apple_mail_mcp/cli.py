@@ -17,11 +17,38 @@ Usage:
 
 import sys
 import time
-from typing import Annotated
+from collections.abc import Callable
+from pathlib import Path
+from typing import Annotated, TypeVar
 
 import cyclopts
 
 from .config import get_index_path
+
+T = TypeVar("T")
+
+
+def _run_optionally_profiled(
+    op: Callable[[], T], profile_path: Path | None
+) -> T:
+    """Run `op()` directly, or wrap it in cProfile if a path is given.
+
+    cProfile is stdlib — no extra dependencies. Profile the whole
+    callable so the dump captures end-to-end cost (walk, parse,
+    SQL inserts, FTS rebuild). Documented in docs/profiling.md.
+    """
+    if profile_path is None:
+        return op()
+    import cProfile
+
+    result_holder: list[T] = []
+
+    def runner() -> None:
+        result_holder.append(op())
+
+    cProfile.runctx("runner()", globals(), locals(), str(profile_path))
+    return result_holder[0]
+
 
 app = cyclopts.App(
     name="apple-mail-mcp",
@@ -176,6 +203,13 @@ def index(
         bool,
         cyclopts.Parameter(name=["--verbose", "-v"], help="Show progress"),
     ] = False,
+    profile: Annotated[
+        Path | None,
+        cyclopts.Parameter(
+            name=["--profile"],
+            help="Write a cProfile dump to this path for performance analysis",
+        ),
+    ] = None,
 ) -> None:
     """
     Build the search index from disk.
@@ -190,6 +224,8 @@ def index(
 
     print("Building search index from disk...")
     print(f"Index location: {get_index_path()}")
+    if profile:
+        print(f"Profiling: writing cProfile dump to {profile}")
     print()
 
     manager = IndexManager()
@@ -214,7 +250,10 @@ def index(
 
     try:
         callback = progress if verbose else None
-        count = manager.build_from_disk(progress_callback=callback)
+        count = _run_optionally_profiled(
+            lambda: manager.build_from_disk(progress_callback=callback),
+            profile_path=profile,
+        )
         elapsed = time.time() - start
 
         if verbose:
@@ -344,6 +383,13 @@ def rebuild(
         bool,
         cyclopts.Parameter(name=["--verbose", "-v"], help="Show progress"),
     ] = False,
+    profile: Annotated[
+        Path | None,
+        cyclopts.Parameter(
+            name=["--profile"],
+            help="Write a cProfile dump to this path for performance analysis",
+        ),
+    ] = None,
 ) -> None:
     """
     Force rebuild the search index.
@@ -364,6 +410,8 @@ def rebuild(
         scope = f"account {account}"
 
     print(f"Rebuilding {scope}...")
+    if profile:
+        print(f"Profiling: writing cProfile dump to {profile}")
 
     manager = IndexManager()
     start = time.time()
@@ -373,10 +421,13 @@ def rebuild(
             print(f"\r{message}", end="", flush=True)
 
     try:
-        count = manager.rebuild(
-            account=account,
-            mailbox=mailbox,
-            progress_callback=progress if verbose else None,
+        count = _run_optionally_profiled(
+            lambda: manager.rebuild(
+                account=account,
+                mailbox=mailbox,
+                progress_callback=progress if verbose else None,
+            ),
+            profile_path=profile,
         )
         elapsed = time.time() - start
 

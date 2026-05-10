@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-05-10
+
+### Added
+
+- **`--profile PATH` flag on `index` and `rebuild`** — wraps the operation in `cProfile` and writes a `pstats`-format dump to the given path. Stdlib-only (no new runtime dependencies). Intended for users diagnosing slow indexing on their own data and for sharing actionable performance traces in bug reports. Documented in `docs/profiling.md` along with recommended visualizers (`flameprof` for flame charts, `gprof2dot` for call graphs, `snakeviz` for interactive exploration). Surfaced in response to community feedback on #60 — wall-clock invariance at 100k+ mailbox scale was hard to diagnose without a contributor-friendly profiling path. `flameprof>=0.4` added to the `dev` dependency group so contributors get a flame-chart renderer on `uv sync`.
+- **`docs/profiling.md`** — methodology page covering when to profile, how to capture, how to read the two halves of a flame chart (cumulative vs self-time), and what patterns in a profile signal which optimization strategies. Includes a reference breakdown from a real ~60k-message mailbox showing balanced overhead across the parse pipeline (no single dominant bottleneck on this dataset). Wired into the mkdocs nav.
+
+### Fixed
+
+- **`index://status` resource no longer walks the disk on every call** — `IndexManager.get_stats()` now caches `disk_email_count` with a 60-second TTL via a new `_get_disk_email_count_cached()` helper. Previously, every read of the `index://status` MCP resource triggered a full `get_disk_inventory()` filesystem walk under `~/Library/Mail/V*/`, which is O(N files) and would dominate response latency for clients polling the resource on a tight loop. The cache is automatically invalidated at the end of `build_from_disk()` and `sync_updates()` so the next status call after a sync reflects truth. Failures (`PermissionError`, `FileNotFoundError`) are deliberately *not* cached so subsequent calls retry in case Full Disk Access has since been granted. New public `invalidate_disk_count_cache()` method for callers that need to force a fresh read. (#78)
+- **Memory spike in `_estimate_attachment_size`** — replaced chained `raw.replace("\n", "").replace("\r", "").replace(" ", "")` with `str.count()` (allocation-free) followed by a bounded trailing-padding scan. For a 20 MB base64 attachment, the previous implementation allocated ~80 MB of intermediate string copies just to compute an integer size estimate; under bulk indexing of attachment-heavy mailboxes this triggered severe GC pressure that could dominate wall-clock. The fix preserves exact semantics — including the padding subtraction that the originally-proposed Option B (`int(len(raw) * 0.75)`) would have lost — verified by the existing `test_base64_size_estimation` test plus a new whitespace-heavy regression test. (#81)
+
 ## [0.3.1] - 2026-05-08
 
 ### Changed
@@ -198,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disk-based sync for index building
 - Real-time file watcher for index updates
 
+[0.3.2]: https://github.com/imdinu/apple-mail-mcp/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/imdinu/apple-mail-mcp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/imdinu/apple-mail-mcp/compare/v0.2.1...v0.2.2

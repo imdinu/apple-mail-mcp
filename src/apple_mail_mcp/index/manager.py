@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -81,6 +82,12 @@ class IndexManager:
     _instance: IndexManager | None = None
     _instance_lock = threading.Lock()
 
+    # Cache TTL for the disk inventory walk in get_stats(). The walk
+    # is O(N files) and can dominate response latency on >100k
+    # mailboxes (#78). 60s is generous — disk_email_count is a
+    # coverage gauge, not a security-critical value.
+    _DISK_COUNT_TTL_SEC: float = 60.0
+
     def __init__(self, db_path: Path | None = None):
         """
         Initialize the IndexManager.
@@ -93,6 +100,8 @@ class IndexManager:
         self._conn_lock = threading.Lock()
         self._watcher: IndexWatcher | None = None
         self._watcher_callback: Callable[[int, int], None] | None = None
+        # (count, expiry_monotonic) — None until first successful read.
+        self._disk_count_cache: tuple[int, float] | None = None
 
     @classmethod
     def get_instance(cls) -> IndexManager:
@@ -187,15 +196,11 @@ class IndexManager:
         except sqlite3.OperationalError:
             pass
 
-        # Disk email count (best-effort, skip if no FDA)
-        disk_email_count = None
-        try:
-            from .disk import find_mail_directory, get_disk_inventory
-
-            mail_dir = find_mail_directory()
-            disk_email_count = len(get_disk_inventory(mail_dir))
-        except (FileNotFoundError, PermissionError):
-            pass
+        # Disk email count (best-effort, skip if no FDA). Cached
+        # with a 60s TTL — the underlying disk walk is O(N files)
+        # and would dominate latency for clients polling
+        # `index://status` on a tight loop. (#78)
+        disk_email_count = self._get_disk_email_count_cached()
 
         return IndexStats(
             email_count=email_count,
@@ -208,6 +213,33 @@ class IndexManager:
             disk_email_count=disk_email_count,
             failed_jobs_count=failed_jobs_count,
         )
+
+    def _get_disk_email_count_cached(self) -> int | None:
+        """Return disk email count, walking the filesystem at most
+        once per `_DISK_COUNT_TTL_SEC`. Returns None if Full Disk
+        Access is not granted or the Mail directory is missing.
+        """
+        now = time.monotonic()
+        cache = self._disk_count_cache
+        if cache is not None and cache[1] > now:
+            return cache[0]
+        try:
+            from .disk import find_mail_directory, get_disk_inventory
+
+            mail_dir = find_mail_directory()
+            count = len(get_disk_inventory(mail_dir))
+        except (FileNotFoundError, PermissionError):
+            # Don't cache failures — the next call should retry in
+            # case Full Disk Access has since been granted.
+            return None
+        self._disk_count_cache = (count, now + self._DISK_COUNT_TTL_SEC)
+        return count
+
+    def invalidate_disk_count_cache(self) -> None:
+        """Drop the cached disk email count. Call after a sync or
+        rebuild that materially changes on-disk state.
+        """
+        self._disk_count_cache = None
 
     def is_stale(self) -> bool:
         """Check if the index needs a sync."""
@@ -387,6 +419,9 @@ class IndexManager:
                     )
                     progress_callback(total_indexed, total_indexed, msg)
 
+        # Disk inventory just changed — drop the cache so the next
+        # status call reflects truth.
+        self.invalidate_disk_count_cache()
         return total_indexed
 
     @staticmethod
@@ -455,6 +490,9 @@ class IndexManager:
             mail_dir,
             progress_callback,
         )
+        # Disk inventory just changed (or was just verified) — drop
+        # the get_stats cache so the next status call reflects truth.
+        self.invalidate_disk_count_cache()
         return result.total_changes
 
     def search(

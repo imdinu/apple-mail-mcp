@@ -69,4 +69,5 @@ nav:
   - Architecture: architecture.md
   - Architecture Deep Dive: architecture-deep-dive.md
   - Benchmarks: benchmarks.md
+  - Profiling: profiling.md
   - Troubleshooting: troubleshooting.md

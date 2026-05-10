@@ -655,6 +655,33 @@ some payload
 
         assert _estimate_attachment_size(msg) == 0
 
+    def test_whitespace_heavy_payload_no_intermediate_alloc(self):
+        # Regression for #81: chained .replace() previously allocated
+        # ~3x the payload size in intermediate strings. The fix uses
+        # str.count() (allocation-free) and must preserve exact
+        # semantics including padding subtraction.
+        import email as email_mod
+
+        # Realistic base64 wrapping: 76 chars per line, many newlines
+        # for a payload that decodes to a known size.
+        body = ("A" * 76 + "\n") * 100 + "AAAB=="  # 7600 + 6 = 7606 chars
+        # Clean base64 length: 7600 (the AAAA lines) + 6 (last line) = 7606
+        # But we strip newlines, so clean_len = 7606 - 100 newlines = 7506? No:
+        # The 100 lines contribute 76*100 = 7600 chars, separators are 100
+        # newlines → total raw = 7700 chars. Plus final "AAAB==" = 7706 raw.
+        # clean_len = 7706 - 100 = 7606. Padding = 2.
+        # Expected: (7606 * 3) // 4 - 2 = 5704 - 2 = 5702
+        raw = (
+            f"Content-Type: application/octet-stream\n"
+            f"Content-Disposition: attachment; filename=\"big.bin\"\n"
+            f"Content-Transfer-Encoding: base64\n\n{body}\n"
+        )
+        msg = email_mod.message_from_string(raw)
+        from apple_mail_mcp.index.disk import _estimate_attachment_size
+
+        size = _estimate_attachment_size(msg)
+        assert size == 5702, f"got {size}, expected 5702"
+
 
 class TestScanAllEmailsErrorHandling:
     """scan_all_emails skips corrupt files (#42)."""

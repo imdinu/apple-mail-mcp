@@ -11,6 +11,7 @@ Tests the central orchestration class for the FTS5 search index:
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -804,6 +805,112 @@ class TestGetStatsWithCapped:
 
         stats = manager.get_stats()
         assert stats.capped_mailboxes == 0
+
+
+class TestDiskCountCache:
+    """Tests for the get_stats() disk inventory TTL cache (#78)."""
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_disk_count_cached_across_calls(self, temp_db_path, monkeypatch):
+        manager = IndexManager(db_path=temp_db_path)
+
+        call_count = {"n": 0}
+
+        def fake_inventory(mail_dir):
+            call_count["n"] += 1
+            return {("acc", "INBOX", i): "/p" for i in range(7)}
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: "/fake",
+        )
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.get_disk_inventory",
+            fake_inventory,
+        )
+
+        # First call walks; second call returns cached value.
+        s1 = manager.get_stats()
+        s2 = manager.get_stats()
+        assert s1.disk_email_count == 7
+        assert s2.disk_email_count == 7
+        assert call_count["n"] == 1, "second get_stats should hit cache"
+
+    def test_disk_count_cache_expires(self, temp_db_path, monkeypatch):
+        manager = IndexManager(db_path=temp_db_path)
+        manager._DISK_COUNT_TTL_SEC = 0.05
+
+        call_count = {"n": 0}
+
+        def fake_inventory(mail_dir):
+            call_count["n"] += 1
+            return {("acc", "INBOX", i): "/p" for i in range(3)}
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: "/fake",
+        )
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.get_disk_inventory",
+            fake_inventory,
+        )
+
+        manager.get_stats()
+        assert call_count["n"] == 1
+        time.sleep(0.06)
+        manager.get_stats()
+        assert call_count["n"] == 2, "cache should re-fetch after TTL expiry"
+
+    def test_disk_count_failure_not_cached(self, temp_db_path, monkeypatch):
+        # Permission errors must not be cached — the next call should
+        # retry in case Full Disk Access has since been granted.
+        manager = IndexManager(db_path=temp_db_path)
+
+        call_count = {"n": 0}
+
+        def boom(_):
+            call_count["n"] += 1
+            raise PermissionError("no FDA")
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: "/fake",
+        )
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.get_disk_inventory",
+            boom,
+        )
+
+        s1 = manager.get_stats()
+        s2 = manager.get_stats()
+        assert s1.disk_email_count is None
+        assert s2.disk_email_count is None
+        assert call_count["n"] == 2, "failures must not be cached"
+
+    def test_invalidate_disk_count_cache(self, temp_db_path, monkeypatch):
+        manager = IndexManager(db_path=temp_db_path)
+
+        call_count = {"n": 0}
+
+        def fake_inventory(_):
+            call_count["n"] += 1
+            return {("acc", "INBOX", i): "/p" for i in range(5)}
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory",
+            lambda: "/fake",
+        )
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.get_disk_inventory",
+            fake_inventory,
+        )
+
+        manager.get_stats()
+        manager.invalidate_disk_count_cache()
+        manager.get_stats()
+        assert call_count["n"] == 2, "invalidate should force a re-walk"
 
 
 class TestWatcher:

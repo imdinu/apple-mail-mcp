@@ -1,6 +1,6 @@
 [project]
 name = "apple-mail-mcp"
-version = "0.3.1"
+version = "0.3.2"
 description = "Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes where AppleScript-based servers timeout."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -72,6 +72,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=6.0",
     "pytest-asyncio>=0.24",
+    "flameprof>=0.4",
 ]
 bench = [
     "plotly[kaleido]>=6",

@@ -26,7 +26,7 @@ wheels = [
 
 [[package]]
 name = "apple-mail-mcp"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -45,6 +45,7 @@ bench = [
     { name = "plotly", extra = ["kaleido"] },
 ]
 dev = [
+    { name = "flameprof" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -67,6 +68,7 @@ provides-extras = ["watch"]
 [package.metadata.requires-dev]
 bench = [{ name = "plotly", extras = ["kaleido"], specifier = ">=6" }]
 dev = [
+    { name = "flameprof", specifier = ">=0.4" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-cov", specifier = ">=6.0" },
@@ -586,6 +588,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/b6/b4/8b44030f3697ed1d1
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/23/9836025d2b8070cae295c805f51d9fd9da9228584c85290d8fef44d1cb34/fastmcp-3.0.0b1-py3-none-any.whl", hash = "sha256:e64dd54e94411ccc6ff63459eace8e55c79d15647917bc0c178414a642089750", size = 533457, upload-time = "2026-01-20T05:00:52.153Z" },
 ]
+
+[[package]]
+name = "flameprof"
+version = "0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/e7/114f6710d31854b694598f577f9eac49d7f38b7fb8a55e86e2d3f848fd1c/flameprof-0.4.tar.gz", hash = "sha256:dbc86d4190cbbba624f1e0a40f44d9db96138e27534d83c8ef42d420857875a3", size = 7865, upload-time = "2018-12-25T09:28:48.554Z" }
 
 [[package]]
 name = "h11"

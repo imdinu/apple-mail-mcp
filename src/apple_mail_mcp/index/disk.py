@@ -600,14 +600,21 @@ def _estimate_attachment_size(part: email.message.Message) -> int:
     encoding = (part.get("Content-Transfer-Encoding") or "").lower().strip()
 
     if encoding == "base64":
-        # Strip whitespace to get the clean base64 length
-        stripped = raw.replace("\n", "").replace("\r", "")
-        clean_len = len(stripped.replace(" ", ""))
+        # Compute clean length without intermediate copies. (#81)
+        # `str.count` iterates but allocates nothing; chained
+        # `replace()` would allocate ~3x the payload size, e.g. ~80
+        # MB of GC churn on a 20 MB attachment.
+        whitespace = raw.count("\n") + raw.count("\r") + raw.count(" ")
+        clean_len = len(raw) - whitespace
         if clean_len == 0:
             return 0
-        # Standard base64 ratio: 3 decoded bytes per 4 encoded chars
-        # Account for padding
-        padding = raw.rstrip().count("=") if raw.rstrip().endswith("=") else 0
+        # Count trailing '=' padding without rstrip() allocation.
+        end = len(raw)
+        while end > 0 and raw[end - 1] in " \n\r\t":
+            end -= 1
+        padding = 0
+        while padding < end and raw[end - 1 - padding] == "=":
+            padding += 1
         return (clean_len * 3) // 4 - padding
     else:
         # QP, 7bit, 8bit — encoded length ≈ decoded length
