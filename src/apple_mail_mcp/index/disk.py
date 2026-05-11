@@ -621,10 +621,40 @@ def _estimate_attachment_size(part: email.message.Message) -> int:
         return len(raw)
 
 
+def _mime_part_numbers(
+    msg: email.message.Message,
+) -> dict[int, str]:
+    """Map ``id(part)`` to MIME part-number strings.
+
+    Top-level children of a multipart message are numbered
+    ``"1"``, ``"2"``, etc.  Nested children use dot notation
+    (``"2.1"``, ``"2.2"``), mirroring the subdirectory names
+    Apple Mail uses under ``Attachments/<msg_id>/``.
+    """
+    result: dict[int, str] = {}
+
+    def _walk(
+        part: email.message.Message, prefix: list[str]
+    ) -> None:
+        if part.is_multipart():
+            for i, child in enumerate(part.get_payload(), 1):
+                _walk(child, prefix + [str(i)])
+        else:
+            result[id(part)] = ".".join(prefix)
+
+    if msg.is_multipart():
+        for i, child in enumerate(msg.get_payload(), 1):
+            _walk(child, [str(i)])
+    else:
+        result[id(msg)] = "1"
+
+    return result
+
+
 def _find_external_attachment(
     emlx_path: Path,
     msg_id: int,
-    part_idx: int,
+    part_idx: int | str,
     filename: str,
 ) -> Path | None:
     """Find an externally-stored attachment on disk.
@@ -633,13 +663,14 @@ def _find_external_attachment(
     files in a sibling ``Attachments`` directory::
 
         .../Data/9/4/Messages/49461.partial.emlx
-        .../Data/9/4/Attachments/49461/2/file.jpeg
+        .../Data/9/4/Attachments/49461/2/file.jpeg        (top-level)
+        .../Data/9/4/Attachments/49461/2.2/file.pdf       (nested)
 
     Args:
         emlx_path: Path to the ``.emlx`` file.
         msg_id: Numeric message ID extracted from *emlx_path*.
-        part_idx: 1-based attachment part index (matches the
-            subdirectory name under ``Attachments/<msg_id>/``).
+        part_idx: MIME part number (e.g. ``2`` or ``"2.2"``),
+            matching the subdirectory under ``Attachments/<msg_id>/``.
         filename: Target filename to look for.
 
     Returns:
@@ -719,7 +750,7 @@ def _extract_attachments(
         except ValueError:
             pass
 
-    attachment_part_idx = 0
+    part_numbers = _mime_part_numbers(msg)
 
     for part in msg.walk():
         content_type = part.get_content_type()
@@ -737,19 +768,15 @@ def _extract_attachments(
         if not filename and "attachment" not in disposition.lower():
             continue
 
-        # 1-based index matching Attachments/ subdirs
-        attachment_part_idx += 1
-
         file_size = _estimate_attachment_size(part)
 
         # Fallback: stat external file for .partial.emlx
         if file_size == 0 and emlx_path is not None and msg_id is not None:
-            # Part subdirs start at 2 for the first
-            # attachment (1 is typically the body part)
+            part_number = part_numbers.get(id(part), "")
             ext = _find_external_attachment(
                 emlx_path,
                 msg_id,
-                attachment_part_idx + 1,
+                part_number,
                 filename,
             )
             if ext is not None:
@@ -804,9 +831,9 @@ def get_attachment_content(
         mime_end = mime_start + byte_count
         msg = email.message_from_bytes(content[mime_start:mime_end])
 
-        # Walk MIME parts, tracking attachment index for
+        # Walk MIME parts, using MIME part numbers for
         # external-file fallback.
-        attachment_part_idx = 0
+        part_numbers = _mime_part_numbers(msg)
         for part in msg.walk():
             ct = part.get_content_type()
             disp = str(part.get("Content-Disposition") or "")
@@ -822,8 +849,6 @@ def get_attachment_content(
             if not fname and "attachment" not in disp.lower():
                 continue
 
-            attachment_part_idx += 1
-
             if fname.strip().lower() != target_filename.strip().lower():
                 continue
 
@@ -833,9 +858,10 @@ def get_attachment_content(
                 return (payload, ct)
 
             # Fallback: external file on disk
+            part_number = part_numbers.get(id(part), "")
             result = _read_external_attachment(
                 emlx_path,
-                attachment_part_idx,
+                part_number,
                 target_filename,
             )
             if result is not None:
@@ -848,7 +874,7 @@ def get_attachment_content(
 
 def _read_external_attachment(
     emlx_path: Path,
-    attachment_part_idx: int,
+    part_number: int | str,
     target_filename: str,
 ) -> tuple[bytes, str] | None:
     """Read an external attachment file from disk.
@@ -859,7 +885,7 @@ def _read_external_attachment(
 
     Args:
         emlx_path: Path to the ``.emlx`` file.
-        attachment_part_idx: 1-based attachment index.
+        part_number: MIME part number (e.g. ``2`` or ``"2.2"``).
         target_filename: Filename to find.
 
     Returns:
@@ -873,7 +899,7 @@ def _read_external_attachment(
     ext_path = _find_external_attachment(
         emlx_path,
         msg_id,
-        attachment_part_idx + 1,
+        part_number,
         target_filename,
     )
     if ext_path is None:
