@@ -530,5 +530,5 @@ Chart PNGs are committed (they ARE the results). JSON and HTML in `benchmarks/re
 | **DoS via Large Files** | 25 MB file size limit (`MAX_EMLX_SIZE`) | disk.py |
 | **DoS via Spam** | Max emails per mailbox limit (configurable) | manager.py |
 | **Path Traversal** | Path validation in file watcher | watcher.py |
-| **Data Exposure** | Database created with 0600 permissions | schema.py |
+| **Data Exposure** | Database and attachment cache files created with 0o600 permissions | schema.py, server.py |
 | **Unbounded Memory** | Pending changes limit in watcher | watcher.py |
