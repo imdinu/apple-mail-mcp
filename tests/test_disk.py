@@ -10,6 +10,7 @@ from apple_mail_mcp.index.disk import (
     _extract_body_text,
     _find_external_attachment,
     _infer_account_mailbox,
+    _mime_part_numbers,
     _strip_html,
     get_attachment_content,
     parse_emlx,
@@ -769,16 +770,21 @@ class TestScanAllEmailsErrorHandling:
 def _build_partial_tree(
     tmp_path: Path,
     msg_id: int = 49461,
-    filenames: dict[int, str] | None = None,
+    filenames: dict[int | str, str] | None = None,
     file_content: bytes = b"\x89PNG fake image data",
+    mime_raw: bytes | None = None,
 ) -> Path:
     """Create a realistic .partial.emlx + Attachments tree.
 
     Returns the path to the ``.partial.emlx`` file.
 
-    ``filenames`` maps part-subdir index (e.g. 2, 3) to the
-    filename stored inside that directory.  Defaults to a
-    single attachment at subdir 2.
+    ``filenames`` maps part-subdir index (e.g. ``2``, ``3``,
+    or ``"2.2"`` for nested parts) to the filename stored
+    inside that directory.  Defaults to a single attachment
+    at subdir 2.
+
+    ``mime_raw`` optionally overrides the auto-generated MIME
+    content (for testing nested multipart structures).
     """
     if filenames is None:
         filenames = {2: "photo.jpeg"}
@@ -796,25 +802,26 @@ def _build_partial_tree(
     # Build a minimal .partial.emlx with an attachment
     # part whose payload is empty (simulates external
     # storage).
-    attachment_headers = ""
-    for fname in filenames.values():
-        attachment_headers += (
-            f"------=_Part\r\n"
-            f"Content-Type: application/octet-stream\r\n"
-            f'Content-Disposition: attachment; filename="{fname}"\r\n'
-            f"\r\n"
-        )
+    if mime_raw is None:
+        attachment_headers = ""
+        for fname in filenames.values():
+            attachment_headers += (
+                f"------=_Part\r\n"
+                f"Content-Type: application/octet-stream\r\n"
+                f'Content-Disposition: attachment; filename="{fname}"\r\n'
+                f"\r\n"
+            )
 
-    mime_raw = (
-        'Content-Type: multipart/mixed; boundary="----=_Part"\r\n'
-        "\r\n"
-        "------=_Part\r\n"
-        "Content-Type: text/plain\r\n"
-        "\r\n"
-        "Body text\r\n"
-        f"{attachment_headers}"
-        "------=_Part--\r\n"
-    ).encode()
+        mime_raw = (
+            'Content-Type: multipart/mixed; boundary="----=_Part"\r\n'
+            "\r\n"
+            "------=_Part\r\n"
+            "Content-Type: text/plain\r\n"
+            "\r\n"
+            "Body text\r\n"
+            f"{attachment_headers}"
+            "------=_Part--\r\n"
+        ).encode()
 
     plist = (
         b'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -1068,6 +1075,221 @@ Content-Disposition: attachment; filename="doc.pdf"
         assert len(result) == 1
         assert result[0].filename == "doc.pdf"
         assert result[0].file_size > 0
+
+
+class TestMimePartNumbers:
+    """Tests for _mime_part_numbers helper."""
+
+    def test_flat_multipart(self):
+        """Top-level children get integer part numbers."""
+        import email as email_mod
+
+        raw = """\
+Content-Type: multipart/mixed; boundary="----=_B"
+
+------=_B
+Content-Type: text/plain
+
+Body
+
+------=_B
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="doc.pdf"
+
+------=_B--
+"""
+        msg = email_mod.message_from_string(raw)
+        nums = _mime_part_numbers(msg)
+        parts = list(msg.walk())
+        # parts[0] = multipart container (no entry)
+        # parts[1] = text/plain -> "1"
+        # parts[2] = application/pdf -> "2"
+        assert nums[id(parts[1])] == "1"
+        assert nums[id(parts[2])] == "2"
+
+    def test_nested_multipart(self):
+        """Nested children get dot-notation part numbers."""
+        import email as email_mod
+
+        raw = (
+            'Content-Type: multipart/mixed; boundary="outer"\r\n'
+            "\r\n"
+            "--outer\r\n"
+            'Content-Type: multipart/alternative; boundary="inner1"\r\n'
+            "\r\n"
+            "--inner1\r\n"
+            "Content-Type: text/plain\r\n"
+            "\r\n"
+            "Body\r\n"
+            "--inner1\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\n"
+            "<p>Body</p>\r\n"
+            "--inner1--\r\n"
+            "--outer\r\n"
+            'Content-Type: multipart/mixed; boundary="inner2"\r\n'
+            "\r\n"
+            "--inner2\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\n"
+            "<p>Forwarded</p>\r\n"
+            "--inner2\r\n"
+            "Content-Type: application/pdf\r\n"
+            'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
+            "\r\n"
+            "--inner2--\r\n"
+            "--outer--\r\n"
+        )
+        msg = email_mod.message_from_string(raw)
+        nums = _mime_part_numbers(msg)
+
+        # Walk order: outer, inner1, text/plain, text/html,
+        #             inner2, text/html, application/pdf
+        leaf_parts = [
+            p for p in msg.walk()
+            if not p.get_content_maintype() == "multipart"
+        ]
+        assert nums[id(leaf_parts[0])] == "1.1"  # text/plain
+        assert nums[id(leaf_parts[1])] == "1.2"  # text/html
+        assert nums[id(leaf_parts[2])] == "2.1"  # text/html (fwd)
+        assert nums[id(leaf_parts[3])] == "2.2"  # application/pdf
+
+
+class TestNestedExternalAttachments:
+    """External attachments in nested MIME structures.
+
+    Apple Mail uses dot-notation subdirectories (e.g. ``2.2/``)
+    for attachments nested inside multipart sub-parts. This
+    tests that both ``get_attachment_content`` and
+    ``_extract_attachments`` correctly locate these files.
+    """
+
+    @staticmethod
+    def _nested_mime() -> bytes:
+        """Build a nested multipart MIME (forwarded-style).
+
+        Structure::
+            multipart/mixed (outer)
+              multipart/alternative (part 1)
+                text/plain (part 1.1)
+                text/html  (part 1.2)
+              multipart/mixed (part 2)
+                text/html  (part 2.1 - forwarded body)
+                application/pdf (part 2.2 - the invoice)
+        """
+        return (
+            'Content-Type: multipart/mixed; boundary="outer"\r\n'
+            "\r\n"
+            "--outer\r\n"
+            'Content-Type: multipart/alternative; boundary="alt"\r\n'
+            "\r\n"
+            "--alt\r\n"
+            "Content-Type: text/plain\r\n"
+            "\r\n"
+            "Body text\r\n"
+            "--alt\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\n"
+            "<p>Body</p>\r\n"
+            "--alt--\r\n"
+            "--outer\r\n"
+            'Content-Type: multipart/mixed; boundary="fwd"\r\n'
+            "\r\n"
+            "--fwd\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\n"
+            "<p>Forwarded body</p>\r\n"
+            "--fwd\r\n"
+            "Content-Type: application/pdf\r\n"
+            'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
+            "\r\n"
+            "--fwd--\r\n"
+            "--outer--\r\n"
+        ).encode()
+
+    def test_get_attachment_content_nested(self, tmp_path: Path):
+        """get_attachment_content finds file in dotted subdir."""
+        pdf_bytes = b"%PDF-1.4 nested invoice data"
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={"2.2": "invoice.pdf"},
+            file_content=pdf_bytes,
+            mime_raw=self._nested_mime(),
+        )
+
+        result = get_attachment_content(emlx, "invoice.pdf")
+        assert result is not None
+        data, mime_type = result
+        assert data == pdf_bytes
+        assert "pdf" in mime_type or "octet" in mime_type
+
+    def test_extract_attachments_nested_size(self, tmp_path: Path):
+        """_extract_attachments gets file size from dotted subdir."""
+        pdf_bytes = b"x" * 9876
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={"2.2": "invoice.pdf"},
+            file_content=pdf_bytes,
+            mime_raw=self._nested_mime(),
+        )
+
+        result = parse_emlx(emlx)
+        assert result is not None
+        assert result.attachments is not None
+        assert len(result.attachments) == 1
+        assert result.attachments[0].filename == "invoice.pdf"
+        assert result.attachments[0].file_size == 9876
+
+    def test_flat_still_works(self, tmp_path: Path):
+        """Top-level attachment in subdir 2/ still works."""
+        img_bytes = b"\x89PNG flat attachment"
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={2: "photo.jpeg"},
+            file_content=img_bytes,
+        )
+
+        result = get_attachment_content(emlx, "photo.jpeg")
+        assert result is not None
+        data, _ = result
+        assert data == img_bytes
+
+    def test_deeply_nested(self, tmp_path: Path):
+        """Three levels deep: subdir 1.2.1 works."""
+        mime_raw = (
+            'Content-Type: multipart/mixed; boundary="L1"\r\n'
+            "\r\n"
+            "--L1\r\n"
+            'Content-Type: multipart/mixed; boundary="L2"\r\n'
+            "\r\n"
+            "--L2\r\n"
+            "Content-Type: text/plain\r\n"
+            "\r\n"
+            "Body\r\n"
+            "--L2\r\n"
+            'Content-Type: multipart/mixed; boundary="L3"\r\n'
+            "\r\n"
+            "--L3\r\n"
+            "Content-Type: application/pdf\r\n"
+            'Content-Disposition: attachment; filename="deep.pdf"\r\n'
+            "\r\n"
+            "--L3--\r\n"
+            "--L2--\r\n"
+            "--L1--\r\n"
+        ).encode()
+
+        pdf_bytes = b"%PDF deeply nested"
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={"1.2.1": "deep.pdf"},
+            file_content=pdf_bytes,
+            mime_raw=mime_raw,
+        )
+
+        result = get_attachment_content(emlx, "deep.pdf")
+        assert result is not None
+        data, mime_type = result
+        assert data == pdf_bytes
 
 
 class TestDetectMailVersion:
