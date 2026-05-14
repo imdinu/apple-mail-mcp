@@ -770,18 +770,23 @@ def _extract_attachments(
 
         # Fallback: stat external file for .partial.emlx
         if file_size == 0 and emlx_path is not None and msg_id is not None:
-            part_number = part_numbers.get(id(part), "")
-            ext = _find_external_attachment(
-                emlx_path,
-                msg_id,
-                part_number,
-                filename,
-            )
-            if ext is not None:
-                try:
-                    file_size = ext.stat().st_size
-                except OSError:
-                    pass
+            part_number = part_numbers.get(id(part))
+            # An empty/missing part number would route the lookup to the
+            # Attachments root rather than a specific subdir (Path / "" ==
+            # Path), silently returning the wrong file. Skip rather than
+            # misroute.
+            if part_number:
+                ext = _find_external_attachment(
+                    emlx_path,
+                    msg_id,
+                    part_number,
+                    filename,
+                )
+                if ext is not None:
+                    try:
+                        file_size = ext.stat().st_size
+                    except OSError:
+                        pass
 
         content_id = part.get("Content-ID")
         if content_id:
@@ -856,7 +861,9 @@ def get_attachment_content(
                 return (payload, ct)
 
             # Fallback: external file on disk
-            part_number = part_numbers.get(id(part), "")
+            part_number = part_numbers.get(id(part))
+            if part_number is None:
+                continue
             result = _read_external_attachment(
                 emlx_path,
                 part_number,

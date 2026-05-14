@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
 
+# Opt into Node 24 ahead of the June 2026 forced cutover. Same rationale
+# as lint.yml — keeps release runs free of the deprecation warning.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest

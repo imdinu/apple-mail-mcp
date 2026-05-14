@@ -933,6 +933,45 @@ class TestGetAttachment:
             with pytest.raises(ValueError, match="not found"):
                 await get_attachment(42, "missing.pdf")
 
+    @pytest.mark.asyncio
+    async def test_cached_attachment_file_is_owner_only(self, tmp_path):
+        """Cached attachment file is chmod'd to 0o600.
+
+        Defense-in-depth: the cache directory is already 0o700, but the
+        file itself should also be owner-only so it stays protected if a
+        later refactor changes the parent dir's mode or if the file is
+        copied/moved out of the cache.
+        """
+        import stat as stat_mod
+        from pathlib import Path
+
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.find_email_path.return_value = Path("/fake/42.emlx")
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+            patch(
+                "apple_mail_mcp.server.ATTACHMENT_CACHE_DIR",
+                tmp_path / "attachments",
+            ),
+        ):
+            mock_get.return_value = mock_manager
+            mock_thread.return_value = (b"secret bytes", "application/pdf")
+
+            from apple_mail_mcp.server import get_attachment
+
+            result = await get_attachment(42, "private.pdf")
+            file_path = Path(result["file_path"])
+            mode = stat_mod.S_IMODE(file_path.stat().st_mode)
+            assert mode == 0o600, (
+                f"Expected 0o600 permissions, got {oct(mode)}"
+            )
+
 
 class TestSearchAttachments:
     """Tests for A5: search by attachment filename."""

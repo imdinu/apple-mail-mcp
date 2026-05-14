@@ -1292,6 +1292,62 @@ class TestNestedExternalAttachments:
         assert data == pdf_bytes
 
 
+class TestMimePartNumbersFallback:
+    """Defensive behavior when _mime_part_numbers misses a part.
+
+    The helper is expected to cover every leaf MIME part, but a missing
+    entry would silently route the lookup to the wrong subdirectory
+    because ``Path("/a/b") / "" == Path("/a/b")``. These tests confirm
+    callers skip the external lookup instead of misrouting.
+    """
+
+    def test_extract_attachments_skips_when_part_number_missing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """_extract_attachments falls through cleanly on missing part_number."""
+        from apple_mail_mcp.index import disk as disk_mod
+
+        # Force the part-number map to be empty
+        monkeypatch.setattr(
+            disk_mod, "_mime_part_numbers", lambda msg: {}
+        )
+
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={2: "photo.jpeg"},
+            file_content=b"\x89PNG fake",
+        )
+        result = parse_emlx(emlx)
+        assert result is not None
+        # Attachment is still listed (it has a MIME filename) but the
+        # external size lookup was skipped, so file_size stays at 0.
+        # The important assertion is that we did NOT silently grab a
+        # file from the Attachments root (which would yield wrong bytes).
+        assert result.attachments is not None
+        assert len(result.attachments) == 1
+        assert result.attachments[0].filename == "photo.jpeg"
+
+    def test_get_attachment_content_skips_when_part_number_missing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """get_attachment_content returns None on missing part_number."""
+        from apple_mail_mcp.index import disk as disk_mod
+
+        monkeypatch.setattr(
+            disk_mod, "_mime_part_numbers", lambda msg: {}
+        )
+
+        emlx = _build_partial_tree(
+            tmp_path,
+            filenames={2: "photo.jpeg"},
+            file_content=b"\x89PNG fake",
+        )
+        # External file exists at the right subdir but part_number lookup
+        # is forced empty — should return None, not the wrongly-routed file.
+        result = get_attachment_content(emlx, "photo.jpeg")
+        assert result is None
+
+
 class TestDetectMailVersion:
     """Tests for dynamic Mail.app version detection."""
 
