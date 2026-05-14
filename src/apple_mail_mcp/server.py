@@ -682,13 +682,16 @@ async def get_email_attachment(
 
     raw_bytes, mime_type = result
 
-    # Save to unique subdirectory (0o700 for sensitive content)
+    # Save to unique subdirectory (0o700 for sensitive content).
+    # File itself is chmod'd to 0o600 so it stays owner-only even if a
+    # later refactor changes the dir permissions or copies the file out.
     ATTACHMENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENT_CACHE_DIR.chmod(0o700)
     save_dir = _Path(tempfile.mkdtemp(dir=ATTACHMENT_CACHE_DIR))
     safe_name = _Path(filename).name
     file_path = save_dir / safe_name
     file_path.write_bytes(raw_bytes)
+    file_path.chmod(0o600)
 
     return {
         "filename": safe_name,

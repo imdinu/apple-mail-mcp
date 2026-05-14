@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Opt into Node 24 ahead of the June 2026 forced cutover. Quiets the
+# deprecation warning that surfaces on every Actions run today and keeps
+# us compatible after Node 20 is removed from runners (Sept 2026).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
