@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-14
+
 ### Fixed
 
 - **External-attachment lookup for nested MIME parts** — Apple Mail stores externally-referenced attachments under `Attachments/<msg_id>/<part>/` where `<part>` is an RFC-style MIME part number. Top-level parts use flat integers (`2/`), but nested parts (common in forwarded emails: `multipart/mixed > multipart/mixed > application/pdf`) use dot notation (`2.2/`, `1.16/`, etc.). The previous implementation tracked a flat attachment counter and routed every lookup to a top-level subdir, so any nested attachment came back as `size: 0` from `parse_emlx()` and `None` from `get_attachment_content()`. New `_mime_part_numbers()` helper walks the MIME tree and builds an `id(part) → "2.2"` map; `_extract_attachments()`, `get_attachment_content()`, and `_find_external_attachment()` now use real part numbers instead of the flat counter. Scoped check against a real ~72K-message mailbox: 4,063 dot-notation subdirs (~18% of all attachments) were affected; flat-attachment behavior is preserved (regression test included). Thanks to @scottwb for the fix and tests. (#85)
