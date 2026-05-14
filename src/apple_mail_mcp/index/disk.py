@@ -633,12 +633,10 @@ def _mime_part_numbers(
     """
     result: dict[int, str] = {}
 
-    def _walk(
-        part: email.message.Message, prefix: list[str]
-    ) -> None:
+    def _walk(part: email.message.Message, prefix: list[str]) -> None:
         if part.is_multipart():
             for i, child in enumerate(part.get_payload(), 1):
-                _walk(child, prefix + [str(i)])
+                _walk(child, [*prefix, str(i)])
         else:
             result[id(part)] = ".".join(prefix)
 
