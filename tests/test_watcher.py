@@ -220,6 +220,20 @@ class TestPathParsing:
         )
         assert m is not None
 
+    def test_parse_path_ignores_excluded_account(self, tmp_path: Path):
+        """Excluded accounts should never be queued by the watcher."""
+        watcher = IndexWatcher(tmp_path / "watcher.db")
+        watcher._exclude_accounts = {"work-uuid"}
+
+        parsed = watcher._parse_path(
+            Path(
+                "/Users/x/Library/Mail/V10/work-uuid"
+                "/INBOX.mbox/Data/1/Messages/789.emlx"
+            )
+        )
+
+        assert parsed is None
+
 
 class TestPendingLimits:
     """Watcher should enforce memory safety limits."""

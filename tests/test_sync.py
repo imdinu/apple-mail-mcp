@@ -228,6 +228,64 @@ class TestSyncFromDisk:
         cursor = sync_db.execute("SELECT COUNT(*) FROM emails")
         assert cursor.fetchone()[0] == 0
 
+    def test_sync_removes_rows_for_excluded_accounts(
+        self,
+        sync_db: sqlite3.Connection,
+        mail_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Changing account exclusions should purge old indexed rows."""
+        self._create_emlx(mail_dir, "personal-uuid", "INBOX", 1001)
+        self._create_emlx(mail_dir, "work-uuid", "INBOX", 2001)
+
+        sync_db.execute(
+            """INSERT INTO emails
+               (message_id, account, mailbox, subject, emlx_path)
+               VALUES (2001, 'work-uuid', 'INBOX', 'Private work mail',
+                       '/old/work/2001.emlx')"""
+        )
+        sync_db.commit()
+
+        monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "work-uuid")
+        result = sync_from_disk(sync_db, mail_dir)
+
+        assert result.added == 1
+        assert result.deleted == 1
+
+        rows = sync_db.execute(
+            "SELECT account FROM emails ORDER BY account"
+        ).fetchall()
+        assert [row["account"] for row in rows] == ["personal-uuid"]
+
+    def test_sync_removes_rows_outside_included_mailboxes(
+        self,
+        sync_db: sqlite3.Connection,
+        mail_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Changing mailbox allow-list should purge old indexed rows."""
+        self._create_emlx(mail_dir, "acc1", "INBOX", 1001)
+        self._create_emlx(mail_dir, "acc1", "Archive", 2001)
+
+        sync_db.execute(
+            """INSERT INTO emails
+               (message_id, account, mailbox, subject, emlx_path)
+               VALUES (2001, 'acc1', 'Archive', 'Old archive',
+                       '/old/archive/2001.emlx')"""
+        )
+        sync_db.commit()
+
+        monkeypatch.setenv("APPLE_MAIL_INDEX_INCLUDE_MAILBOXES", "INBOX")
+        result = sync_from_disk(sync_db, mail_dir)
+
+        assert result.added == 1
+        assert result.deleted == 1
+
+        rows = sync_db.execute(
+            "SELECT mailbox FROM emails ORDER BY mailbox"
+        ).fetchall()
+        assert [row["mailbox"] for row in rows] == ["INBOX"]
+
     def test_sync_detects_moved_emails(
         self, sync_db: sqlite3.Connection, mail_dir: Path
     ):

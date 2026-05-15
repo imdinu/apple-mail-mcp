@@ -20,6 +20,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..config import (
+    get_index_exclude_accounts,
+    get_index_exclude_mailboxes,
+    get_index_include_mailboxes,
+)
 from .disk import find_mail_directory, parse_emlx
 from .schema import (
     CLEAR_PARSE_FAILURE_SQL,
@@ -79,6 +84,9 @@ class IndexWatcher:
         self.debounce_ms = debounce_ms
 
         self._mail_dir: Path | None = None
+        self._exclude_accounts = get_index_exclude_accounts()
+        self._exclude_mailboxes = get_index_exclude_mailboxes()
+        self._include_mailboxes = get_index_include_mailboxes()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -106,6 +114,13 @@ class IndexWatcher:
         except FileNotFoundError:
             logger.warning("Mail directory not found, watcher not started")
             return False
+
+        from .disk import resolve_account_filter_tokens
+
+        self._exclude_accounts = resolve_account_filter_tokens(
+            self._mail_dir,
+            self._exclude_accounts,
+        )
 
         self._stop_event.clear()
         self._thread = threading.Thread(
@@ -238,6 +253,17 @@ class IndexWatcher:
         # Use UUID as account name (more reliable than trying to map)
         account_name = account_uuid
         mailbox_name = mailbox_dir
+
+        from .disk import should_index_account, should_index_mailbox
+
+        if not should_index_account(account_name, self._exclude_accounts):
+            return None
+        if not should_index_mailbox(
+            mailbox_name,
+            include_mailboxes=self._include_mailboxes,
+            exclude_mailboxes=self._exclude_mailboxes,
+        ):
+            return None
 
         return account_name, mailbox_name, message_id
 

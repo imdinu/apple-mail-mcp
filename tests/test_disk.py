@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from apple_mail_mcp.index.disk import (
     MAX_EMLX_SIZE,
@@ -371,6 +374,113 @@ class TestScanExcludesDrafts:
         # With empty exclusion set
         files = list(scan_emlx_files(mail_dir, exclude_mailboxes=set()))
         assert len(files) == 2
+
+
+class TestScanIndexFilters:
+    """Tests for account and mailbox filters during disk scanning."""
+
+    def test_scan_excludes_configured_accounts(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import scan_emlx_files
+
+        mail_dir = tmp_path / "V10"
+        personal = mail_dir / "personal-uuid" / "INBOX.mbox" / "Data"
+        work = mail_dir / "work-uuid" / "INBOX.mbox" / "Data"
+        personal.mkdir(parents=True)
+        work.mkdir(parents=True)
+
+        (personal / "1.emlx").write_bytes(b"test")
+        (work / "2.emlx").write_bytes(b"test")
+
+        files = list(
+            scan_emlx_files(
+                mail_dir,
+                exclude_mailboxes=set(),
+                exclude_accounts={"work-uuid"},
+            )
+        )
+
+        assert len(files) == 1
+        assert "personal-uuid" in str(files[0])
+
+    def test_scan_honors_mailbox_allow_list(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import scan_emlx_files
+
+        mail_dir = tmp_path / "V10"
+        inbox = mail_dir / "acc" / "INBOX.mbox" / "Data"
+        archive = mail_dir / "acc" / "Archive.mbox" / "Data"
+        inbox.mkdir(parents=True)
+        archive.mkdir(parents=True)
+
+        (inbox / "1.emlx").write_bytes(b"test")
+        (archive / "2.emlx").write_bytes(b"test")
+
+        files = list(
+            scan_emlx_files(
+                mail_dir,
+                exclude_mailboxes=set(),
+                include_mailboxes={"INBOX"},
+            )
+        )
+
+        assert len(files) == 1
+        assert "INBOX" in str(files[0])
+
+    @patch("apple_mail_mcp.executor.execute_with_core")
+    def test_scan_resolves_friendly_account_names(
+        self,
+        mock_execute,
+        tmp_path: Path,
+    ):
+        from apple_mail_mcp.index.disk import scan_emlx_files
+
+        mock_execute.return_value = [
+            {"name": "Extreme", "id": "work-uuid"},
+            {"name": "Personal", "id": "personal-uuid"},
+        ]
+
+        mail_dir = tmp_path / "V10"
+        personal = mail_dir / "personal-uuid" / "INBOX.mbox" / "Data"
+        work = mail_dir / "work-uuid" / "INBOX.mbox" / "Data"
+        personal.mkdir(parents=True)
+        work.mkdir(parents=True)
+
+        (personal / "1.emlx").write_bytes(b"test")
+        (work / "2.emlx").write_bytes(b"test")
+
+        files = list(
+            scan_emlx_files(
+                mail_dir,
+                exclude_mailboxes=set(),
+                exclude_accounts={"Extreme"},
+            )
+        )
+
+        assert len(files) == 1
+        assert "personal-uuid" in str(files[0])
+
+    @patch("apple_mail_mcp.executor.execute_with_core")
+    def test_unresolved_account_names_fail_closed(
+        self,
+        mock_execute,
+        tmp_path: Path,
+    ):
+        from apple_mail_mcp.index.disk import scan_emlx_files
+
+        mock_execute.side_effect = RuntimeError("Mail unavailable")
+
+        mail_dir = tmp_path / "V10"
+        inbox = mail_dir / "work-uuid" / "INBOX.mbox" / "Data"
+        inbox.mkdir(parents=True)
+        (inbox / "1.emlx").write_bytes(b"test")
+
+        with pytest.raises(RuntimeError, match="APPLE_MAIL_INDEX_EXCLUDE"):
+            list(
+                scan_emlx_files(
+                    mail_dir,
+                    exclude_mailboxes=set(),
+                    exclude_accounts={"Extreme"},
+                )
+            )
 
 
 class TestExtractAttachments:

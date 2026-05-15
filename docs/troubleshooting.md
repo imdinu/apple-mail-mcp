@@ -35,7 +35,21 @@ Common issues and their solutions.
 
 3. **Index is stale.** Check with `apple-mail-mcp status`. If the index is old, run `apple-mail-mcp rebuild` or start the server with `--watch` for real-time updates.
 
-4. **Mailbox excluded.** By default, `Drafts` is excluded from search. Check `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` in your configuration.
+4. **Index scope excludes it.** By default, `Drafts` is excluded from the index. Also check `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS`, `APPLE_MAIL_INDEX_INCLUDE_MAILBOXES`, and `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` in your configuration.
+
+## Account Exclusion Fails During Indexing
+
+**Symptom:** `apple-mail-mcp index` or `apple-mail-mcp rebuild` reports that it
+could not resolve `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS`.
+
+**Cause:** Friendly account names must be resolved to Mail's on-disk account
+UUIDs before indexing starts. If Mail account metadata is unavailable, the
+indexer fails closed instead of risking indexing an account you meant to
+exclude.
+
+**Fix:** Run `apple-mail-mcp accounts` and set
+`APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` to the account UUID, or make sure Mail's
+account metadata is available in the environment where you run the indexer.
 
 ## Startup Timeout (v0.1.5 and earlier)
 
