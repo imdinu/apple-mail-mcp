@@ -166,6 +166,12 @@ Every time the server starts, it runs a fast **state reconciliation** against th
 
 This takes **<5s** even for 20,000+ emails (vs. 60s+ timeout with the old JXA-based sync).
 
+The sync honors index-scope configuration on every run. Accounts listed in
+`APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` and mailboxes outside
+`APPLE_MAIL_INDEX_INCLUDE_MAILBOXES` are omitted from the disk inventory; if
+they were indexed before the configuration changed, sync removes those rows
+from the SQLite index.
+
 ## Real-Time Updates
 
 Enable automatic index updates with the `--watch` flag:
@@ -179,6 +185,9 @@ The file watcher monitors `~/Library/Mail/V10/` for:
 - New `.emlx` files → parse and insert into index
 - Deleted `.emlx` files → remove from index
 - Moved `.emlx` files → update path in index
+
+Watcher events for excluded accounts or non-included mailboxes are ignored
+before the file is parsed.
 
 ## Date-Range Filtering
 
@@ -245,4 +254,3 @@ Pagination works with all scopes, date filters, and highlighting.
 | Startup sync | 60s timeout | <5s | **12x** |
 | Initial build | — | ~1–2 min | One-time |
 | Disk usage | — | ~6 KB/email | — |
-

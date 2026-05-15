@@ -11,7 +11,9 @@ Apple Mail MCP is configured via environment variables. All settings have sensib
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | SQLite index database location |
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before index is considered stale |
-| `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip in search |
+| `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` | _unset_ | Comma-separated account names or UUIDs to skip during indexing |
+| `APPLE_MAIL_INDEX_INCLUDE_MAILBOXES` | _unset_ | Optional comma-separated mailbox allow-list for indexing |
+| `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip during indexing |
 | `APPLE_MAIL_READ_ONLY` | `false` | When `true`, disables any write operations |
 
 ### Per-Mailbox Email Limit (Optional)
@@ -24,6 +26,29 @@ apple-mail-mcp rebuild
 ```
 
 When a cap is set and a mailbox exceeds it, the most recent emails by file modification time are kept. `apple-mail-mcp rebuild` reports how many mailboxes hit the cap, and `apple-mail-mcp status` surfaces the same information after the fact.
+
+### Index Scope and Privacy
+
+`APPLE_MAIL_DEFAULT_ACCOUNT` is only a default for live Mail tools. It does not
+prevent other accounts from being indexed. Use index-scope variables when an
+account or mailbox must stay out of full-text search:
+
+```bash
+export APPLE_MAIL_DEFAULT_ACCOUNT=iCloud
+export APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS=Work
+export APPLE_MAIL_INDEX_INCLUDE_MAILBOXES=INBOX,Archive
+apple-mail-mcp rebuild
+```
+
+`APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` accepts account UUIDs or friendly account
+names. UUIDs match Mail's on-disk account directories directly. Friendly names
+are resolved through Mail's account metadata before any `.emlx` content is
+parsed; if a friendly name cannot be resolved, indexing fails closed and asks
+you to use a UUID from `apple-mail-mcp accounts`.
+
+`APPLE_MAIL_INDEX_INCLUDE_MAILBOXES` is an allow-list: when set, only those
+mailboxes are indexed. `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` is still applied,
+so an excluded mailbox wins if it appears in both lists.
 
 ## MCP Client Configuration
 

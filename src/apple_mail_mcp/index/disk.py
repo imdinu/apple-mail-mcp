@@ -38,6 +38,11 @@ from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
+_ACCOUNT_UUID_RE = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -47,6 +52,10 @@ MAIL_VERSION = "V10"
 
 # Cached result of find_mail_directory()
 _cached_mail_dir: Path | None = None
+
+
+class AccountFilterResolutionError(RuntimeError):
+    """Raised when an account exclusion cannot be resolved safely."""
 
 
 def _detect_mail_version() -> str:
@@ -202,7 +211,13 @@ def find_envelope_index(mail_dir: Path) -> Path:
     return envelope_path
 
 
-def read_envelope_index(mail_dir: Path) -> dict[int, dict]:
+def read_envelope_index(
+    mail_dir: Path,
+    *,
+    exclude_accounts: set[str] | None = None,
+    include_mailboxes: set[str] | None = None,
+    exclude_mailboxes: set[str] | None = None,
+) -> dict[int, dict]:
     """
     Read the Envelope Index database to get message metadata.
 
@@ -247,6 +262,11 @@ def read_envelope_index(mail_dir: Path) -> dict[int, dict]:
             ORDER BY m.date_received DESC
         """)
 
+        resolved_exclude_accounts = resolve_account_filter_tokens(
+            mail_dir,
+            exclude_accounts or set(),
+        )
+
         for row in cursor:
             msg_id = row["id"]
 
@@ -254,6 +274,15 @@ def read_envelope_index(mail_dir: Path) -> dict[int, dict]:
             # Format: mailbox://[account-uuid]/[mailbox-name]
             mailbox_url = row["mailbox_url"] or ""
             account, mailbox = _parse_mailbox_url(mailbox_url)
+
+            if not should_index_account(account, resolved_exclude_accounts):
+                continue
+            if not should_index_mailbox(
+                mailbox,
+                include_mailboxes=include_mailboxes,
+                exclude_mailboxes=exclude_mailboxes,
+            ):
+                continue
 
             result[msg_id] = {
                 "account": account,
@@ -1030,9 +1059,131 @@ def _extract_links_from_message(
     return links
 
 
+def _filter_key(value: str) -> str:
+    """Normalize names for user-facing filter comparisons."""
+    return value.strip().casefold()
+
+
+def _matches_filter(value: str, filters: set[str] | None) -> bool:
+    """Return whether value matches a configured filter, case-insensitively."""
+    if not filters:
+        return False
+    value_key = _filter_key(value)
+    return any(_filter_key(item) == value_key for item in filters)
+
+
+def should_index_account(
+    account: str,
+    exclude_accounts: set[str] | None,
+) -> bool:
+    """Return whether an account should be indexed."""
+    return not _matches_filter(account, exclude_accounts)
+
+
+def should_index_mailbox(
+    mailbox: str,
+    *,
+    include_mailboxes: set[str] | None,
+    exclude_mailboxes: set[str] | None,
+) -> bool:
+    """Return whether a mailbox should be indexed."""
+    if include_mailboxes and not _matches_filter(mailbox, include_mailboxes):
+        return False
+    return not _matches_filter(mailbox, exclude_mailboxes)
+
+
+def _mail_account_dir_names(mail_dir: Path) -> set[str]:
+    """Return account directory names under the Mail version directory."""
+    try:
+        return {
+            entry.name
+            for entry in mail_dir.iterdir()
+            if entry.is_dir() and entry.name != "MailData"
+        }
+    except OSError:
+        return set()
+
+
+def _looks_like_account_uuid(value: str) -> bool:
+    """Return whether a configured value looks like a Mail account UUID."""
+    return bool(_ACCOUNT_UUID_RE.fullmatch(value.strip()))
+
+
+def resolve_account_filter_tokens(
+    mail_dir: Path,
+    account_filters: set[str],
+) -> set[str]:
+    """
+    Expand configured account filters with known account UUIDs.
+
+    Mail.app stores messages under UUID-like account directories. Users tend
+    to configure friendly account names, so when a filter does not already
+    match an on-disk account directory we ask Apple Mail for its account map.
+    If that lookup is unavailable, fail closed to avoid indexing a configured
+    account exclusion by accident.
+    """
+    if not account_filters:
+        return set()
+
+    resolved = set(account_filters)
+    account_dirs = _mail_account_dir_names(mail_dir)
+    unresolved = {
+        value
+        for value in account_filters
+        if not _matches_filter(value, account_dirs)
+        and not _looks_like_account_uuid(value)
+    }
+    if not unresolved:
+        return resolved
+
+    try:
+        from ..builders import AccountsQueryBuilder
+        from ..executor import execute_with_core
+        from .accounts import AccountMap
+
+        accounts = execute_with_core(
+            AccountsQueryBuilder().list_accounts(),
+            timeout=15,
+        )
+        AccountMap.get_instance().load_from_jxa(accounts)
+    except Exception as e:
+        values = ", ".join(sorted(unresolved))
+        raise AccountFilterResolutionError(
+            "Could not resolve APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS value(s): "
+            f"{values}. Use account UUIDs from `apple-mail-mcp accounts`, "
+            "or ensure Apple Mail account metadata is available."
+        ) from e
+
+    matched_filters: set[str] = set()
+    for account in accounts:
+        name = account.get("name", "")
+        uid = account.get("id", "")
+        if not name or not uid:
+            continue
+        for value in unresolved:
+            if _matches_filter(name, {value}) or _matches_filter(uid, {value}):
+                resolved.add(name)
+                resolved.add(uid)
+                matched_filters.add(value)
+
+    missing = unresolved - matched_filters
+    if missing:
+        values = ", ".join(sorted(missing))
+        raise AccountFilterResolutionError(
+            "Could not resolve APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS value(s): "
+            f"{values}. Use account UUIDs from `apple-mail-mcp accounts`, "
+            "or check the configured account name."
+        )
+
+    return resolved
+
+
 def scan_emlx_files(
     mail_dir: Path,
     exclude_mailboxes: set[str] | None = None,
+    *,
+    include_mailboxes: set[str] | None = None,
+    exclude_accounts: set[str] | None = None,
 ) -> Iterator[Path]:
     """
     Find all .emlx files in the Mail directory.
@@ -1041,6 +1192,10 @@ def scan_emlx_files(
         mail_dir: Path to ~/Library/Mail/V10/
         exclude_mailboxes: Mailbox names to skip (e.g. {"Drafts"}).
             Uses APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES config if None.
+        include_mailboxes: Optional mailbox allow-list.
+            Uses APPLE_MAIL_INDEX_INCLUDE_MAILBOXES config if None.
+        exclude_accounts: Account names or UUIDs to skip.
+            Uses APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS config if None.
 
     Yields:
         Paths to .emlx files
@@ -1049,19 +1204,31 @@ def scan_emlx_files(
         from ..config import get_index_exclude_mailboxes
 
         exclude_mailboxes = get_index_exclude_mailboxes()
+    if include_mailboxes is None:
+        from ..config import get_index_include_mailboxes
+
+        include_mailboxes = get_index_include_mailboxes()
+    if exclude_accounts is None:
+        from ..config import get_index_exclude_accounts
+
+        exclude_accounts = get_index_exclude_accounts()
+
+    exclude_accounts = resolve_account_filter_tokens(
+        mail_dir,
+        exclude_accounts,
+    )
 
     # .emlx files are in: account-uuid/mailbox.mbox/Data/x/y/Messages/
     for emlx_path in mail_dir.rglob("*.emlx"):
-        # Skip excluded mailboxes by checking .mbox dir name
-        if exclude_mailboxes:
-            parts = emlx_path.relative_to(mail_dir).parts
-            if len(parts) > 1:
-                mbox_dir = parts[1]
-                mbox_name = (
-                    mbox_dir[:-5] if mbox_dir.endswith(".mbox") else mbox_dir
-                )
-                if mbox_name in exclude_mailboxes:
-                    continue
+        account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
+        if not should_index_account(account, exclude_accounts):
+            continue
+        if not should_index_mailbox(
+            mailbox,
+            include_mailboxes=include_mailboxes,
+            exclude_mailboxes=exclude_mailboxes,
+        ):
+            continue
 
         yield emlx_path
 
@@ -1080,14 +1247,37 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
         Email dicts with: id, account, mailbox, subject, sender,
         content, date_received, emlx_path
     """
+    from ..config import (
+        get_index_exclude_accounts,
+        get_index_exclude_mailboxes,
+        get_index_include_mailboxes,
+    )
+
+    exclude_accounts = resolve_account_filter_tokens(
+        mail_dir,
+        get_index_exclude_accounts(),
+    )
+    exclude_mailboxes = get_index_exclude_mailboxes()
+    include_mailboxes = get_index_include_mailboxes()
+
     # First, try to read metadata from Envelope Index
     try:
-        metadata = read_envelope_index(mail_dir)
+        metadata = read_envelope_index(
+            mail_dir,
+            exclude_accounts=exclude_accounts,
+            include_mailboxes=include_mailboxes,
+            exclude_mailboxes=exclude_mailboxes,
+        )
     except (FileNotFoundError, sqlite3.Error):
         metadata = {}
 
     # Scan .emlx files and combine with metadata
-    for emlx_path in scan_emlx_files(mail_dir):
+    for emlx_path in scan_emlx_files(
+        mail_dir,
+        exclude_mailboxes=exclude_mailboxes,
+        include_mailboxes=include_mailboxes,
+        exclude_accounts=exclude_accounts,
+    ):
         try:
             parsed = parse_emlx(emlx_path)
         except Exception as e:
@@ -1121,6 +1311,10 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
 
 def iter_disk_inventory(
     mail_dir: Path,
+    *,
+    exclude_mailboxes: set[str] | None = None,
+    include_mailboxes: set[str] | None = None,
+    exclude_accounts: set[str] | None = None,
 ) -> Iterator[tuple[str, str, int, str]]:
     """Stream the disk inventory as `(account, mailbox, msg_id, path)` tuples.
 
@@ -1131,7 +1325,12 @@ def iter_disk_inventory(
     Yields tuples instead of building a full dict. Files with non-numeric
     or unparseable names are skipped silently.
     """
-    for emlx_path in scan_emlx_files(mail_dir):
+    for emlx_path in scan_emlx_files(
+        mail_dir,
+        exclude_mailboxes=exclude_mailboxes,
+        include_mailboxes=include_mailboxes,
+        exclude_accounts=exclude_accounts,
+    ):
         try:
             msg_id = extract_message_id(emlx_path)
             account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
@@ -1140,7 +1339,13 @@ def iter_disk_inventory(
         yield (account, mailbox, msg_id, str(emlx_path))
 
 
-def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
+def get_disk_inventory(
+    mail_dir: Path,
+    *,
+    exclude_mailboxes: set[str] | None = None,
+    include_mailboxes: set[str] | None = None,
+    exclude_accounts: set[str] | None = None,
+) -> dict[tuple[str, str, int], str]:
     """
     Fast inventory of all emails on disk WITHOUT parsing content.
 
@@ -1153,13 +1358,21 @@ def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
 
     Args:
         mail_dir: Path to ~/Library/Mail/V10/
+        exclude_mailboxes: Optional mailbox deny-list.
+        include_mailboxes: Optional mailbox allow-list.
+        exclude_accounts: Optional account name/UUID deny-list.
 
     Returns:
         Dict mapping (account, mailbox, msg_id) -> emlx_path string
     """
     return {
         (account, mailbox, msg_id): path
-        for account, mailbox, msg_id, path in iter_disk_inventory(mail_dir)
+        for account, mailbox, msg_id, path in iter_disk_inventory(
+            mail_dir,
+            exclude_mailboxes=exclude_mailboxes,
+            include_mailboxes=include_mailboxes,
+            exclude_accounts=exclude_accounts,
+        )
     }
 
 

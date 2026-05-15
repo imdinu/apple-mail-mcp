@@ -72,7 +72,9 @@ Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
 | `APPLE_MAIL_DEFAULT_MAILBOX` | `INBOX` | Default mailbox |
 | `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | Index location |
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
-| `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Mailboxes to skip in search |
+| `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` | _unset_ | Account names or UUIDs to skip during indexing |
+| `APPLE_MAIL_INDEX_INCLUDE_MAILBOXES` | _unset_ | Optional mailbox allow-list for indexing |
+| `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Mailboxes to skip during indexing |
 | `APPLE_MAIL_READ_ONLY` | `false` | Disable write operations |
 
 ```json
@@ -82,12 +84,17 @@ Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
       "command": "apple-mail-mcp",
       "args": ["--watch"],
       "env": {
-        "APPLE_MAIL_DEFAULT_ACCOUNT": "Work"
+        "APPLE_MAIL_DEFAULT_ACCOUNT": "iCloud",
+        "APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS": "Work"
       }
     }
   }
 }
 ```
+
+`APPLE_MAIL_DEFAULT_ACCOUNT` only chooses the default live Mail account for
+tools. To keep an account out of full-text search, use
+`APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` and rebuild the index.
 
 ## CLI Usage
 

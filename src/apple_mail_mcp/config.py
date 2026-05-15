@@ -36,6 +36,14 @@ def get_default_mailbox() -> str:
 # ========== Index Configuration ==========
 
 
+def _parse_csv_env(name: str) -> set[str]:
+    """Parse a comma-separated environment variable into non-empty values."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
 def get_index_path() -> Path:
     """
     Get the FTS5 index database path.
@@ -82,6 +90,35 @@ def get_index_exclude_mailboxes() -> set[str]:
     if env_val is not None:
         return {m.strip() for m in env_val.split(",") if m.strip()}
     return {"Drafts"}
+
+
+def get_index_include_mailboxes() -> set[str] | None:
+    """
+    Get the mailbox allow-list for indexing.
+
+    Set APPLE_MAIL_INDEX_INCLUDE_MAILBOXES to a comma-separated list of
+    mailbox names. When unset, all non-excluded mailboxes are indexed.
+
+    Returns:
+        Set of mailbox names to include, or None to include all.
+    """
+    values = _parse_csv_env("APPLE_MAIL_INDEX_INCLUDE_MAILBOXES")
+    return values or None
+
+
+def get_index_exclude_accounts() -> set[str]:
+    """
+    Get accounts to exclude from indexing.
+
+    Set APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS to a comma-separated list of
+    account names or account UUIDs. UUIDs are matched directly against
+    Mail.app account directory names; friendly names are resolved when
+    Apple Mail account metadata is available.
+
+    Returns:
+        Set of account names or UUIDs to exclude.
+    """
+    return _parse_csv_env("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS")
 
 
 def get_index_staleness_hours() -> float:
