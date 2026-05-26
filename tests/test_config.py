@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from apple_mail_mcp import config
 from apple_mail_mcp.config import (
     CONFIG_SCHEMA_VERSION,
+    CONFIG_TEMPLATE,
     ConfigError,
     _invalidate_config_cache,
     get_default_account,
@@ -376,6 +378,88 @@ exclude_mailboxes = ["Drafts", 42]
         )
         with pytest.raises(ConfigError, match="expected str"):
             get_default_account()
+
+
+class TestInitTemplate:
+    """The CONFIG_TEMPLATE that `apple-mail-mcp init` writes."""
+
+    def test_template_parses_as_valid_toml(self):
+        """Sanity: the template is well-formed TOML."""
+        tomllib.loads(CONFIG_TEMPLATE)
+
+    def test_template_declares_current_schema_version(self):
+        parsed = tomllib.loads(CONFIG_TEMPLATE)
+        assert parsed.get("config_version") == CONFIG_SCHEMA_VERSION
+
+    def test_template_passes_loader_validation(self, config_file):
+        """Round-trip: the template must load cleanly through the validator.
+
+        This catches drift between CONFIG_SCHEMA and CONFIG_TEMPLATE — if
+        we ever add a key to the schema and document it in the template
+        with a typo, this test fails before users hit it.
+        """
+        config_file.write_text(CONFIG_TEMPLATE)
+        _invalidate_config_cache()
+        # No exception means validation accepted the template.
+        get_default_account()
+
+    def test_template_keys_all_commented_out(self):
+        """Every documented key must be commented so defaults stay in effect."""
+        parsed = tomllib.loads(CONFIG_TEMPLATE)
+        # The only top-level key that should parse is config_version.
+        # Sections may exist as empty tables but have no live keys.
+        for section in ("defaults", "index", "server"):
+            section_data = parsed.get(section, {})
+            assert section_data == {}, (
+                f"Template's [{section}] section has live keys {section_data}; "
+                f"all keys should be commented out so users opt in explicitly."
+            )
+
+
+class TestInitCommand:
+    """Behavior tests for `apple-mail-mcp init`."""
+
+    def test_writes_template_to_config_path(self, config_file):
+        from apple_mail_mcp.cli import cli_init
+
+        cli_init()
+        assert config_file.exists()
+        assert config_file.read_text() == CONFIG_TEMPLATE
+
+    def test_sets_owner_only_permissions(self, config_file):
+        """Match the project's 0o600 posture for sensitive files."""
+        from apple_mail_mcp.cli import cli_init
+
+        cli_init()
+        mode = config_file.stat().st_mode & 0o777
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+
+    def test_creates_parent_directory_if_missing(self, monkeypatch, tmp_path):
+        new_dir = tmp_path / "fresh" / "subdir"
+        target = new_dir / "config.toml"
+        monkeypatch.setattr(config, "CONFIG_FILE_PATH", target)
+        from apple_mail_mcp.cli import cli_init
+
+        cli_init()
+        assert target.exists()
+        assert new_dir.is_dir()
+
+    def test_refuses_to_overwrite_existing_file(self, config_file):
+        config_file.write_text("# user-edited config")
+        from apple_mail_mcp.cli import cli_init
+
+        with pytest.raises(SystemExit) as exc:
+            cli_init(force=False)
+        assert exc.value.code == 1
+        # File contents are preserved.
+        assert config_file.read_text() == "# user-edited config"
+
+    def test_force_overwrites_existing_file(self, config_file):
+        config_file.write_text("# user-edited config")
+        from apple_mail_mcp.cli import cli_init
+
+        cli_init(force=True)
+        assert config_file.read_text() == CONFIG_TEMPLATE
 
 
 class TestCacheInvalidation:

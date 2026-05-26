@@ -1,15 +1,17 @@
 """Command-line interface for apple-mail-mcp.
 
 Provides commands for:
-- index: Build search index from disk (requires Full Disk Access)
-- status: Show index statistics
+- serve:   Run the MCP server (default)
+- init:    Write a commented config.toml template
+- index:   Build search index from disk (requires Full Disk Access)
+- status:  Show index statistics
 - rebuild: Force rebuild the index
-- serve: Run the MCP server (default)
 
 Usage:
     apple-mail-mcp            # Run MCP server (default)
     apple-mail-mcp serve      # Run MCP server explicitly
     apple-mail-mcp --watch    # Run with real-time index updates
+    apple-mail-mcp init       # Write config.toml template
     apple-mail-mcp index      # Build index from disk
     apple-mail-mcp status     # Show index status
     apple-mail-mcp rebuild    # Force rebuild index
@@ -467,6 +469,40 @@ def default_handler(
 ) -> None:
     """Run the MCP server (default when no command specified)."""
     _run_serve(watch=watch, read_only=read_only)
+
+
+@app.command(name="init")
+def cli_init(
+    force: Annotated[
+        bool,
+        cyclopts.Parameter(
+            name=["--force", "-f"],
+            help="Overwrite an existing config.toml",
+        ),
+    ] = False,
+) -> None:
+    """
+    Write a commented config.toml template to ~/.apple-mail-mcp/.
+
+    The template documents every available key alongside its matching
+    environment variable. Edit and uncomment to override defaults.
+    Existing config files are not overwritten unless --force is given.
+    """
+    from .config import CONFIG_FILE_PATH, CONFIG_TEMPLATE
+
+    path = CONFIG_FILE_PATH
+
+    if path.exists() and not force:
+        print(f"Config file already exists: {path}", file=sys.stderr)
+        print("Use --force to overwrite.", file=sys.stderr)
+        sys.exit(1)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(CONFIG_TEMPLATE)
+    path.chmod(0o600)
+
+    print(f"✓ Wrote config template to {path}")
+    print("Edit and uncomment keys to override defaults.")
 
 
 # ========== Integration Generator ==========
