@@ -1207,3 +1207,127 @@ class TestIndexStatusResource:
         assert data["last_sync"] is None
         assert data["staleness_hours"] is None
         assert data["disk_email_count"] is None
+
+
+class TestEnsureWritable:
+    """Direct tests for the read-only guard helper (#80)."""
+
+    def setup_method(self):
+        from apple_mail_mcp.config import set_read_only_mode
+
+        set_read_only_mode(False)
+
+    def teardown_method(self):
+        from apple_mail_mcp.config import set_read_only_mode
+
+        set_read_only_mode(False)
+
+    def test_no_raise_when_writable(self):
+        from apple_mail_mcp.server import _ensure_writable
+
+        _ensure_writable()  # should not raise
+
+    def test_raises_when_programmatic_read_only(self):
+        from apple_mail_mcp.config import set_read_only_mode
+        from apple_mail_mcp.server import _ensure_writable
+
+        set_read_only_mode(True)
+        with pytest.raises(PermissionError, match="read-only"):
+            _ensure_writable()
+
+    def test_raises_when_env_read_only(self, monkeypatch):
+        from apple_mail_mcp.server import _ensure_writable
+
+        monkeypatch.setenv("APPLE_MAIL_READ_ONLY", "true")
+        with pytest.raises(PermissionError, match="read-only"):
+            _ensure_writable()
+
+
+class TestWriteImplyingToolsHaveGuard:
+    """Regression: every write-implying @mcp.tool must call _ensure_writable.
+
+    Fires when a future write tool (e.g. `mark_as_read`, `move_email`,
+    `send_email`) is added to server.py without the guard. Scope is the
+    issue #80 foot-gun: forgetting the call, not implementing it
+    incorrectly.
+    """
+
+    WRITE_PREFIXES = (
+        "mark_",
+        "move_",
+        "send_",
+        "reply_",
+        "forward_",
+        "delete_",
+        "create_",
+        "update_",
+        "set_",
+        "archive_",
+        "trash_",
+        "flag_",
+        "unflag_",
+    )
+
+    def test_all_write_implying_tools_call_ensure_writable(self):
+        import ast
+        from pathlib import Path
+
+        import apple_mail_mcp.server as server_module
+
+        server_path = Path(server_module.__file__)
+        tree = ast.parse(server_path.read_text())
+
+        violations = []
+        for node in ast.walk(tree):
+            if not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                continue
+            if not self._has_mcp_tool_decorator(node):
+                continue
+            if not node.name.startswith(self.WRITE_PREFIXES):
+                continue
+            if not self._calls_ensure_writable(node):
+                violations.append(node.name)
+
+        assert not violations, (
+            f"@mcp.tool functions with write-implying names must call "
+            f"_ensure_writable() at entry. Missing guard in: {violations}."
+        )
+
+    @staticmethod
+    def _has_mcp_tool_decorator(node) -> bool:
+        import ast
+
+        for dec in node.decorator_list:
+            # @mcp.tool
+            if isinstance(dec, ast.Attribute) and dec.attr == "tool":
+                if (
+                    isinstance(dec.value, ast.Name)
+                    and dec.value.id == "mcp"
+                ):
+                    return True
+            # @mcp.tool(...)
+            if isinstance(dec, ast.Call):
+                func = dec.func
+                if isinstance(func, ast.Attribute) and func.attr == "tool":
+                    if (
+                        isinstance(func.value, ast.Name)
+                        and func.value.id == "mcp"
+                    ):
+                        return True
+        return False
+
+    @staticmethod
+    def _calls_ensure_writable(node) -> bool:
+        import ast
+
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func = child.func
+                if (
+                    isinstance(func, ast.Name)
+                    and func.id == "_ensure_writable"
+                ):
+                    return True
+        return False

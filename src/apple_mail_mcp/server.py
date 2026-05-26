@@ -35,7 +35,11 @@ from typing import Literal, TypedDict
 from fastmcp import FastMCP
 
 from .builders import AccountsQueryBuilder, QueryBuilder
-from .config import get_default_account, get_default_mailbox
+from .config import (
+    get_default_account,
+    get_default_mailbox,
+    get_read_only_mode,
+)
 from .executor import (
     build_mailbox_setup_js,
     execute_query_async,
@@ -48,6 +52,22 @@ logger = logging.getLogger(__name__)
 
 # Attachment cache directory
 ATTACHMENT_CACHE_DIR = _Path.home() / ".apple-mail-mcp" / "attachments"
+
+
+def _ensure_writable() -> None:
+    """Refuse to proceed if the server is running in read-only mode.
+
+    Every MCP tool that mutates Apple Mail state (mark as read, move,
+    delete, send, reply, forward, flag, etc.) must call this as its
+    first line. A regression test in test_server.py scans this module
+    for write-implying tool names and asserts they call this helper.
+    """
+    if get_read_only_mode():
+        raise PermissionError(
+            "Server is in read-only mode "
+            "(APPLE_MAIL_READ_ONLY=true, [server] read_only = true, "
+            "or `apple-mail-mcp serve -r`)."
+        )
 
 
 def _cleanup_old_attachments(max_age_hours: int = 24) -> None:
