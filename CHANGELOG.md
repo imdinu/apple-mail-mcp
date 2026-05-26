@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-21
+
 ### Added
 
 - **TOML configuration file at `~/.apple-mail-mcp/config.toml`** — every existing `APPLE_MAIL_*` env var now has a sibling key in a structured TOML file. Resolution order is CLI flag > environment variable > file value > built-in default, so existing env-only deployments keep working unchanged. The file is for durable user policy (default account/mailbox, index scope, read-only) that's awkward to maintain across multiple MCP client configs — set it once in `config.toml` instead of pasting the same `env: {}` block into Claude Desktop + Cursor + Cline. Schema is versioned (`config_version = 1`) and validated with file-path context: bad keys, wrong types, negative values, version mismatches, and a subtle bool-in-int-slot trap all fail loud rather than silently degrading. The "empty list = explicit empty, not default" semantics are intentional and tested — `exclude_mailboxes = []` means "no exclusions" rather than falling back to the `{"Drafts"}` default. New `tomllib`-based loader (stdlib in 3.11+) with no added runtime dependency. 33 new tests in `tests/test_config.py` cover the precedence semantics across all four layers.
