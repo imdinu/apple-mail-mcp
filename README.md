@@ -2,6 +2,10 @@
 
 <!-- mcp-name: io.github.imdinu/apple-mail-mcp -->
 
+<p align="center">
+  <img src="docs/assets/social-card.svg" alt="Apple Mail MCP — Full-coverage FTS5 body search" width="720">
+</p>
+
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
@@ -9,7 +13,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![CI](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml/badge.svg)](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml)
 
-The only Apple Mail MCP server with **full-text email search**. Reliable on large mailboxes where other servers timeout — with 8 tools for reading, searching, and extracting email content.
+The only Apple Mail MCP server with **full-coverage body search** — reliable on large mailboxes where AppleScript-based servers timeout. 8 tools for reading, searching, and extracting email content.
 
 **[Read the docs](https://imdinu.github.io/apple-mail-mcp/)** for the full guide.
 
@@ -39,6 +43,18 @@ Add to your MCP client:
 
 apple-mail-mcp index --verbose
 ```
+
+### Configure (Optional)
+
+```bash
+apple-mail-mcp init   # writes ~/.apple-mail-mcp/config.toml
+```
+
+Writes a commented config file you can edit to set defaults like your
+primary account or mailbox. Every key has a matching `APPLE_MAIL_*` env
+var if you prefer environment-based config. See
+[Configuration](https://imdinu.github.io/apple-mail-mcp/configuration/)
+for the full schema and precedence rules.
 
 ## Tools
 

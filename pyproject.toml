@@ -9,18 +9,24 @@ authors = [
     { name = "Ioan-Mihail Dinu", email = "iodinu@icloud.com" },
 ]
 keywords = [
-    "mcp",
+    "anthropic",
     "apple-mail",
     "apple-mail-mcp",
-    "macos",
-    "email",
-    "search",
-    "model-context-protocol",
     "claude",
+    "claude-code",
+    "claude-desktop",
+    "email",
+    "emlx",
+    "fts5",
+    "full-text-search",
     "llm",
+    "macos",
+    "mcp",
+    "model-context-protocol",
+    "search",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: MacOS X",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
@@ -48,6 +54,7 @@ Homepage = "https://github.com/imdinu/apple-mail-mcp"
 Documentation = "https://imdinu.github.io/apple-mail-mcp/"
 Repository = "https://github.com/imdinu/apple-mail-mcp"
 Issues = "https://github.com/imdinu/apple-mail-mcp/issues"
+Changelog = "https://github.com/imdinu/apple-mail-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 apple-mail-mcp = "apple_mail_mcp:main"

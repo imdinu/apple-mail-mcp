@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Apple Mail MCP</title>
+  <desc id="desc">Apple Mail MCP — full-coverage FTS5 body search.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="60%" stop-color="#111b2f"/>
+      <stop offset="100%" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4a9eff"/>
+      <stop offset="100%" stop-color="#7cc4ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.85" cy="0.15" r="0.6">
+      <stop offset="0%" stop-color="#1d3a66" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#0b1220" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <text x="80" y="140" font-family="-apple-system, SF Pro Display, Segoe UI, Helvetica, Arial, sans-serif" font-size="38" font-weight="600" letter-spacing="2"><tspan fill="#f4f6fb">APPLE MAIL </tspan><tspan fill="url(#accent)">MCP</tspan></text>
+
+  <text x="80" y="320" font-family="-apple-system, SF Pro Display, Segoe UI, Helvetica, Arial, sans-serif" font-size="84" font-weight="700" fill="#f4f6fb" letter-spacing="-1.5">Full-coverage</text>
+  <text x="80" y="420" font-family="-apple-system, SF Pro Display, Segoe UI, Helvetica, Arial, sans-serif" font-size="84" font-weight="700" fill="url(#accent)" letter-spacing="-1.5">FTS5 body search.</text>
+
+  <text x="1200" y="580" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="14" fill="#7081a0" text-anchor="end">macOS · Python 3.11+ · MCP</text>
+</svg>
