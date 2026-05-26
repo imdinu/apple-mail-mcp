@@ -305,3 +305,73 @@ def set_read_only_mode(value: bool) -> None:
     """Enable or disable read-only mode programmatically."""
     global _read_only_mode
     _read_only_mode = value
+
+
+# Template emitted by `apple-mail-mcp init`. Every key is commented out so
+# the file is documentation that happens to be machine-readable: a new user
+# sees the full surface and the matching env-var name on each line, then
+# uncomments what they want. Forward-compat keys for #89 are included.
+CONFIG_TEMPLATE = """\
+# Apple Mail MCP — configuration
+# https://github.com/imdinu/apple-mail-mcp
+#
+# Resolution order (highest precedence first):
+#   1. CLI flags  (e.g. `apple-mail-mcp serve -r`)
+#   2. Environment variables  (APPLE_MAIL_*)
+#   3. This file
+#   4. Built-in defaults
+#
+# All keys are optional. Uncomment to override the default.
+
+config_version = 1
+
+
+[defaults]
+
+# Default account for tools that don't specify one. When unset, the first
+# account in Apple Mail is used.
+# Env: APPLE_MAIL_DEFAULT_ACCOUNT
+# account = "Personal"
+
+# Default mailbox for tools that don't specify one.
+# Env: APPLE_MAIL_DEFAULT_MAILBOX
+# mailbox = "INBOX"
+
+
+[index]
+
+# Path to the FTS5 search index database.
+# Env: APPLE_MAIL_INDEX_PATH
+# path = "~/.apple-mail-mcp/index.db"
+
+# Maximum emails to index per mailbox. Omit for uncapped (default).
+# Env: APPLE_MAIL_INDEX_MAX_EMAILS
+# max_emails = 5000
+
+# Hours before the index is considered stale and should be re-synced.
+# Env: APPLE_MAIL_INDEX_STALENESS_HOURS
+# staleness_hours = 24.0
+
+# Mailboxes to skip during indexing.
+# Empty list ([]) explicitly disables all exclusions.
+# Env: APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES (comma-separated)
+# exclude_mailboxes = ["Drafts"]
+
+# Accounts to skip during indexing (names or UUIDs). Useful for keeping
+# work or personal accounts out of full-text search entirely.
+# Env: APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS (comma-separated)
+# exclude_accounts = []
+
+# Optional mailbox allow-list. When set, only these mailboxes are indexed.
+# `exclude_mailboxes` still applies on top.
+# Env: APPLE_MAIL_INDEX_INCLUDE_MAILBOXES (comma-separated)
+# include_mailboxes = []
+
+
+[server]
+
+# Disable write operations at MCP tool boundaries.
+# Env: APPLE_MAIL_READ_ONLY
+# CLI: apple-mail-mcp serve -r
+# read_only = false
+"""
