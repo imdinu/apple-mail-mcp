@@ -82,14 +82,13 @@ Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
 
 ## Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `APPLE_MAIL_DEFAULT_ACCOUNT` | First account | Default email account |
-| `APPLE_MAIL_DEFAULT_MAILBOX` | `INBOX` | Default mailbox |
-| `APPLE_MAIL_INDEX_PATH` | `~/.apple-mail-mcp/index.db` | Index location |
-| `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
-| `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Mailboxes to skip in search |
-| `APPLE_MAIL_READ_ONLY` | `false` | Disable write operations |
+Apple Mail MCP works out of the box. To customize defaults, run
+`apple-mail-mcp init` to generate a `config.toml` template — or use
+the matching `APPLE_MAIL_*` environment variables. See the
+[Configuration docs](https://imdinu.github.io/apple-mail-mcp/configuration/)
+for the full schema and the CLI > env > file > default precedence.
+
+Per-client env overrides via the MCP client's launch config also work:
 
 ```json
 {

@@ -35,7 +35,7 @@ Common issues and their solutions.
 
 3. **Index is stale.** Check with `apple-mail-mcp status`. If the index is old, run `apple-mail-mcp rebuild` or start the server with `--watch` for real-time updates.
 
-4. **Mailbox excluded.** By default, `Drafts` is excluded from search. Check `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` in your configuration.
+4. **Mailbox excluded.** By default, `Drafts` is excluded from indexing. Check `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` (env) or `[index] exclude_mailboxes` in `~/.apple-mail-mcp/config.toml`.
 
 ## Startup Timeout (v0.1.5 and earlier)
 
@@ -62,6 +62,36 @@ apple-mail-mcp rebuild
 ```
 
 This drops and recreates the index from scratch.
+
+## Config File Errors (v0.4.0+)
+
+**Symptom:** The server refuses to start with an error like
+`config.toml: TOML syntax error: ...`, `unknown key`,
+`expected str`, or `unsupported config_version`.
+
+**Cause:** `~/.apple-mail-mcp/config.toml` exists but doesn't validate
+against the schema. The loader fails loud on syntax errors, unknown
+keys (typos like `mailboxes` vs `mailbox`), type mismatches, and
+unsupported `config_version` values — refusing to start beats
+silently using degraded config.
+
+**Fix:**
+
+- Read the error message — it includes the file path and the
+  specific key that failed.
+- For a typo, correct it and restart the server.
+- To start over from a clean template, overwrite the file:
+
+    ```bash
+    apple-mail-mcp init --force
+    ```
+
+    This writes a commented template documenting every available key.
+
+- If you see `unsupported config_version`, your config was written
+  by a newer version of the server than the one currently installed.
+  Either upgrade `apple-mail-mcp` or hand-edit `config_version` back
+  to your installed version's schema.
 
 ## Failed Parse Counter ("Failed parse: N (.emlx files in DLQ)")
 

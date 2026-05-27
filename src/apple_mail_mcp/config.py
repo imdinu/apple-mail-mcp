@@ -357,16 +357,6 @@ config_version = 1
 # Env: APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES (comma-separated)
 # exclude_mailboxes = ["Drafts"]
 
-# Accounts to skip during indexing (names or UUIDs). Useful for keeping
-# work or personal accounts out of full-text search entirely.
-# Env: APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS (comma-separated)
-# exclude_accounts = []
-
-# Optional mailbox allow-list. When set, only these mailboxes are indexed.
-# `exclude_mailboxes` still applies on top.
-# Env: APPLE_MAIL_INDEX_INCLUDE_MAILBOXES (comma-separated)
-# include_mailboxes = []
-
 
 [server]
 

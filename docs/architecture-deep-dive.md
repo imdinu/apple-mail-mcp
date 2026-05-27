@@ -187,7 +187,7 @@ JXA is the only way to get **real-time state** from Mail.app. Disk files reflect
 
 We maintain a separate SQLite database (`~/.apple-mail-mcp/index.db`) with an [FTS5](https://www.sqlite.org/fts5.html) virtual table for full-text search. This is what makes body search possible in ~2ms instead of requiring JXA to iterate every email.
 
-### Schema (v4)
+### Schema (v5)
 
 ```sql
 -- Email content cache
@@ -202,6 +202,7 @@ CREATE TABLE emails (
     date_received TEXT,
     emlx_path TEXT,                    -- Absolute path to .emlx file
     attachment_count INTEGER DEFAULT 0,
+    indexed_at TEXT DEFAULT (datetime('now')),
     UNIQUE(account, mailbox, message_id)
 );
 
@@ -220,6 +221,21 @@ CREATE TABLE attachments (
     mime_type TEXT,
     file_size INTEGER,
     content_id TEXT
+);
+
+-- Dead letter queue for .emlx parse failures (added v0.3.0).
+-- Files that can't be parsed during sync or live watching land here
+-- so operators have visibility into what's missing from the index.
+-- A successful re-parse of the same path clears the entry automatically.
+CREATE TABLE failed_index_jobs (
+    emlx_path TEXT PRIMARY KEY,
+    account TEXT NOT NULL,
+    mailbox TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    first_seen TEXT DEFAULT (datetime('now')),
+    last_seen TEXT DEFAULT (datetime('now')),
+    attempt_count INTEGER DEFAULT 1
 );
 ```
 

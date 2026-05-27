@@ -2,8 +2,8 @@
 Apple Mail MCP Server
 
 3-layer architecture for fast email access:
-1. Disk-first reads — single emails via .emlx parsing (~5ms, no JXA)
-2. FTS5 search — full-text body search in ~20ms with BM25 ranking
+1. Disk-first reads — single emails via .emlx parsing (~3ms, no JXA)
+2. FTS5 search — full-text body search in ~2ms with BM25 ranking
 3. JXA fallback — batch property fetching for multi-email listing
 
 TOOLS (8 total):

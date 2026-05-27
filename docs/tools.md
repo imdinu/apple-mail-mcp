@@ -121,7 +121,7 @@ get_email(12345)
     If `account` and `mailbox` are not provided, the server searches all mailboxes in the default account to find the message.
 
 !!! note
-    The `attachments` list comes from JXA and only reports file attachments visible in Mail.app's UI. For reliable extraction (including inline images), use `get_attachment()`.
+    The `attachments` list comes from JXA and only reports file attachments visible in Mail.app's UI. For reliable extraction (including inline images), use `get_email_attachment()`.
 
 ---
 
