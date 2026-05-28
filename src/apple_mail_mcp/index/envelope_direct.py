@@ -31,10 +31,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Core Data reference date: 2001-01-01 00:00:00 UTC.
-# Mail.app's `date_received` is seconds since this epoch.
-_CORE_DATA_EPOCH = datetime(2001, 1, 1, tzinfo=UTC)
-
 
 @dataclass(frozen=True)
 class EnvelopeMessageRow:
@@ -51,15 +47,18 @@ class EnvelopeMessageRow:
     flagged: bool
 
 
-def _core_data_to_iso(ts: int | float | None) -> str:
-    """Convert Mail.app's seconds-since-2001 timestamp to ISO 8601."""
+def _unix_ts_to_iso(ts: int | float | None) -> str:
+    """Convert Mail V10's Envelope Index date_received to ISO 8601.
+
+    On macOS 14+ / Mail V10, `messages.date_received` is a Unix
+    timestamp (seconds since 1970-01-01 UTC), not a Core Data
+    timestamp. Empirically verified by cross-checking against the
+    `Date:` MIME header parsed from the corresponding .emlx file.
+    """
     if ts is None:
         return ""
     try:
-        dt = datetime.fromtimestamp(
-            float(ts) + _CORE_DATA_EPOCH.timestamp(), tz=UTC
-        )
-        return dt.isoformat()
+        return datetime.fromtimestamp(float(ts), tz=UTC).isoformat()
     except (ValueError, OverflowError):
         return ""
 
@@ -164,14 +163,12 @@ def fetch_recent_messages(
     elif filter_kind == "flagged":
         where_clauses.append("m.flagged = 1")
     elif filter_kind in ("today", "last_7_days", "this_week"):
-        # Convert "now - delta" to seconds since Core Data epoch.
+        # date_received is Unix epoch (see _unix_ts_to_iso); compare
+        # against a Unix-epoch threshold of "now - delta".
         now_ts = datetime.now(tz=UTC).timestamp()
         delta_seconds = 86400 if filter_kind == "today" else 7 * 86400
-        threshold_core_data = (
-            now_ts - delta_seconds - _CORE_DATA_EPOCH.timestamp()
-        )
         where_clauses.append("m.date_received >= ?")
-        params.append(threshold_core_data)
+        params.append(now_ts - delta_seconds)
     # "all": no extra clause
 
     where_sql = " AND ".join(where_clauses)
@@ -215,7 +212,7 @@ def fetch_recent_messages(
                     message_id=int(r["message_id"]) if r["message_id"] else 0,
                     subject=r["subject"] or "",
                     sender=r["sender"] or "",
-                    date_received=_core_data_to_iso(r["date_received"]),
+                    date_received=_unix_ts_to_iso(r["date_received"]),
                     mailbox_url=r["mailbox_url"] or "",
                     account_uuid=uuid,
                     mailbox_name=mailbox_n,
