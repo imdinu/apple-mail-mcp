@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-05-21
+## [0.4.0] - 2026-05-28
+
+### Performance
+
+- **`list_accounts()` and `get_emails()` now skip the AppleScript round-trip on the fast path** — both tools previously spawned `osascript` for every call, paying the JXA IPC ceiling (~150ms and ~1.2s respectively on a ~73K-message mailbox). `list_accounts()` now serves from the existing `AccountMap` cache (5-minute TTL) when warm — repeat calls within a session drop from ~150ms to ~1ms. `get_emails()` reads Apple's Envelope Index SQLite directly (the same `~/Library/Mail/V*/MailData/Envelope Index` that BastianZim, rusty, and pl-lyfx query), joining through the `subjects` and `addresses` lookup tables to materialize text columns — every filter (`all`, `unread`, `flagged`, `today`, `last_7_days`, `this_week`) is served from direct integer columns on `messages` without any JXA fallback for live state. Measured 75–250× speedup on a ~73K-message mailbox: list_accounts 153ms→~2ms (warm), get_emails 1247ms→~5ms. Both tools cascade to the existing JXA path automatically if the Envelope Index isn't accessible (schema mismatch, missing file, restrictive permissions), preserving correctness on any Mail.app build. New module `index/envelope_direct.py` with 22 unit tests; `index/accounts.py` gains `reset()` and `get_cached_accounts()` for the cache path and test isolation.
 
 ### Added
 

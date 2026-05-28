@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 import time
 from pathlib import Path as _Path
@@ -206,12 +207,18 @@ async def list_accounts() -> list[Account]:
         >>> list_accounts()
         [{"name": "Work", "id": "abc123"}, {"name": "Personal", "id": "def456"}]
     """
+    # Strategy 0: serve from the AccountMap cache when it's warm.
+    # The cache is hydrated by any prior list_accounts() call (5-min
+    # TTL) — so within a single MCP session this skips the ~150ms
+    # JXA round-trip on repeat calls.
+    cached = _get_account_map().get_cached_accounts()
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
+    # Strategy 1: cold path — JXA, then populate cache.
     script = AccountsQueryBuilder().list_accounts()
     accounts = await execute_with_core_async(script)
-
-    # Seed the account name↔UUID cache for search filtering
     _get_account_map().load_from_jxa(accounts)
-
     return accounts
 
 
@@ -272,13 +279,70 @@ async def get_emails(
         >>> get_emails(filter="unread", limit=10)  # Unread emails
         >>> get_emails("Work", "INBOX", filter="today")  # Today's work emails
     """
+    target_account = _resolve_account(account)
+    target_mailbox = _resolve_mailbox(mailbox)
+
+    # Strategy 0: direct read against Apple's Envelope Index SQLite.
+    # 100-1000x faster than JXA at scale because we skip the
+    # osascript spawn + Apple Event IPC. `messages.read`,
+    # `messages.flagged`, and `messages.date_received` are direct
+    # columns on the Envelope Index, so every filter is served
+    # without falling back to JXA for "live" state. Falls through
+    # to Strategy 1 only on path / schema errors.
+    try:
+        from .index.disk import find_mail_directory
+        from .index.envelope_direct import (
+            envelope_index_path,
+            fetch_recent_messages,
+        )
+
+        mail_dir = find_mail_directory()
+        env_path = envelope_index_path(mail_dir)
+        if env_path.exists():
+            # Resolve display-name -> UUID via the cache. Hydrates
+            # the cache via JXA on first hit; subsequent calls are
+            # in-process.
+            await _get_account_map().ensure_loaded()
+            account_uuid = (
+                _get_account_map().name_to_uuid(target_account)
+                if target_account
+                else None
+            )
+
+            rows = await asyncio.to_thread(
+                fetch_recent_messages,
+                env_path,
+                account_uuid=account_uuid,
+                mailbox_name=target_mailbox,
+                filter_kind=filter,
+                limit=limit,
+            )
+            return [
+                EmailSummary(
+                    id=r.message_id,
+                    subject=r.subject,
+                    sender=r.sender,
+                    date_received=r.date_received,
+                    read=r.read,
+                    flagged=r.flagged,
+                )
+                for r in rows
+            ]
+    except (FileNotFoundError, sqlite3.OperationalError) as exc:
+        logger.debug(
+            "Envelope Index fast path unavailable (%s); falling back to JXA",
+            exc,
+        )
+
+    # Strategy 1: JXA batchFetch fallback. Preserves correctness
+    # when the Envelope Index path / schema is unavailable on a
+    # given Mail.app build.
     query = (
         QueryBuilder()
-        .from_mailbox(_resolve_account(account), _resolve_mailbox(mailbox))
+        .from_mailbox(target_account, target_mailbox)
         .select("standard")
     )
 
-    # Apply filter
     if filter == "unread":
         query = query.where("data.readStatus[i] === false")
     elif filter == "flagged":

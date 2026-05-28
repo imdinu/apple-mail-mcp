@@ -62,6 +62,31 @@ class AccountMap:
         with self._lock:
             return self._name_to_uuid.get(name)
 
+    def reset(self) -> None:
+        """Forget all cached state. For tests and explicit refresh."""
+        with self._lock:
+            self._name_to_uuid.clear()
+            self._uuid_to_name.clear()
+            self._loaded_at = 0
+
+    def get_cached_accounts(self) -> list[dict[str, str]] | None:
+        """Return the cached account list, or None if cold/stale.
+
+        Lets `list_accounts()` serve repeat calls without a JXA
+        round-trip. Returns `[{"name": ..., "id": ...}, ...]`
+        when the cache is fresh, else None — caller falls back
+        to JXA to populate.
+        """
+        with self._lock:
+            if self._loaded_at == 0:
+                return None
+            if (time.monotonic() - self._loaded_at) > _CACHE_TTL:
+                return None
+            return [
+                {"name": name, "id": uid}
+                for name, uid in self._name_to_uuid.items()
+            ]
+
     def uuid_to_name(self, uuid: str) -> str:
         """Translate a UUID to its friendly account name.
 
