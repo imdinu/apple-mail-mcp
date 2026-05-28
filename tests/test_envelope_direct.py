@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from apple_mail_mcp.index.envelope_direct import (
-    _core_data_to_iso,
     _parse_mailbox_url,
+    _unix_ts_to_iso,
     envelope_index_path,
     fetch_recent_messages,
     list_account_uuids,
@@ -19,24 +19,32 @@ from apple_mail_mcp.index.envelope_direct import (
 # ─── Pure helpers ────────────────────────────────────────────
 
 
-class TestCoreDataToIso:
+class TestUnixTsToIso:
     def test_none_returns_empty(self):
-        assert _core_data_to_iso(None) == ""
+        assert _unix_ts_to_iso(None) == ""
 
-    def test_zero_is_core_data_epoch(self):
-        # 0 seconds since 2001-01-01 -> ISO of that exact moment
-        result = _core_data_to_iso(0)
-        assert result.startswith("2001-01-01T00:00:00")
+    def test_zero_is_unix_epoch(self):
+        # 0 seconds since 1970-01-01 -> ISO of that exact moment
+        result = _unix_ts_to_iso(0)
+        assert result.startswith("1970-01-01T00:00:00")
 
     def test_round_trip_known_date(self):
-        # 2026-05-28 12:00:00 UTC -> Core Data ts -> ISO -> verify
+        # 2026-05-28 12:00:00 UTC -> Unix ts -> ISO -> verify
         known = datetime(2026, 5, 28, 12, 0, 0, tzinfo=UTC)
-        epoch = datetime(2001, 1, 1, tzinfo=UTC)
-        ts = (known - epoch).total_seconds()
-        assert "2026-05-28T12:00:00" in _core_data_to_iso(ts)
+        ts = known.timestamp()
+        assert "2026-05-28T12:00:00" in _unix_ts_to_iso(ts)
+
+    def test_real_envelope_value_decodes_to_current_era(self):
+        # Regression test for the +31y epoch bug. 1779996962 is a
+        # real `messages.date_received` value observed in macOS 14
+        # / Mail V10. Interpreted as Unix epoch it is 2026-05-28;
+        # interpreted as Core Data epoch it would be 2057. If this
+        # ever fails with "2057-...", the Core Data offset has
+        # been reintroduced.
+        assert _unix_ts_to_iso(1779996962).startswith("2026-05-28")
 
     def test_garbage_returns_empty(self):
-        assert _core_data_to_iso("not-a-number") == ""  # type: ignore[arg-type]
+        assert _unix_ts_to_iso("not-a-number") == ""  # type: ignore[arg-type]
 
 
 class TestParseMailboxUrl:
