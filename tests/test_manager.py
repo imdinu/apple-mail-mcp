@@ -511,8 +511,7 @@ class TestBuildFromDiskTriggers:
             "WHERE emails_fts MATCH 'Goodbye'"
         ).fetchone()["n"]
         assert match_count == 0, (
-            "AFTER DELETE trigger missing — emails_fts retained a "
-            "deleted row."
+            "AFTER DELETE trigger missing — emails_fts retained a deleted row."
         )
 
     def test_triggers_present_when_rebuild_fts_runs(
@@ -531,9 +530,7 @@ class TestBuildFromDiskTriggers:
         mbox = mail_dir / "acc1" / "INBOX.mbox" / "Data" / "Messages"
         mbox.mkdir(parents=True)
         emlx = mbox / "1001.emlx"
-        emlx.write_bytes(
-            b"100\nFrom: t@t.com\nSubject: Test\n\nBody"
-        )
+        emlx.write_bytes(b"100\nFrom: t@t.com\nSubject: Test\n\nBody")
 
         monkeypatch.setattr(
             "apple_mail_mcp.index.disk.find_mail_directory",
@@ -593,21 +590,15 @@ class TestParseFailureDLQ:
         assert row["error_message"] == "malformed plist"
         assert row["attempt_count"] == 1
 
-    def test_record_idempotent_increments_attempt_count(
-        self, temp_db_path
-    ):
+    def test_record_idempotent_increments_attempt_count(self, temp_db_path):
         manager = IndexManager(db_path=temp_db_path)
         path = "/path/42.emlx"
 
         manager.record_parse_failure(
             path, "uuid-1", "INBOX", ValueError("first")
         )
-        manager.record_parse_failure(
-            path, "uuid-1", "INBOX", OSError("second")
-        )
-        manager.record_parse_failure(
-            path, "uuid-1", "INBOX", OSError("third")
-        )
+        manager.record_parse_failure(path, "uuid-1", "INBOX", OSError("second"))
+        manager.record_parse_failure(path, "uuid-1", "INBOX", OSError("third"))
 
         conn = manager._get_conn()
         row = conn.execute(
@@ -658,12 +649,8 @@ class TestParseFailureDLQ:
 
     def test_get_stats_includes_failed_jobs_count(self, temp_db_path):
         manager = IndexManager(db_path=temp_db_path)
-        manager.record_parse_failure(
-            "/a.emlx", "u", "INBOX", ValueError("a")
-        )
-        manager.record_parse_failure(
-            "/b.emlx", "u", "INBOX", ValueError("b")
-        )
+        manager.record_parse_failure("/a.emlx", "u", "INBOX", ValueError("a"))
+        manager.record_parse_failure("/b.emlx", "u", "INBOX", ValueError("b"))
 
         stats = manager.get_stats()
         assert stats.failed_jobs_count == 2
@@ -685,9 +672,7 @@ class TestSearchAttachments:
             "VALUES (1, 'acc', 'INBOX', 'Test', 'a@b.com', "
             "'2024-01-01', 1)"
         )
-        rowid = conn.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
             "INSERT INTO attachments "
             "(email_rowid, filename, mime_type, file_size) "
@@ -710,9 +695,7 @@ class TestSearchAttachments:
             "VALUES (1, 'acc1', 'INBOX', 'Test', 'a@b.com', "
             "'2024-01-01', 1)"
         )
-        rowid = conn.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
             "INSERT INTO attachments "
             "(email_rowid, filename) VALUES (?, 'doc.pdf')",
@@ -743,9 +726,7 @@ class TestGetEmailAttachments:
             "(message_id, account, mailbox, subject) "
             "VALUES (42, 'acc', 'INBOX', 'Test')"
         )
-        rowid = conn.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
             "INSERT INTO attachments "
             "(email_rowid, filename, mime_type, file_size, content_id) "

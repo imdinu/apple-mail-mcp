@@ -17,6 +17,34 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_server_singletons(monkeypatch):
+    """Clear AccountMap state and force Strategy 0 unavailable.
+
+    Without the cache reset, an AccountMap populated by one test
+    leaks into the next and tests that mock `execute_with_core_async`
+    never actually invoke the mock.
+
+    Without the envelope-index disable, existing tests that mock
+    `execute_query_async` (the JXA fallback for get_emails) would
+    be bypassed because the envelope-index SQLite would be read
+    directly on a real macOS test host. Tests that want to
+    exercise Strategy 0 explicitly override these patches via
+    `monkeypatch.setattr(...)` of their own.
+    """
+    from pathlib import Path
+
+    from apple_mail_mcp.index.accounts import AccountMap
+
+    AccountMap.get_instance().reset()
+    monkeypatch.setattr(
+        "apple_mail_mcp.index.envelope_direct.envelope_index_path",
+        lambda mail_dir: Path("/nonexistent/Envelope Index"),
+    )
+    yield
+    AccountMap.get_instance().reset()
+
+
 class TestListAccounts:
     """Tests for list_accounts() tool."""
 
@@ -245,9 +273,7 @@ class TestGetEmail:
     @pytest.mark.asyncio
     @patch("apple_mail_mcp.server._get_index_manager")
     @patch("apple_mail_mcp.server.execute_with_core_async")
-    async def test_includes_message_id_in_script(
-        self, mock_exec, mock_mgr
-    ):
+    async def test_includes_message_id_in_script(self, mock_exec, mock_mgr):
         """get_email includes message_id in the JXA script."""
         mock_mgr.return_value.has_index.return_value = False
         mock_exec.return_value = {"id": 99999}
@@ -268,8 +294,9 @@ class TestGetEmail:
         self, mock_exec, mock_mgr, mock_acct_map
     ):
         """Strategy 0 reads directly from .emlx without JXA."""
-        from unittest.mock import AsyncMock
         from pathlib import Path
+        from unittest.mock import AsyncMock
+
         from apple_mail_mcp.index.disk import EmlxEmail
 
         parsed = EmlxEmail(
@@ -287,8 +314,8 @@ class TestGetEmail:
         )
 
         mock_mgr.return_value.has_index.return_value = True
-        mock_mgr.return_value.find_email_path.return_value = (
-            Path("/tmp/fake.emlx")
+        mock_mgr.return_value.find_email_path.return_value = Path(
+            "/tmp/fake.emlx"
         )
         mock_mgr.return_value.get_email_attachments.return_value = []
 
@@ -296,10 +323,13 @@ class TestGetEmail:
         acct_map.ensure_loaded = AsyncMock()
         acct_map.name_to_uuid.return_value = None
 
-        with patch(
-            "apple_mail_mcp.server.asyncio.to_thread",
-            return_value=parsed,
-        ), patch("pathlib.Path.exists", return_value=True):
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
             from apple_mail_mcp.server import get_email
 
             result = await get_email(42)
@@ -362,13 +392,13 @@ class TestGetEmail:
         """Stale FTS5 entry is auto-cleaned and a clear error is raised
         without falling through to JXA cascade. (#74)
         """
-        from unittest.mock import AsyncMock
         from pathlib import Path
+        from unittest.mock import AsyncMock
 
         # Strategy 0: index has a path, but the file is gone on disk
         mock_mgr.return_value.has_index.return_value = True
-        mock_mgr.return_value.find_email_path.return_value = (
-            Path("/nonexistent/42.emlx")
+        mock_mgr.return_value.find_email_path.return_value = Path(
+            "/nonexistent/42.emlx"
         )
         mock_mgr.return_value.delete_email.return_value = 1
 
@@ -968,9 +998,7 @@ class TestGetAttachment:
             result = await get_attachment(42, "private.pdf")
             file_path = Path(result["file_path"])
             mode = stat_mod.S_IMODE(file_path.stat().st_mode)
-            assert mode == 0o600, (
-                f"Expected 0o600 permissions, got {oct(mode)}"
-            )
+            assert mode == 0o600, f"Expected 0o600 permissions, got {oct(mode)}"
 
 
 class TestSearchAttachments:
@@ -1279,9 +1307,7 @@ class TestWriteImplyingToolsHaveGuard:
 
         violations = []
         for node in ast.walk(tree):
-            if not isinstance(
-                node, (ast.FunctionDef, ast.AsyncFunctionDef)
-            ):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not self._has_mcp_tool_decorator(node):
                 continue
@@ -1302,10 +1328,7 @@ class TestWriteImplyingToolsHaveGuard:
         for dec in node.decorator_list:
             # @mcp.tool
             if isinstance(dec, ast.Attribute) and dec.attr == "tool":
-                if (
-                    isinstance(dec.value, ast.Name)
-                    and dec.value.id == "mcp"
-                ):
+                if isinstance(dec.value, ast.Name) and dec.value.id == "mcp":
                     return True
             # @mcp.tool(...)
             if isinstance(dec, ast.Call):
@@ -1325,9 +1348,6 @@ class TestWriteImplyingToolsHaveGuard:
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
                 func = child.func
-                if (
-                    isinstance(func, ast.Name)
-                    and func.id == "_ensure_writable"
-                ):
+                if isinstance(func, ast.Name) and func.id == "_ensure_writable":
                     return True
         return False

@@ -38,7 +38,9 @@ class TestWatcherPathPattern:
         assert m.group(3) == "67301"
 
     def test_rejects_non_emlx(self):
-        path = "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/12345.txt"
+        path = (
+            "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/12345.txt"
+        )
         assert PATH_PATTERN.search(path) is None
 
 

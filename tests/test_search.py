@@ -30,18 +30,42 @@ def fts_db():
 
     # Insert test emails with different dates
     emails = [
-        (1, "acct-1", "Inbox", "Budget meeting notes",
-         "alice@example.com", "Let's discuss the Q1 budget",
-         "2026-01-15T10:00:00"),
-        (2, "acct-1", "Inbox", "Project update",
-         "bob@example.com", "The project is on track",
-         "2026-02-10T14:00:00"),
-        (3, "acct-1", "Sent", "Re: Budget meeting notes",
-         "me@example.com", "Thanks for the budget update",
-         "2026-03-01T09:00:00"),
-        (4, "acct-2", "Inbox", "Invoice attached",
-         "vendor@example.com", "Please find the invoice",
-         "2026-03-15T16:00:00"),
+        (
+            1,
+            "acct-1",
+            "Inbox",
+            "Budget meeting notes",
+            "alice@example.com",
+            "Let's discuss the Q1 budget",
+            "2026-01-15T10:00:00",
+        ),
+        (
+            2,
+            "acct-1",
+            "Inbox",
+            "Project update",
+            "bob@example.com",
+            "The project is on track",
+            "2026-02-10T14:00:00",
+        ),
+        (
+            3,
+            "acct-1",
+            "Sent",
+            "Re: Budget meeting notes",
+            "me@example.com",
+            "Thanks for the budget update",
+            "2026-03-01T09:00:00",
+        ),
+        (
+            4,
+            "acct-2",
+            "Inbox",
+            "Invoice attached",
+            "vendor@example.com",
+            "Please find the invoice",
+            "2026-03-15T16:00:00",
+        ),
     ]
     for msg_id, acct, mbox, subj, sender, content, date in emails:
         conn.execute(
@@ -52,9 +76,7 @@ def fts_db():
             (msg_id, acct, mbox, subj, sender, content, date),
         )
     # Populate FTS5 index
-    conn.execute(
-        "INSERT INTO emails_fts(emails_fts) VALUES('rebuild')"
-    )
+    conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
     conn.commit()
     return conn
 
@@ -434,12 +456,8 @@ class TestMailboxCaseInsensitive:
 
     def test_exclude_mailbox_case_insensitive(self, fts_db):
         """Excluded mailboxes should match regardless of case."""
-        r1 = search_fts(
-            fts_db, "budget", exclude_mailboxes=["Sent"]
-        )
-        r2 = search_fts(
-            fts_db, "budget", exclude_mailboxes=["sent"]
-        )
+        r1 = search_fts(fts_db, "budget", exclude_mailboxes=["Sent"])
+        r2 = search_fts(fts_db, "budget", exclude_mailboxes=["sent"])
         assert len(r1) == len(r2)
         assert all(r.mailbox != "Sent" for r in r1)
 
@@ -448,16 +466,12 @@ class TestDateRangeFiltering:
     """Tests for before/after date filtering in search."""
 
     def test_after_filter(self, fts_db):
-        results = search_fts(
-            fts_db, "budget", after="2026-02-01"
-        )
+        results = search_fts(fts_db, "budget", after="2026-02-01")
         assert len(results) == 1
         assert results[0].id == 3  # March email only
 
     def test_before_filter(self, fts_db):
-        results = search_fts(
-            fts_db, "budget", before="2026-02-01"
-        )
+        results = search_fts(fts_db, "budget", before="2026-02-01")
         assert len(results) == 1
         assert results[0].id == 1  # January email only
 
@@ -500,9 +514,7 @@ class TestDateRangeFiltering:
         )
         fts_db.commit()
 
-        results = search_attachments(
-            fts_db, "pdf", after="2026-03-01"
-        )
+        results = search_attachments(fts_db, "pdf", after="2026-03-01")
         assert len(results) == 1
         assert results[0]["filename"] == "invoice.pdf"
 
@@ -515,21 +527,16 @@ class TestSearchFtsHighlight:
         assert len(results) == 2
         # At least one result should have ** markers
         has_markers = any(
-            "**" in r.subject or "**" in r.content_snippet
-            for r in results
+            "**" in r.subject or "**" in r.content_snippet for r in results
         )
         assert has_markers
 
     def test_highlight_with_account_filter(self, fts_db):
-        results = search_fts_highlight(
-            fts_db, "budget", account="acct-1"
-        )
+        results = search_fts_highlight(fts_db, "budget", account="acct-1")
         assert all(r.account == "acct-1" for r in results)
 
     def test_highlight_with_date_range(self, fts_db):
-        results = search_fts_highlight(
-            fts_db, "budget", after="2026-02-01"
-        )
+        results = search_fts_highlight(fts_db, "budget", after="2026-02-01")
         assert len(results) == 1
         assert results[0].id == 3
 

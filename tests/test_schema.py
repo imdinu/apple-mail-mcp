@@ -419,9 +419,7 @@ class TestMigrationV4ToV5:
 class TestInsertAttachments:
     """Tests for the shared insert_attachments() helper."""
 
-    def test_insert_attachments_inserts_rows(
-        self, temp_db: sqlite3.Connection
-    ):
+    def test_insert_attachments_inserts_rows(self, temp_db: sqlite3.Connection):
         """insert_attachments creates attachment rows."""
         from types import SimpleNamespace
 
@@ -431,9 +429,7 @@ class TestInsertAttachments:
             "(message_id, account, mailbox, subject) "
             "VALUES (1, 'acc', 'INBOX', 'Test')"
         )
-        rowid = temp_db.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = temp_db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
         atts = [
             SimpleNamespace(
@@ -463,23 +459,19 @@ class TestInsertAttachments:
         assert rows[0]["filename"] == "a.pdf"
         assert rows[1]["filename"] == "b.png"
 
-    def test_insert_attachments_empty_list(
-        self, temp_db: sqlite3.Connection
-    ):
+    def test_insert_attachments_empty_list(self, temp_db: sqlite3.Connection):
         """insert_attachments with empty list is a no-op."""
         temp_db.execute(
             "INSERT INTO emails "
             "(message_id, account, mailbox, subject) "
             "VALUES (1, 'acc', 'INBOX', 'Test')"
         )
-        rowid = temp_db.execute(
-            "SELECT last_insert_rowid()"
-        ).fetchone()[0]
+        rowid = temp_db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
         insert_attachments(temp_db, rowid, [])
         temp_db.commit()
 
-        count = temp_db.execute(
-            "SELECT COUNT(*) FROM attachments"
-        ).fetchone()[0]
+        count = temp_db.execute("SELECT COUNT(*) FROM attachments").fetchone()[
+            0
+        ]
         assert count == 0

@@ -674,7 +674,7 @@ some payload
         # Expected: (7606 * 3) // 4 - 2 = 5704 - 2 = 5702
         raw = (
             f"Content-Type: application/octet-stream\n"
-            f"Content-Disposition: attachment; filename=\"big.bin\"\n"
+            f'Content-Disposition: attachment; filename="big.bin"\n'
             f"Content-Transfer-Encoding: base64\n\n{body}\n"
         )
         msg = email_mod.message_from_string(raw)
@@ -1146,8 +1146,7 @@ Content-Disposition: attachment; filename="doc.pdf"
         # Walk order: outer, inner1, text/plain, text/html,
         #             inner2, text/html, application/pdf
         leaf_parts = [
-            p for p in msg.walk()
-            if not p.get_content_maintype() == "multipart"
+            p for p in msg.walk() if not p.get_content_maintype() == "multipart"
         ]
         assert nums[id(leaf_parts[0])] == "1.1"  # text/plain
         assert nums[id(leaf_parts[1])] == "1.2"  # text/html
@@ -1308,9 +1307,7 @@ class TestMimePartNumbersFallback:
         from apple_mail_mcp.index import disk as disk_mod
 
         # Force the part-number map to be empty
-        monkeypatch.setattr(
-            disk_mod, "_mime_part_numbers", lambda msg: {}
-        )
+        monkeypatch.setattr(disk_mod, "_mime_part_numbers", lambda msg: {})
 
         emlx = _build_partial_tree(
             tmp_path,
@@ -1333,9 +1330,7 @@ class TestMimePartNumbersFallback:
         """get_attachment_content returns None on missing part_number."""
         from apple_mail_mcp.index import disk as disk_mod
 
-        monkeypatch.setattr(
-            disk_mod, "_mime_part_numbers", lambda msg: {}
-        )
+        monkeypatch.setattr(disk_mod, "_mime_part_numbers", lambda msg: {})
 
         emlx = _build_partial_tree(
             tmp_path,
