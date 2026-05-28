@@ -78,7 +78,11 @@ def generate_chart(
     Returns the PNG path or None if no data.
     """
     # Filter to successful results for this scenario, dropping any
-    # competitor explicitly excluded for this scenario
+    # competitor explicitly excluded for this scenario, and silently
+    # dropping any competitor not in COMPETITOR_ORDER (i.e. demoted
+    # since the JSON was produced — e.g. smorgan was first-class on
+    # 2026-05-28 but demoted later that day; its data lives on in the
+    # JSON but should not render in charts).
     excluded = BAR_CHART_EXCLUDE.get(scenario, set())
     scenario_data = [
         r
@@ -86,6 +90,7 @@ def generate_chart(
         if r["scenario"] == scenario
         and r["success"]
         and r["competitor"] not in excluded
+        and r["competitor"] in COMPETITOR_ORDER
     ]
     if not scenario_data:
         return None
@@ -182,24 +187,24 @@ COMPETITOR_LABELS = {
     "imdinu": "apple-mail-mcp (ours)",
     "bastianzim": "BastianZim",
     "rusty": "rusty (Rust)",
+    "pl-lyfx": "pl-lyfx",
     "patrickfreyer": "patrickfreyer",
     "sweetrb": "sweetrb",
-    "dhravya": "dhravya (archived)",
-    "smorgan": "s-morgan-jeffries",
-    "attilagyorffy": "attilagyorffy (Go)",
-    "che-apple-mail": "che (Swift)",
+    "titouancreach": "titouancreach (Haskell)",
 }
 
-# Display order: us first, then by interest
+# Display order: us first, then roughly fast → slow.
+# Envelope-Index-direct readers (bastianzim, rusty, pl-lyfx) cluster
+# at the top since they bypass AppleScript. AppleScript-backed
+# competitors trail.
 COMPETITOR_ORDER = [
     "imdinu",
     "bastianzim",
     "rusty",
+    "pl-lyfx",
     "patrickfreyer",
     "sweetrb",
-    "attilagyorffy",
-    "smorgan",
-    "dhravya",
+    "titouancreach",
 ]
 
 # Per-scenario overrides: classify a (competitor, scenario) cell with a
@@ -218,8 +223,13 @@ SCENARIO_OVERRIDES: dict[tuple[str, str], tuple[int, str]] = {
 # Per-scenario competitor exclusions for the bar charts (per-scenario
 # views). The matrix still shows the override label; the bar chart
 # omits the bar entirely so the visual comparison stays honest.
+#
+# pl-lyfx has no get_emails-list or get_email-by-id tool — it would
+# show as ERROR/missing on those bar charts; cleaner to omit.
 BAR_CHART_EXCLUDE: dict[str, set[str]] = {
     "search_body": {"bastianzim"},
+    "get_emails": {"pl-lyfx"},
+    "get_email": {"pl-lyfx"},
 }
 
 SCENARIO_SHORT = {
@@ -293,9 +303,7 @@ def generate_overview_chart(
         z_values.append(row_z)
         annotations.append(row_a)
 
-    y_labels = [
-        COMPETITOR_LABELS.get(c, c) for c in reversed(competitors)
-    ]
+    y_labels = [COMPETITOR_LABELS.get(c, c) for c in reversed(competitors)]
     x_labels = [SCENARIO_SHORT[s] for s in scenarios]
 
     # Custom colorscale: 0=green, 0.5=red, 1=gray
@@ -337,7 +345,7 @@ def generate_overview_chart(
     fig.update_layout(
         title=dict(
             text=(
-                "Apple Mail MCP Servers — Capability Matrix (72K mailbox)"
+                "Apple Mail MCP Servers — Capability Matrix (73K mailbox)"
                 "<br><sup style='color:#6b7280'>"
                 "“5K cap” = competitor only scans the 5000 most recent "
                 "messages (silent miss on older mail)."

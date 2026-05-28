@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-The only Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes (tested at ~72K messages) where AppleScript-based servers timeout, and the only one whose body search has no recency cap. Disk-first email reads (~3ms via .emlx parsing), batch JXA property fetching, and an FTS5 search index for full-text body search (~20ms).
+The only Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes (tested at ~73K messages) where AppleScript-based servers timeout, and the only one whose body search has no recency cap. Disk-first email reads (~3ms via .emlx parsing), batch JXA property fetching, and an FTS5 search index for full-text body search (~28ms).
 
 ## Project Structure
 
@@ -504,7 +504,7 @@ omitting the key, which uses the `["Drafts"]` default.
 
 ## Benchmarks
 
-Competitive benchmarks live in `benchmarks/` and compare against 7 other Apple Mail MCP servers.
+Competitive benchmarks live in `benchmarks/` and compare against 6 other Apple Mail MCP servers.
 
 ```bash
 # Install all competitors

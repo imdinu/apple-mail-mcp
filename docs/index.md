@@ -6,7 +6,7 @@ The only Apple Mail MCP server with **full-coverage FTS5 body search**. Reliable
 
 ## Why Apple Mail MCP?
 
-Tested against [8 other Apple Mail MCP servers](benchmarks.md) on a real ~72K-message mailbox:
+Tested against [6 other Apple Mail MCP servers](benchmarks.md) on a real ~73K-message mailbox:
 
 - **Only server with full-coverage body search.** Most competitors don't support body search at all; the one that does (BastianZim) caps at the 5000 most recent messages — silent miss on older mail. Our FTS5 covers the entire mailbox.
 - **~3ms** single email fetch via disk-first `.emlx` reading.
