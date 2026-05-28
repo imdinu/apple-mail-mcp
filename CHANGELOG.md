@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - TBD
+
+### Fixed
+
+- **MCP Registry submission failed validation on 0.4.0** — registry enforces an undocumented `description` length cap of 100 characters; ours was 127. The PyPI 0.4.0 release succeeded, and `pipx install apple-mail-mcp` works, but the MCP Registry never caught up from v0.1.2 (its frozen state since 2026-02-19). Trimmed description in `pyproject.toml` and `server.json` to 88 characters, preserving the "full-coverage FTS5 body search" and "reliable on large mailboxes" claims. No code changes.
+
 ## [0.4.0] - 2026-05-28
 
 ### Performance
