@@ -10,11 +10,12 @@ Apple Mail MCP uses a **3-layer architecture** where each tool picks the fastest
 
 | Layer | Latency | Used By | Requires |
 |-------|---------|---------|----------|
-| **Disk read** | ~1–5ms | `get_email()` | Search index |
+| **Disk read** | ~1–5ms | `get_email()` Strategy 0 | Search index |
+| **Envelope Index SQL** | ~1–5ms | `list_accounts()` (cached), `get_emails()` Strategy 0 | `~/Library/Mail/V*/MailData/Envelope Index` readable |
 | **FTS5 search** | ~2–25ms | `search()` | Search index |
-| **JXA / Apple Events** | ~100–300ms | `get_emails()`, `list_mailboxes()` | Mail.app running |
+| **JXA / Apple Events** | ~100–300ms | `list_mailboxes()`, fallback for the above | Mail.app running |
 
-The key insight is that **most "read email" operations don't need Mail.app at all**. The email content is already on disk as `.emlx` files. We only need JXA when we want real-time state that only Mail.app knows (like the unread count on a mailbox, or listing emails with live filters).
+The key insight is that **most "read email" operations don't need Mail.app at all**. Email content is already on disk as `.emlx` files; metadata is already in Apple's Envelope Index SQLite. As of 0.4 we route the metadata-listing tools (`list_accounts`, `get_emails`) through direct SQLite reads against the Envelope Index — same path BastianZim/rusty/pl-lyfx take — and fall back to JXA only when the index isn't accessible (schema mismatch on a new Mail.app build, restrictive permissions). We still need JXA for `list_mailboxes()` (mailbox listings require Mail.app's live view of folder hierarchies) and as a correctness fallback everywhere.
 
 ---
 

@@ -75,6 +75,7 @@ Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-m
 
 - **Only server with full-coverage body search.** Most competitors don't support body search at all; the one that does (BastianZim) live-scans only the 5000 most recent messages — silent miss on anything older. Our FTS5 index covers the entire mailbox.
 - **~3ms single email fetch** via disk-first `.emlx` reading (no JXA round-trip).
+- **~1ms `list_accounts` and ~5ms 50-email listing** via direct Envelope-Index SQLite reads (0.4+) — same path BastianZim/rusty/pl-lyfx use, with JXA as the correctness fallback.
 - **~7ms subject search** via FTS5 — competitive with native Rust on the same operation.
 - **Reliable across all 6 benchmarked operations** on a 72K mailbox; AppleScript-based servers timeout, throw syntax errors, or skip operations they don't support.
 

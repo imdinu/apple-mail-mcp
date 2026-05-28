@@ -138,8 +138,9 @@ Server startup → IndexManager.sync_updates()
 | Access Method | Use Case | Latency | When Used |
 |---------------|----------|---------|-----------|
 | **Disk (Single)** | Read single email by ID | ~1-5ms | `get_email()` Strategy 0 |
-| **JXA (Live)** | Real-time ops, small queries | ~100-300ms | `get_email()` Strategies 1-3, `list_mailboxes()` |
+| **Envelope Index SQL** | List accounts, list emails by metadata | ~1-5ms | `list_accounts()` (warm cache), `get_emails()` Strategy 0 (0.4+) |
 | **FTS5 (Cached)** | Body search, complex filtering | ~2-10ms | `search()` |
+| **JXA (Live)** | Real-time ops, fallback path | ~100-300ms | `list_mailboxes()`, `get_email()` Strategies 1-3, cold `list_accounts()` to seed name cache, fallback for `get_emails()` |
 | **Disk (Batch)** | Indexing, sync | ~15ms/100 emails | startup, `apple-mail-mcp index` |
 
 ### get_email() Strategy Cascade

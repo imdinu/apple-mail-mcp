@@ -114,14 +114,14 @@ silently using degraded config.
 
 ## Mail.app Not Running
 
-**Symptom:** JXA-based tools (`list_accounts`, `list_mailboxes`, `get_emails`, `get_email`) fail with errors.
+**Symptom:** JXA-fallback tools (`list_mailboxes`, `get_email` cascade strategies 1–3, cold `list_accounts()` calls, and `get_emails()` when the Envelope Index path is unavailable) fail with AppleScript errors.
 
-**Cause:** Apple Mail must be running for JXA (JavaScript for Automation) to communicate with it.
+**Cause:** When the JXA fallback runs, Apple Mail must be running so `osascript` can communicate with it.
 
 **Fix:** Open Mail.app. It can be minimized — it just needs to be running.
 
 !!! tip
-    FTS5-based search (`search()` with scope `all`, `subject`, `sender`, or `body`) works even when Mail.app is closed, since it queries the local SQLite index.
+    As of 0.4, `list_accounts()` serves repeat calls from a cache (no JXA round-trip for ~5 min after the first call), and `get_emails()` reads Apple's Envelope Index SQLite directly when accessible (`~/Library/Mail/V*/MailData/Envelope Index`) — both work without Mail.app running. JXA only enters the picture on the cold `list_accounts()` call (to seed the account-name cache) and as a correctness fallback if the Envelope Index can't be read. FTS5-based search (`search()` with scope `all`, `subject`, `sender`, or `body`) also works fully offline since it queries the local SQLite index.
 
 ## `osascript` Errors
 

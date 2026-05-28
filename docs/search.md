@@ -72,7 +72,7 @@ Attachment metadata (filename, MIME type, file size) is stored in a separate `at
 
 The `account` column stores filesystem UUIDs (e.g., `24E569DF-5E45-...`), not friendly names like `"Work"`. This is intentional — the sync engine diffs `get_disk_inventory()` (UUID-keyed) against `get_db_inventory()` to detect new, deleted, and moved emails. Storing friendly names would break the diff, causing a full re-index on every sync cycle.
 
-Instead, translation happens at search time via `AccountMap` (`index/accounts.py`), which maps names to UUIDs using JXA's `Mail.accounts.id()`. The mapping is cached for 5 minutes and seeded automatically when `list_accounts()` is called.
+Instead, translation happens at search time via `AccountMap` (`index/accounts.py`), which maps names to UUIDs using JXA's `Mail.accounts.id()`. The mapping is cached for 5 minutes and seeded automatically on the first `list_accounts()` call or on any `get_emails()`/`search()` call that passes an `account=` argument. Subsequent calls within the TTL are served from the in-process cache with no JXA round-trip.
 
 ## Database Schema
 
