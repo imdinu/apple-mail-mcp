@@ -182,24 +182,26 @@ COMPETITOR_LABELS = {
     "imdinu": "apple-mail-mcp (ours)",
     "bastianzim": "BastianZim",
     "rusty": "rusty (Rust)",
+    "pl-lyfx": "pl-lyfx",
     "patrickfreyer": "patrickfreyer",
     "sweetrb": "sweetrb",
-    "dhravya": "dhravya (archived)",
+    "titouancreach": "titouancreach (Haskell)",
     "smorgan": "s-morgan-jeffries",
-    "attilagyorffy": "attilagyorffy (Go)",
-    "che-apple-mail": "che (Swift)",
 }
 
-# Display order: us first, then by interest
+# Display order: us first, then roughly fast → slow.
+# Envelope-Index-direct readers (bastianzim, rusty, pl-lyfx) cluster
+# at the top since they bypass AppleScript. AppleScript-backed
+# competitors trail.
 COMPETITOR_ORDER = [
     "imdinu",
     "bastianzim",
     "rusty",
+    "pl-lyfx",
     "patrickfreyer",
     "sweetrb",
-    "attilagyorffy",
+    "titouancreach",
     "smorgan",
-    "dhravya",
 ]
 
 # Per-scenario overrides: classify a (competitor, scenario) cell with a
@@ -218,8 +220,13 @@ SCENARIO_OVERRIDES: dict[tuple[str, str], tuple[int, str]] = {
 # Per-scenario competitor exclusions for the bar charts (per-scenario
 # views). The matrix still shows the override label; the bar chart
 # omits the bar entirely so the visual comparison stays honest.
+#
+# pl-lyfx has no get_emails-list or get_email-by-id tool — it would
+# show as ERROR/missing on those bar charts; cleaner to omit.
 BAR_CHART_EXCLUDE: dict[str, set[str]] = {
     "search_body": {"bastianzim"},
+    "get_emails": {"pl-lyfx"},
+    "get_email": {"pl-lyfx"},
 }
 
 SCENARIO_SHORT = {
@@ -293,9 +300,7 @@ def generate_overview_chart(
         z_values.append(row_z)
         annotations.append(row_a)
 
-    y_labels = [
-        COMPETITOR_LABELS.get(c, c) for c in reversed(competitors)
-    ]
+    y_labels = [COMPETITOR_LABELS.get(c, c) for c in reversed(competitors)]
     x_labels = [SCENARIO_SHORT[s] for s in scenarios]
 
     # Custom colorscale: 0=green, 0.5=red, 1=gray

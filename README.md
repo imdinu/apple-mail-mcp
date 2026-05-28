@@ -55,7 +55,7 @@ apple-mail-mcp index --verbose
 
 ## Performance
 
-Tested against [8 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) on a real **~72K-message** mailbox:
+Tested against [7 other Apple Mail MCP servers](https://imdinu.github.io/apple-mail-mcp/benchmarks/) on a real **~72K-message** mailbox:
 
 - **Only server with full-coverage body search.** Most competitors don't support body search at all; the one that does (BastianZim) live-scans only the 5000 most recent messages — silent miss on anything older. Our FTS5 index covers the entire mailbox.
 - **~3ms single email fetch** via disk-first `.emlx` reading (no JXA round-trip).

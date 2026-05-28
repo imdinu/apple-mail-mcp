@@ -122,52 +122,7 @@ _register(
     )
 )
 
-# 3. kiki830621/che-apple-mail-mcp (Swift)
-_register(
-    Competitor(
-        name="kiki830621/che-apple-mail-mcp",
-        key="che-apple-mail",
-        command=[
-            f"{CACHE_DIR}/che-apple-mail-mcp/.build/release/CheAppleMailMCP",
-        ],
-        tool_mapping={
-            "list_accounts": ToolCall("list_accounts"),
-            "get_emails": ToolCall("list_emails", {"limit": 50}),
-            "search_subject": ToolCall(
-                "search_emails", {"query": SEARCH_QUERY}
-            ),
-        },
-    )
-)
-
-# 4. supermemoryai/apple-mcp (dhravya, archived Jan 2026)
-_register(
-    Competitor(
-        name="dhravya/apple-mcp",
-        key="dhravya",
-        command=["npx", "apple-mcp@latest"],
-        tool_mapping={
-            "list_accounts": ToolCall(
-                "mail",
-                {"operation": "accounts"},
-            ),
-            "get_emails": ToolCall(
-                "mail",
-                {"operation": "unread"},
-            ),
-            "search_subject": ToolCall(
-                "mail",
-                {
-                    "operation": "search",
-                    "searchTerm": SEARCH_QUERY,
-                },
-            ),
-        },
-        notes="Archived Jan 2026, historical baseline",
-    )
-)
-
-# 5. s-morgan-jeffries/apple-mail-mcp (Python, FastMCP)
+# 3. s-morgan-jeffries/apple-mail-mcp (Python, FastMCP)
 _register(
     Competitor(
         name="s-morgan-jeffries/apple-mail-mcp",
@@ -198,35 +153,7 @@ _register(
     )
 )
 
-# 6. attilagyorffy/apple-mail-mcp (Go, single binary)
-_register(
-    Competitor(
-        name="attilagyorffy/apple-mail-mcp",
-        key="attilagyorffy",
-        command=[
-            f"{CACHE_DIR}/attilagyorffy-apple-mail-mcp/bin/apple-mail-mcp",
-        ],
-        tool_mapping={
-            "get_emails": ToolCall(
-                "search_messages",
-                {
-                    "account": BENCHMARK_ACCOUNT,
-                    "limit": 50,
-                },
-            ),
-            "search_subject": ToolCall(
-                "search_messages",
-                {
-                    "account": BENCHMARK_ACCOUNT,
-                    "subject_contains": SEARCH_QUERY,
-                },
-            ),
-        },
-        notes="Go binary, no list_accounts or body search",
-    )
-)
-
-# 7. like-a-freedom/rusty_apple_mail_mcp (Rust, reads Envelope Index)
+# 4. like-a-freedom/rusty_apple_mail_mcp (Rust, reads Envelope Index)
 _register(
     Competitor(
         name="rusty_apple_mail_mcp",
@@ -255,7 +182,7 @@ _register(
     )
 )
 
-# 8. sweetrb/apple-mail-mcp (TypeScript, npm, AppleScript)
+# 5. sweetrb/apple-mail-mcp (TypeScript, npm, AppleScript)
 _register(
     Competitor(
         name="sweetrb/apple-mail-mcp",
@@ -286,7 +213,7 @@ _register(
     )
 )
 
-# 9. BastianZim/apple-mail-mcp (Python, no AppleScript, SQLite + .emlx)
+# 6. BastianZim/apple-mail-mcp (Python, no AppleScript, SQLite + .emlx)
 _register(
     Competitor(
         name="BastianZim/apple-mail-mcp",
@@ -320,6 +247,59 @@ _register(
             "Reads Envelope Index SQLite + .emlx directly, no AppleScript. "
             "No FTS5 — body search live-scans up to 5000 .emlx files. "
             "Closest head-to-head for the indexing thesis."
+        ),
+    )
+)
+
+# 7. pl-lyfx/apple-mail-mcp (Python single-file, Envelope Index direct)
+_register(
+    Competitor(
+        name="pl-lyfx/apple-mail-mcp",
+        key="pl-lyfx",
+        command=[
+            "python3",
+            f"{CACHE_DIR}/pl-lyfx-apple-mail-mcp/apple_mail_mcp.py",
+        ],
+        cwd=f"{CACHE_DIR}/pl-lyfx-apple-mail-mcp",
+        tool_mapping={
+            "list_accounts": ToolCall("mail_list_accounts"),
+            "search_subject": ToolCall(
+                "mail_search_by_subject", {"query": SEARCH_QUERY}
+            ),
+            "search_body": ToolCall("mail_search", {"query": SEARCH_QUERY}),
+        },
+        notes=(
+            "Single-file Python, reads Envelope Index SQLite directly. "
+            "No get_emails-list or get_email-by-id surface. "
+            "Script hardcodes MAIL_DIR / EMAIL / MAIL_VERSION constants — "
+            "edit top of apple_mail_mcp.py before benchmarking."
+        ),
+    )
+)
+
+# 8. titouancreach/apple-mail-mcp (Haskell, AppleScript-backed)
+_register(
+    Competitor(
+        name="titouancreach/apple-mail-mcp",
+        key="titouancreach",
+        command=[
+            f"{CACHE_DIR}/titouancreach-bin/apple-mail-mcp",
+        ],
+        tool_mapping={
+            "list_accounts": ToolCall("mail", {"operation": "accounts"}),
+            "get_emails": ToolCall(
+                "mail", {"operation": "latest", "limit": 50}
+            ),
+            "search_subject": ToolCall(
+                "mail",
+                {"operation": "search", "searchTerm": SEARCH_QUERY},
+            ),
+        },
+        notes=(
+            "Haskell, single 'mail' tool with operation params. "
+            "AppleScript-backed under the hood. "
+            "Pre-compiled to a native binary via `cabal install` for "
+            "fair cold-start comparison with Rust/Go entrants."
         ),
     )
 )
