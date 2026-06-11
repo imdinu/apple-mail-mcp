@@ -1351,3 +1351,70 @@ class TestWriteImplyingToolsHaveGuard:
                 if isinstance(func, ast.Name) and func.id == "_ensure_writable":
                     return True
         return False
+
+
+class TestInputValidation:
+    """MCP boundary validation: pagination clamps + date checks (#96)."""
+
+    def test_pagination_clamps_negative_limit(self):
+        from apple_mail_mcp.server import _validate_pagination
+
+        assert _validate_pagination(-1) == (1, 0)
+
+    def test_pagination_clamps_oversized_limit(self):
+        from apple_mail_mcp.server import MAX_RESULT_LIMIT, _validate_pagination
+
+        limit, _ = _validate_pagination(10_000)
+        assert limit == MAX_RESULT_LIMIT
+
+    def test_pagination_clamps_negative_offset(self):
+        from apple_mail_mcp.server import _validate_pagination
+
+        assert _validate_pagination(20, -5) == (20, 0)
+
+    def test_pagination_passes_sane_values(self):
+        from apple_mail_mcp.server import _validate_pagination
+
+        assert _validate_pagination(20, 40) == (20, 40)
+
+    def test_date_accepts_valid(self):
+        from apple_mail_mcp.server import _validate_date
+
+        assert _validate_date("2026-01-31", "before") == "2026-01-31"
+
+    def test_date_accepts_none(self):
+        from apple_mail_mcp.server import _validate_date
+
+        assert _validate_date(None, "after") is None
+
+    @pytest.mark.parametrize(
+        "bad", ["2026-6-1", "2026-13-01", "yesterday", "01/31/2026", ""]
+    )
+    def test_date_rejects_malformed(self, bad):
+        from apple_mail_mcp.server import _validate_date
+
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            _validate_date(bad, "before")
+
+    def test_date_error_names_the_param(self):
+        from apple_mail_mcp.server import _validate_date
+
+        with pytest.raises(ValueError, match="after"):
+            _validate_date("nope", "after")
+
+    @pytest.mark.asyncio
+    async def test_search_rejects_malformed_date(self):
+        from apple_mail_mcp.server import search
+
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            await search("budget", before="2026-99-99")
+
+    def test_clamped_env_int_bounds(self, monkeypatch):
+        from apple_mail_mcp.server import _clamped_env_int
+
+        monkeypatch.setenv("X_TEST_CLAMP", "999999")
+        assert _clamped_env_int("X_TEST_CLAMP", 15, 1, 300) == 300
+        monkeypatch.setenv("X_TEST_CLAMP", "-3")
+        assert _clamped_env_int("X_TEST_CLAMP", 15, 1, 300) == 1
+        monkeypatch.delenv("X_TEST_CLAMP")
+        assert _clamped_env_int("X_TEST_CLAMP", 15, 1, 300) == 15

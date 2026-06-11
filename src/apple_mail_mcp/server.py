@@ -30,6 +30,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path as _Path
 from typing import Literal, TypedDict
 
@@ -85,11 +86,48 @@ def _cleanup_old_attachments(max_age_hours: int = 24) -> None:
                 pass
 
 
-# Strategy 3 safety limits for get_email's all-mailbox scan
-STRATEGY3_TIMEOUT = int(os.environ.get("APPLE_MAIL_STRATEGY3_TIMEOUT", "15"))
-STRATEGY3_MAX_MAILBOXES = int(
-    os.environ.get("APPLE_MAIL_STRATEGY3_MAX_MAILBOXES", "50")
+def _clamped_env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Read an int env var, clamped to [lo, hi]."""
+    return max(lo, min(int(os.environ.get(name, str(default))), hi))
+
+
+# Strategy 3 safety limits for get_email's all-mailbox scan.
+# Clamped so a stray env value can't disable the safety rails.
+STRATEGY3_TIMEOUT = _clamped_env_int("APPLE_MAIL_STRATEGY3_TIMEOUT", 15, 1, 300)
+STRATEGY3_MAX_MAILBOXES = _clamped_env_int(
+    "APPLE_MAIL_STRATEGY3_MAX_MAILBOXES", 50, 1, 500
 )
+
+# Hard ceiling for limit params at the MCP tool boundary. Oversized
+# limits push entire result sets into the model's context; negative
+# LIMIT means "unlimited" in SQLite.
+MAX_RESULT_LIMIT = 200
+
+
+def _validate_pagination(limit: int, offset: int = 0) -> tuple[int, int]:
+    """Clamp pagination params to sane bounds (clamp, don't raise —
+    the model's many/few intent survives)."""
+    return max(1, min(limit, MAX_RESULT_LIMIT)), max(0, offset)
+
+
+def _validate_date(value: str | None, param: str) -> str | None:
+    """Require YYYY-MM-DD. Malformed dates would otherwise flow into
+    SQL string comparisons and silently return wrong results; an
+    explicit error lets the model self-correct."""
+    if value is None:
+        return None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+        # strptime accepts unpadded "2026-6-1", which still breaks SQL
+        # string comparison — require the canonical zero-padded form.
+        if parsed.strftime("%Y-%m-%d") != value:
+            raise ValueError(value)
+    except ValueError as e:
+        raise ValueError(
+            f"Invalid {param} date {value!r}: expected YYYY-MM-DD "
+            f"(e.g. 2026-01-31)"
+        ) from e
+    return value
 
 
 # ========== Response Type Definitions ==========
@@ -279,6 +317,7 @@ async def get_emails(
         >>> get_emails(filter="unread", limit=10)  # Unread emails
         >>> get_emails("Work", "INBOX", filter="today")  # Today's work emails
     """
+    limit, _ = _validate_pagination(limit)
     target_account = _resolve_account(account)
     target_mailbox = _resolve_mailbox(mailbox)
 
@@ -868,6 +907,9 @@ async def search(
         >>> search("invoice.pdf", scope="attachments")
         >>> search("budget", after="2026-01-01", before="2026-04-01")
     """
+    limit, offset = _validate_pagination(limit, offset)
+    before = _validate_date(before, "before")
+    after = _validate_date(after, "after")
     if exclude_mailboxes is None:
         exclude_mailboxes = ["Drafts"]
 
