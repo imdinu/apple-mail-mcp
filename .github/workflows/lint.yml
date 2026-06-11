@@ -1,4 +1,4 @@
-name: Lint
+name: CI
 
 on:
   push:
@@ -21,3 +21,19 @@ jobs:
       - run: uv sync --group dev
       - run: uv run ruff check src/
       - run: uv run ruff format --check src/
+
+  # macOS runner: the project is macOS-only, and most of the suite runs
+  # without Mail.app present (parsing, search, config, builders).
+  test:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --group dev
+      - run: uv run pytest -q
