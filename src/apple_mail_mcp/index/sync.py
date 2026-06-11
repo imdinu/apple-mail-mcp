@@ -264,14 +264,11 @@ def sync_from_disk(
                     path,
                     attachment_count=len(attachments),
                 )
-                conn.execute(INSERT_EMAIL_SQL, insert_row)
+                cursor = conn.execute(INSERT_EMAIL_SQL, insert_row)
 
                 # Insert attachment metadata
-                if attachments:
-                    rowid = conn.execute(
-                        "SELECT last_insert_rowid()"
-                    ).fetchone()[0]
-                    insert_attachments(conn, rowid, attachments)
+                if attachments and cursor.lastrowid is not None:
+                    insert_attachments(conn, cursor.lastrowid, attachments)
 
                 # Clear any prior DLQ entry — this path parses now.
                 conn.execute(CLEAR_PARSE_FAILURE_SQL, (path,))

@@ -12,6 +12,7 @@ overwhelming the database with rapid changes.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sqlite3
@@ -257,9 +258,17 @@ class IndexWatcher:
 
         try:
             conn = self._get_conn()
+        except sqlite3.Error as e:
+            logger.error("Database error in watcher: %s", e)
+            return
 
-            # Process deletes in batches to avoid SQLite variable limit
-            if deletes:
+        # Deletes and adds commit as separate transactions. sqlite3
+        # opens an implicit transaction on the first DML and holds it
+        # until commit/rollback — without the rollback below, a failed
+        # batch would leave partial work in an open transaction that
+        # the NEXT batch's commit would silently persist.
+        if deletes:
+            try:
                 delete_list = list(deletes)
                 for i in range(0, len(delete_list), DELETE_BATCH_SIZE):
                     batch = delete_list[i : i + DELETE_BATCH_SIZE]
@@ -269,7 +278,14 @@ class IndexWatcher:
                                  AND mailbox = ? AND message_id = ?"""
                         conn.execute(sql, (account, mailbox, msg_id))
                     deleted_count += len(batch)
+                conn.commit()
+            except sqlite3.Error as e:
+                logger.error("Database error in watcher deletes: %s", e)
+                deleted_count = 0
+                with contextlib.suppress(sqlite3.Error):
+                    conn.rollback()
 
+        try:
             # Process adds with retry for files still being written
             for key, path in adds.items():
                 account, mailbox, _ = key
@@ -353,13 +369,12 @@ class IndexWatcher:
                             str(path),
                             attachment_count=len(attachments),
                         )
-                        conn.execute(INSERT_EMAIL_SQL, row)
+                        cursor = conn.execute(INSERT_EMAIL_SQL, row)
 
-                        if attachments:
-                            rowid = conn.execute(
-                                "SELECT last_insert_rowid()"
-                            ).fetchone()[0]
-                            insert_attachments(conn, rowid, attachments)
+                        if attachments and cursor.lastrowid is not None:
+                            insert_attachments(
+                                conn, cursor.lastrowid, attachments
+                            )
 
                         added_count += 1
                     except sqlite3.IntegrityError as e:
@@ -370,7 +385,10 @@ class IndexWatcher:
             conn.commit()
 
         except sqlite3.Error as e:
-            logger.error("Database error in watcher: %s", e)
+            logger.error("Database error in watcher adds: %s", e)
+            added_count = 0
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
 
         # Notify callback
         if self.on_update and (added_count or deleted_count):
