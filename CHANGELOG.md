@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Watcher transaction discipline** — `_process_pending()` ran deletes and adds inside one implicit transaction with a single commit and no rollback on `sqlite3.Error`. Python's `sqlite3` holds an implicit transaction open until commit/rollback, so a mid-batch failure left partial work pending that the *next* batch's commit would silently persist. Deletes and adds now commit as separate transactions, each rolling back on failure. Both `watcher.py` and `sync.py` also switch from a separate `SELECT last_insert_rowid()` statement to `cursor.lastrowid`, which can't be invalidated by interleaved statements. (#95)
+- **Inline images without a MIME filename are now indexed and retrievable** — `multipart/related` HTML email (newsletters, marketing, rich-formatted business mail) embeds images as inline parts with a `Content-ID` and no filename. `_extract_attachments` dropped them, so `attachment_count` read 0 and the parts were unreachable. Such parts now get a synthetic `inline_<cid>.<ext>` filename derived from the sanitized Content-ID plus a mime-type extension; `get_attachment_content` derives the same name, so the advertised filename retrieves the bytes. (#86)
+- **Input validation at the MCP tool boundary** — `limit`/`offset` are clamped (negative `LIMIT` means *unlimited* in SQLite; oversized limits push entire result sets into the model's context — ceiling is 200), `before`/`after` must be canonical zero-padded `YYYY-MM-DD` (malformed dates previously flowed into SQL string comparisons and silently returned wrong results; the explicit `ValueError` lets the calling model self-correct), and the `APPLE_MAIL_STRATEGY3_*` env vars are clamped to sane ranges. (#96)
+
+### Performance
+
+- **`_flush_batch` no longer issues one SELECT per attachment-bearing email** — rows with attachments insert individually via `cursor.lastrowid` (`INSERT OR REPLACE` always yields a fresh rowid); the attachment-free majority keeps the `executemany` fast path. Removes hundreds of redundant queries per batch during full index builds. (#97)
+
+### Changed
+
+- **CI now runs the test suite** — `lint.yml` previously ran only ruff; the suite ran exclusively on the maintainer's machine. A new job runs pytest on `macos-latest` across Python 3.11/3.12/3.13. (#94)
+- **`tests/test_v016.py` split by feature** — the version-named regression dump's 9 classes moved to `test_watcher.py`, `test_disk.py`, `test_server.py`, and `test_cli_profile.py`. Also adds the suite's first real-file SQLite contention test (the shared fixtures use `:memory:`, which never locks). (#98)
+- **`search()` docstring documents the empty-result shape** — the deliberate `{"result": [], "hint": ...}` dict on zero matches is now described in the Returns section. (#99)
+
 ## [0.4.0] - 2026-05-28
 
 ### Performance
