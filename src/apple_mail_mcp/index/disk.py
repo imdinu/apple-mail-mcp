@@ -711,6 +711,21 @@ def _find_external_attachment(
     return None
 
 
+def _synthetic_inline_name(content_id: str, mime_type: str) -> str:
+    """Build a stable filename for an inline part that has a
+    Content-ID but no MIME filename (common in multipart/related
+    HTML email — embedded logos, badges, marketing graphics).
+
+    Both _extract_attachments() and get_attachment_content() derive
+    the name from the same inputs, so the synthetic filename is
+    addressable for retrieval. The cid is sanitized because it lands
+    in a user-visible filename. (#86)
+    """
+    ext = mimetypes.guess_extension(mime_type) or ""
+    safe_cid = re.sub(r"[^A-Za-z0-9._-]", "_", content_id)
+    return f"inline_{safe_cid}{ext}"
+
+
 def _extract_attachments(
     msg: email.message.Message,
     *,
@@ -762,9 +777,19 @@ def _extract_attachments(
         ):
             continue
 
+        content_id = part.get("Content-ID")
+        if content_id:
+            # Strip angle brackets: <cid123> → cid123
+            content_id = content_id.strip("<>")
+
         filename = part.get_filename() or ""
-        if not filename and "attachment" not in disposition.lower():
-            continue
+        if not filename:
+            if "attachment" not in disposition.lower() and not content_id:
+                continue
+            if content_id:
+                # Inline part with Content-ID but no filename —
+                # synthesize one so the part stays addressable. (#86)
+                filename = _synthetic_inline_name(content_id, content_type)
 
         file_size = _estimate_attachment_size(part)
 
@@ -787,11 +812,6 @@ def _extract_attachments(
                         file_size = ext.stat().st_size
                     except OSError:
                         pass
-
-        content_id = part.get("Content-ID")
-        if content_id:
-            # Strip angle brackets: <cid123> → cid123
-            content_id = content_id.strip("<>")
 
         attachments.append(
             AttachmentInfo(
@@ -848,9 +868,18 @@ def get_attachment_content(
             ):
                 continue
 
+            cid = part.get("Content-ID")
+            if cid:
+                cid = cid.strip("<>")
+
             fname = part.get_filename() or ""
-            if not fname and "attachment" not in disp.lower():
-                continue
+            if not fname:
+                if "attachment" not in disp.lower() and not cid:
+                    continue
+                if cid:
+                    # Same synthetic name _extract_attachments()
+                    # advertised for this part. (#86)
+                    fname = _synthetic_inline_name(cid, ct)
 
             if fname.strip().lower() != target_filename.strip().lower():
                 continue

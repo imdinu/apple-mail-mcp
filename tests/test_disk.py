@@ -1406,3 +1406,82 @@ class TestDetectMailVersion:
 
         # Clean up cache for other tests
         disk_mod._cached_mail_dir = None
+
+
+class TestInlineImagesWithoutFilename:
+    """Inline parts with a Content-ID but no MIME filename get a
+    synthetic, retrievable filename instead of being dropped (#86)."""
+
+    RAW = """\
+Content-Type: multipart/related; boundary="----=_Part"
+
+------=_Part
+Content-Type: text/html
+
+<html><body><img src="cid:RO_BCR_Email_94c8b886"></body></html>
+
+------=_Part
+Content-Type: image/png
+Content-ID: <RO_BCR_Email_94c8b886>
+Content-Disposition: inline
+
+PNG-fake-content
+
+------=_Part--
+"""
+
+    def test_extracts_inline_image_without_filename(self):
+        import email as email_mod
+
+        msg = email_mod.message_from_string(self.RAW)
+        result = _extract_attachments(msg)
+        assert len(result) == 1
+        assert result[0].filename == "inline_RO_BCR_Email_94c8b886.png"
+        assert result[0].content_id == "RO_BCR_Email_94c8b886"
+        assert result[0].mime_type == "image/png"
+
+    def test_synthetic_name_is_retrievable(self, tmp_path):
+        mime_content = self.RAW.encode()
+        plist = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<plist version="1.0"><dict></dict></plist>\n'
+        )
+        emlx = f"{len(mime_content)}\n".encode() + mime_content + plist
+        path = tmp_path / "42.emlx"
+        path.write_bytes(emlx)
+
+        result = get_attachment_content(
+            path, "inline_RO_BCR_Email_94c8b886.png"
+        )
+        assert result is not None
+        raw_bytes, mime_type = result
+        assert b"PNG-fake-content" in raw_bytes
+        assert mime_type == "image/png"
+
+    def test_cid_is_sanitized_for_filename(self):
+        from apple_mail_mcp.index.disk import _synthetic_inline_name
+
+        name = _synthetic_inline_name("a/b\\c:d e@f", "image/jpeg")
+        assert name == "inline_a_b_c_d_e_f.jpg"
+
+    def test_inline_part_without_cid_still_skipped(self):
+        import email as email_mod
+
+        raw = """\
+Content-Type: multipart/related; boundary="----=_Part"
+
+------=_Part
+Content-Type: text/html
+
+<html><body>hi</body></html>
+
+------=_Part
+Content-Type: image/png
+Content-Disposition: inline
+
+PNG-fake-content
+
+------=_Part--
+"""
+        msg = email_mod.message_from_string(raw)
+        assert _extract_attachments(msg) == []
