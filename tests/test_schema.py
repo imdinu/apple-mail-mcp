@@ -475,3 +475,69 @@ class TestInsertAttachments:
             0
         ]
         assert count == 0
+
+
+class TestConcurrentWrites:
+    """Two connections writing the same file-backed DB must resolve
+    contention within busy_timeout, not raise 'database is locked'.
+
+    The shared conftest fixtures use :memory:, which never locks —
+    this is the only test exercising real-file lock behavior (#98).
+    """
+
+    ROWS_PER_WRITER = 200
+
+    def test_two_writer_threads_no_lock_errors(self, tmp_path: Path):
+        import threading
+
+        from apple_mail_mcp.index.schema import (
+            INSERT_EMAIL_SQL,
+            create_connection,
+        )
+
+        db_path = tmp_path / "concurrent.db"
+        init_database(db_path).close()
+
+        errors: list[Exception] = []
+
+        def writer(worker: int) -> None:
+            conn = create_connection(db_path)
+            try:
+                for i in range(self.ROWS_PER_WRITER):
+                    conn.execute(
+                        INSERT_EMAIL_SQL,
+                        (
+                            worker * 100_000 + i,
+                            f"acct-{worker}",
+                            "INBOX",
+                            f"subject {i}",
+                            "sender@example.com",
+                            "body text",
+                            "2026-01-01 00:00:00",
+                            f"/fake/{worker}/{i}.emlx",
+                            0,
+                        ),
+                    )
+                    # Commit in small batches to force lock handoffs
+                    if i % 20 == 0:
+                        conn.commit()
+                conn.commit()
+            except Exception as e:
+                errors.append(e)
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=writer, args=(w,)) for w in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+
+        conn = create_connection(db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 2 * self.ROWS_PER_WRITER

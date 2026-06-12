@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from apple_mail_mcp.index.schema import create_connection, get_schema_sql
-from apple_mail_mcp.index.watcher import IndexWatcher
+from apple_mail_mcp.index.watcher import PATH_PATTERN, IndexWatcher
 
 
 @pytest.fixture
@@ -256,3 +256,58 @@ class TestPendingLimits:
             )
 
         assert len(watcher._pending_adds) == MAX_PENDING_CHANGES
+
+
+class TestNestedMailboxRegex:
+    """PATH_PATTERN should handle nested mailboxes."""
+
+    def test_parse_path_nested_mailbox(self):
+        path = (
+            "/Users/x/Library/Mail/V10/UUID123"
+            "/Work/Projects.mbox/Data/1/Messages/123.emlx"
+        )
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(1) == "UUID123"
+        assert m.group(2) == "Work/Projects"
+        assert m.group(3) == "123"
+
+    def test_parse_path_deeply_nested_mailbox(self):
+        path = (
+            "/Users/x/Library/Mail/V10/UUID/A/B/C.mbox/Data/0/Messages/99.emlx"
+        )
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(2) == "A/B/C"
+
+    def test_parse_path_simple_mailbox_unchanged(self):
+        """Regression: simple mailboxes still work."""
+        path = (
+            "/Users/x/Library/Mail/V10/acc"
+            "/INBOX.mbox/Data/1/Messages/12345.emlx"
+        )
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(1) == "acc"
+        assert m.group(2) == "INBOX"
+        assert m.group(3) == "12345"
+
+    def test_parse_path_gmail_brackets(self):
+        """[Gmail].mbox paths still work."""
+        path = (
+            "/Users/x/Library/Mail/V10/acc/[Gmail].mbox/Data/1/Messages/1.emlx"
+        )
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(2) == "[Gmail]"
+
+    def test_parse_path_partial_nested(self):
+        """Partial .emlx in nested mailbox works."""
+        path = (
+            "/Users/x/Library/Mail/V10/UUID"
+            "/Work/Q1.mbox/Data/9/4/Messages/49461.partial.emlx"
+        )
+        m = PATH_PATTERN.search(path)
+        assert m is not None
+        assert m.group(2) == "Work/Q1"
+        assert m.group(3) == "49461"

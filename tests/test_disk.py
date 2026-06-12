@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import email
 from pathlib import Path
 
 from apple_mail_mcp.index.disk import (
     MAX_EMLX_SIZE,
     _extract_attachments,
     _extract_body_text,
+    _extract_links_from_message,
     _find_external_attachment,
     _infer_account_mailbox,
     _mime_part_numbers,
     _strip_html,
     get_attachment_content,
+    get_email_links,
     parse_emlx,
 )
 
@@ -1485,3 +1488,180 @@ PNG-fake-content
 """
         msg = email_mod.message_from_string(raw)
         assert _extract_attachments(msg) == []
+
+
+class TestInferNestedMailbox:
+    """_infer_account_mailbox should handle nested mailboxes."""
+
+    def test_infer_simple_mailbox(self, tmp_path: Path):
+        mail_dir = tmp_path / "V10"
+        emlx = (
+            mail_dir
+            / "acc-uuid"
+            / "INBOX.mbox"
+            / "Data"
+            / "Messages"
+            / "1.emlx"
+        )
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert account == "acc-uuid"
+        assert mailbox == "INBOX"
+
+    def test_infer_nested_mailbox(self, tmp_path: Path):
+        mail_dir = tmp_path / "V10"
+        emlx = (
+            mail_dir
+            / "acc-uuid"
+            / "Work"
+            / "Projects.mbox"
+            / "Data"
+            / "Messages"
+            / "1.emlx"
+        )
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert account == "acc-uuid"
+        assert mailbox == "Work/Projects"
+
+    def test_infer_deeply_nested_mailbox(self, tmp_path: Path):
+        mail_dir = tmp_path / "V10"
+        emlx = (
+            mail_dir
+            / "acc"
+            / "A"
+            / "B"
+            / "C.mbox"
+            / "Data"
+            / "Messages"
+            / "1.emlx"
+        )
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert account == "acc"
+        assert mailbox == "A/B/C"
+
+    def test_infer_no_mbox_suffix(self, tmp_path: Path):
+        """Paths without .mbox return 'Unknown'."""
+        mail_dir = tmp_path / "V10"
+        emlx = mail_dir / "acc" / "SomeDir" / "1.emlx"
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert account == "acc"
+        assert mailbox == "Unknown"
+
+
+class TestExtractLinksFromMessage:
+    """_extract_links_from_message parses HTML <a> tags."""
+
+    def test_extracts_links_from_html(self):
+        msg = email.message_from_string(
+            "Content-Type: text/html\n\n"
+            "<html><body>"
+            '<a href="https://example.com">Example</a>'
+            '<a href="https://other.com/page">Other</a>'
+            "</body></html>"
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 2
+        assert links[0].url == "https://example.com"
+        assert links[0].text == "Example"
+        assert links[1].url == "https://other.com/page"
+
+    def test_skips_mailto_links(self):
+        msg = email.message_from_string(
+            "Content-Type: text/html\n\n"
+            '<a href="mailto:user@example.com">Email me</a>'
+            '<a href="https://real.com">Real</a>'
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 1
+        assert links[0].url == "https://real.com"
+
+    def test_skips_javascript_links(self):
+        msg = email.message_from_string(
+            'Content-Type: text/html\n\n<a href="javascript:alert(1)">XSS</a>'
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 0
+
+    def test_skips_long_tracking_urls(self):
+        long_url = "https://click.track.com/" + "a" * 200
+        msg = email.message_from_string(
+            "Content-Type: text/html\n\n"
+            f'<a href="{long_url}">Tracked</a>'
+            '<a href="https://short.com">Short</a>'
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 1
+        assert links[0].url == "https://short.com"
+
+    def test_deduplicates_by_url(self):
+        msg = email.message_from_string(
+            "Content-Type: text/html\n\n"
+            '<a href="https://same.com">First</a>'
+            '<a href="https://same.com">Second</a>'
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 1
+        assert links[0].text == "First"
+
+    def test_handles_plain_text_email(self):
+        msg = email.message_from_string(
+            "Content-Type: text/plain\n\nNo HTML here https://example.com"
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 0
+
+    def test_handles_multipart_with_html(self):
+        raw = (
+            'Content-Type: multipart/alternative; boundary="b"\n\n'
+            "--b\n"
+            "Content-Type: text/plain\n\n"
+            "Plain text\n"
+            "--b\n"
+            "Content-Type: text/html\n\n"
+            '<a href="https://example.com">Link</a>\n'
+            "--b--"
+        )
+        msg = email.message_from_string(raw)
+        links = _extract_links_from_message(msg)
+        assert len(links) == 1
+        assert links[0].url == "https://example.com"
+
+    def test_empty_href_skipped(self):
+        msg = email.message_from_string(
+            "Content-Type: text/html\n\n"
+            '<a href="">Empty</a>'
+            '<a href="  ">Whitespace</a>'
+        )
+        links = _extract_links_from_message(msg)
+        assert len(links) == 0
+
+
+class TestGetEmailLinks:
+    """get_email_links reads .emlx file and extracts links."""
+
+    def test_extracts_links_from_emlx(self, tmp_path: Path):
+        html_body = (
+            '<html><body><a href="https://example.com">Link</a></body></html>'
+        )
+        mime = ("Content-Type: text/html\n\n" + html_body).encode()
+        emlx = tmp_path / "1.emlx"
+        emlx.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        links = get_email_links(emlx)
+        assert len(links) == 1
+        assert links[0].url == "https://example.com"
+
+    def test_returns_empty_for_missing_file(self, tmp_path: Path):
+        links = get_email_links(tmp_path / "nope.emlx")
+        assert links == []

@@ -12,6 +12,9 @@ Uses mocking to avoid actual JXA execution (which requires macOS + Mail.app).
 
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1418,3 +1421,231 @@ class TestInputValidation:
         assert _clamped_env_int("X_TEST_CLAMP", 15, 1, 300) == 1
         monkeypatch.delenv("X_TEST_CLAMP")
         assert _clamped_env_int("X_TEST_CLAMP", 15, 1, 300) == 15
+
+
+class TestAttachmentSaveToFile:
+    """get_attachment should save to disk and return file_path."""
+
+    @pytest.mark.asyncio
+    async def test_get_attachment_saves_to_file(self, tmp_path: Path):
+        """Attachment bytes are written to disk, path returned."""
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.find_email_path.return_value = Path("/fake/path/42.emlx")
+
+        fake_bytes = b"fake pdf content here"
+        fake_result = (fake_bytes, "application/pdf")
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+            patch(
+                "apple_mail_mcp.server.ATTACHMENT_CACHE_DIR",
+                tmp_path / "attachments",
+            ),
+        ):
+            mock_get.return_value = mock_manager
+            mock_thread.return_value = fake_result
+
+            from apple_mail_mcp.server import get_attachment
+
+            result = await get_attachment(42, "invoice.pdf")
+
+            assert result["filename"] == "invoice.pdf"
+            assert result["mime_type"] == "application/pdf"
+            assert result["size"] == len(fake_bytes)
+            assert "file_path" in result
+            assert "content_base64" not in result
+
+            # Verify file was actually written
+            saved = Path(result["file_path"])
+            assert saved.exists()
+            assert saved.read_bytes() == fake_bytes
+
+    @pytest.mark.asyncio
+    async def test_get_attachment_safe_filename(self, tmp_path: Path):
+        """Path traversal in filename is stripped."""
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.find_email_path.return_value = Path("/fake/path/42.emlx")
+
+        fake_result = (b"data", "text/plain")
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+            patch(
+                "apple_mail_mcp.server.ATTACHMENT_CACHE_DIR",
+                tmp_path / "attachments",
+            ),
+        ):
+            mock_get.return_value = mock_manager
+            mock_thread.return_value = fake_result
+
+            from apple_mail_mcp.server import get_attachment
+
+            result = await get_attachment(42, "../../evil.txt")
+
+            # Should strip to just "evil.txt"
+            assert result["filename"] == "evil.txt"
+            assert Path(result["file_path"]).name == "evil.txt"
+
+
+class TestCleanupOldAttachments:
+    """_cleanup_old_attachments removes stale dirs."""
+
+    def test_cleanup_removes_old_dirs(self, tmp_path: Path):
+        cache_dir = tmp_path / "attachments"
+        cache_dir.mkdir()
+
+        # Create an old subdirectory
+        old_dir = cache_dir / "old_extraction"
+        old_dir.mkdir()
+        (old_dir / "file.pdf").write_bytes(b"old data")
+        # Set mtime to 48 hours ago
+        old_time = time.time() - (48 * 3600)
+        os.utime(old_dir, (old_time, old_time))
+
+        with patch("apple_mail_mcp.server.ATTACHMENT_CACHE_DIR", cache_dir):
+            from apple_mail_mcp.server import _cleanup_old_attachments
+
+            _cleanup_old_attachments(max_age_hours=24)
+
+        assert not old_dir.exists()
+
+    def test_cleanup_preserves_recent_dirs(self, tmp_path: Path):
+        cache_dir = tmp_path / "attachments"
+        cache_dir.mkdir()
+
+        # Create a recent subdirectory
+        recent_dir = cache_dir / "recent_extraction"
+        recent_dir.mkdir()
+        (recent_dir / "file.pdf").write_bytes(b"recent data")
+
+        with patch("apple_mail_mcp.server.ATTACHMENT_CACHE_DIR", cache_dir):
+            from apple_mail_mcp.server import _cleanup_old_attachments
+
+            _cleanup_old_attachments(max_age_hours=24)
+
+        assert recent_dir.exists()
+
+    def test_cleanup_handles_missing_dir(self):
+        """No error when cache dir doesn't exist."""
+        with patch(
+            "apple_mail_mcp.server.ATTACHMENT_CACHE_DIR",
+            Path("/nonexistent/path"),
+        ):
+            from apple_mail_mcp.server import _cleanup_old_attachments
+
+            _cleanup_old_attachments()  # Should not raise
+
+
+class TestSearchEmptyResultHint:
+    """search() returns a hint dict when no results found."""
+
+    @pytest.mark.asyncio
+    async def test_fts_empty_returns_hint(self):
+        """FTS5 path returns hint when no results."""
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.search.return_value = []
+
+        mock_acct_map = MagicMock()
+        mock_acct_map.ensure_loaded = AsyncMock()
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch("apple_mail_mcp.server._get_account_map") as mock_get_acct,
+        ):
+            mock_get.return_value = mock_manager
+            mock_get_acct.return_value = mock_acct_map
+
+            from apple_mail_mcp.server import search
+
+            result = await search("xyznonexistent123")
+
+            assert isinstance(result, dict)
+            assert result["result"] == []
+            assert "hint" in result
+            assert "fewer keywords" in result["hint"]
+
+    @pytest.mark.asyncio
+    async def test_fts_with_results_returns_list(self):
+        """FTS5 path returns plain list when results found."""
+        from apple_mail_mcp.index.search import SearchResult
+
+        mock_result = SearchResult(
+            id=1,
+            account="acc-uuid",
+            mailbox="INBOX",
+            subject="Test",
+            sender="a@b.com",
+            content_snippet="snippet",
+            date_received="2024-01-01",
+            score=1.0,
+        )
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.search.return_value = [mock_result]
+
+        mock_acct_map = MagicMock()
+        mock_acct_map.ensure_loaded = AsyncMock()
+        mock_acct_map.uuid_to_name.return_value = "Work"
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch("apple_mail_mcp.server._get_account_map") as mock_get_acct,
+        ):
+            mock_get.return_value = mock_manager
+            mock_get_acct.return_value = mock_acct_map
+
+            from apple_mail_mcp.server import search
+
+            result = await search("test")
+
+            assert isinstance(result, list)
+            assert len(result) == 1
+            assert result[0]["id"] == 1
+
+
+class TestGetAttachmentLinksMode:
+    """get_attachment with filename=None returns links."""
+
+    @pytest.mark.asyncio
+    async def test_returns_links_when_no_filename(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import LinkInfo
+
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.find_email_path.return_value = Path("/fake/42.emlx")
+
+        fake_links = [
+            LinkInfo(url="https://example.com", text="Example"),
+            LinkInfo(url="https://other.com", text="Other"),
+        ]
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+        ):
+            mock_get.return_value = mock_manager
+            mock_thread.return_value = fake_links
+
+            from apple_mail_mcp.server import get_attachment
+
+            result = await get_attachment(42)
+
+            assert "links" in result
+            assert len(result["links"]) == 2
+            assert result["links"][0]["url"] == "https://example.com"
+            assert result["links"][0]["text"] == "Example"
+            assert "file_path" not in result

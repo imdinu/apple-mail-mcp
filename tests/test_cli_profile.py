@@ -8,7 +8,9 @@ helper *is* the new behavior; the CLI surface around it is unchanged.
 from __future__ import annotations
 
 import pstats
+import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from apple_mail_mcp.cli import _run_optionally_profiled
 
@@ -59,3 +61,40 @@ def test_profile_propagates_op_return_value(tmp_path: Path) -> None:
 
     out = _run_optionally_profiled(op, profile_path=profile_file)
     assert out == {"k": "v", "n": 42}
+
+
+class TestNonBlockingStartup:
+    """_run_serve should not block on sync."""
+
+    def test_run_serve_does_not_block(self):
+        """mcp.run() is called immediately, not after sync."""
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        # sync_updates sleeps to simulate slow sync
+        mock_manager.sync_updates.side_effect = lambda: (time.sleep(5) or 0)
+
+        mock_mcp = MagicMock()
+
+        with (
+            patch(
+                "apple_mail_mcp.index.IndexManager.get_instance",
+                return_value=mock_manager,
+            ),
+            patch("apple_mail_mcp.server.mcp", mock_mcp),
+            patch("apple_mail_mcp.server._cleanup_old_attachments"),
+        ):
+            from apple_mail_mcp.cli import _run_serve
+
+            start = time.time()
+            _run_serve(watch=False)
+            elapsed = time.time() - start
+
+            # mcp.run() should be called within ~1s, not 5s
+            assert elapsed < 2.0
+            mock_mcp.run.assert_called_once()
+
+    def test_search_does_not_trigger_sync(self):
+        """Verify _sync_lock and auto-sync were removed."""
+        import apple_mail_mcp.server as srv
+
+        assert not hasattr(srv, "_sync_lock")
