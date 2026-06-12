@@ -1665,3 +1665,21 @@ class TestGetEmailLinks:
     def test_returns_empty_for_missing_file(self, tmp_path: Path):
         links = get_email_links(tmp_path / "nope.emlx")
         assert links == []
+
+    def test_cid_with_extension_not_doubled(self):
+        from apple_mail_mcp.index.disk import _synthetic_inline_name
+
+        assert (
+            _synthetic_inline_name("tableauSoftwareLogo.png", "image/png")
+            == "inline_tableauSoftwareLogo.png"
+        )
+        # .jpeg suffix maps to image/jpeg too — no .jpg appended
+        assert (
+            _synthetic_inline_name("photo.jpeg", "image/jpeg")
+            == "inline_photo.jpeg"
+        )
+        # Mismatched suffix still gets the mime extension
+        assert (
+            _synthetic_inline_name("logo.png", "image/jpeg")
+            == "inline_logo.png.jpg"
+        )

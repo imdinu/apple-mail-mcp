@@ -723,6 +723,13 @@ def _synthetic_inline_name(content_id: str, mime_type: str) -> str:
     """
     ext = mimetypes.guess_extension(mime_type) or ""
     safe_cid = re.sub(r"[^A-Za-z0-9._-]", "_", content_id)
+    # Content-IDs often already carry an extension (e.g.
+    # "logo.png") — appending the mime ext would double it
+    # ("inline_logo.png.png"). Skip when the cid's own suffix
+    # already maps to the same mime type.
+    guessed, _ = mimetypes.guess_type(safe_cid)
+    if guessed == mime_type:
+        ext = ""
     return f"inline_{safe_cid}{ext}"
 
 
