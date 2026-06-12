@@ -28,11 +28,19 @@ import logging
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal, TypedDict
+from typing import Literal
+
+# pydantic (via fastmcp tool-schema generation) rejects
+# typing.TypedDict on Python < 3.12.
+if sys.version_info >= (3, 12):
+    from typing import TypedDict
+else:
+    from typing_extensions import TypedDict
 
 from fastmcp import FastMCP
 
