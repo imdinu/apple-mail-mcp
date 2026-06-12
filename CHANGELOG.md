@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-12
+
 ### Fixed
 
 - **Watcher transaction discipline** — `_process_pending()` ran deletes and adds inside one implicit transaction with a single commit and no rollback on `sqlite3.Error`. Python's `sqlite3` holds an implicit transaction open until commit/rollback, so a mid-batch failure left partial work pending that the *next* batch's commit would silently persist. Deletes and adds now commit as separate transactions, each rolling back on failure. Both `watcher.py` and `sync.py` also switch from a separate `SELECT last_insert_rowid()` statement to `cursor.lastrowid`, which can't be invalidated by interleaved statements. (#95)
