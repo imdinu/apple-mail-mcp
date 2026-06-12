@@ -339,6 +339,7 @@ async def get_emails(
     try:
         from .index.disk import find_mail_directory
         from .index.envelope_direct import (
+            MailboxNotFoundError,
             envelope_index_path,
             fetch_recent_messages,
         )
@@ -350,32 +351,50 @@ async def get_emails(
             # the cache via JXA on first hit; subsequent calls are
             # in-process.
             await _get_account_map().ensure_loaded()
-            account_uuid = (
-                _get_account_map().name_to_uuid(target_account)
-                if target_account
-                else None
-            )
+            account_uuid: str | None = None
+            if target_account:
+                account_uuid = _get_account_map().name_to_uuid(target_account)
+            else:
+                # No account requested: scope to the first account,
+                # matching the documented behavior and the JXA path
+                # (which would otherwise see a different result set).
+                cached = _get_account_map().get_cached_accounts()
+                if cached:
+                    account_uuid = cached[0]["id"]
 
-            rows = await asyncio.to_thread(
-                fetch_recent_messages,
-                env_path,
-                account_uuid=account_uuid,
-                mailbox_name=target_mailbox,
-                filter_kind=filter,
-                limit=limit,
-            )
-            return [
-                EmailSummary(
-                    id=r.message_id,
-                    subject=r.subject,
-                    sender=r.sender,
-                    date_received=r.date_received,
-                    read=r.read,
-                    flagged=r.flagged,
+            if target_account and account_uuid is None:
+                # Unknown account name. Fall through to JXA, which
+                # reports it properly, rather than silently widening
+                # the query to every account.
+                logger.debug(
+                    "Account %r not in AccountMap; falling back to JXA",
+                    target_account,
                 )
-                for r in rows
-            ]
-    except (FileNotFoundError, sqlite3.OperationalError) as exc:
+            else:
+                rows = await asyncio.to_thread(
+                    fetch_recent_messages,
+                    env_path,
+                    account_uuid=account_uuid,
+                    mailbox_name=target_mailbox,
+                    filter_kind=filter,
+                    limit=limit,
+                )
+                return [
+                    EmailSummary(
+                        id=r.message_id,
+                        subject=r.subject,
+                        sender=r.sender,
+                        date_received=r.date_received,
+                        read=r.read,
+                        flagged=r.flagged,
+                    )
+                    for r in rows
+                ]
+    except (
+        FileNotFoundError,
+        sqlite3.OperationalError,
+        MailboxNotFoundError,
+    ) as exc:
         logger.debug(
             "Envelope Index fast path unavailable (%s); falling back to JXA",
             exc,
