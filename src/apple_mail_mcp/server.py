@@ -900,6 +900,10 @@ async def search(
         date_received, score, matched_in, content_snippet,
         account, and mailbox fields.
 
+        When nothing matches, returns a dict instead:
+        {"result": [], "hint": "..."} — the hint suggests how to
+        adjust the query (fewer keywords, different scope).
+
     Examples:
         >>> search("Kim Foulds")  # Find person across all fields
         >>> search("quarterly budget")  # Keywords, not sentences
