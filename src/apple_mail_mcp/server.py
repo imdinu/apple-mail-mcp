@@ -31,7 +31,9 @@ import sqlite3
 import tempfile
 import time
 from pathlib import Path as _Path
-from typing import Literal, TypedDict
+from typing import Literal
+
+from typing_extensions import TypedDict
 
 from fastmcp import FastMCP
 

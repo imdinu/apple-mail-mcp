@@ -33,6 +33,7 @@ dependencies = [
     { name = "cyclopts" },
     { name = "fastmcp" },
     { name = "selectolax" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -61,6 +62,7 @@ requires-dist = [
     { name = "cyclopts", specifier = ">=4.10" },
     { name = "fastmcp", specifier = ">=3.0.0b1,<4" },
     { name = "selectolax", specifier = ">=0.4.8" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchfiles", marker = "extra == 'watch'", specifier = ">=1.0" },
 ]
 provides-extras = ["watch"]
