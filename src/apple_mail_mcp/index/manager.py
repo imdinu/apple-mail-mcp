@@ -430,28 +430,25 @@ class IndexManager:
         batch: list[tuple],
         batch_attachments: list[tuple[int, list]],
     ) -> None:
-        """Insert a batch of emails and their attachment metadata."""
-        conn.executemany(INSERT_EMAIL_SQL, batch)
+        """Insert a batch of emails and their attachment metadata.
 
-        if batch_attachments:
-            # For each email that had attachments, look up its rowid
-            # and insert attachment rows
-            for idx, attachments in batch_attachments:
-                row_tuple = batch[idx]
-                msg_id, account, mailbox = (
-                    row_tuple[0],
-                    row_tuple[1],
-                    row_tuple[2],
-                )
-                cursor = conn.execute(
-                    "SELECT rowid FROM emails "
-                    "WHERE message_id = ? AND account = ? "
-                    "AND mailbox = ?",
-                    (msg_id, account, mailbox),
-                )
-                row = cursor.fetchone()
-                if row:
-                    insert_attachments(conn, row[0], attachments)
+        Attachment-bearing rows insert individually so
+        cursor.lastrowid links the attachment rows without a
+        post-hoc SELECT per email (INSERT OR REPLACE always yields
+        a fresh rowid); the attachment-free majority keeps the
+        executemany fast path.
+        """
+        with_attachments = {idx for idx, _ in batch_attachments}
+        plain = [
+            row for i, row in enumerate(batch) if i not in with_attachments
+        ]
+        if plain:
+            conn.executemany(INSERT_EMAIL_SQL, plain)
+
+        for idx, attachments in batch_attachments:
+            cursor = conn.execute(INSERT_EMAIL_SQL, batch[idx])
+            if cursor.lastrowid is not None:
+                insert_attachments(conn, cursor.lastrowid, attachments)
 
         conn.commit()
 
