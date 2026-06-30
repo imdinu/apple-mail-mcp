@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_emails()` no longer returns `[]` for Gmail-backed accounts**: the Envelope Index fast path matched mailbox membership only via the `messages.mailbox` FK and a raw-name `LIKE` on the mailbox URL. Gmail accounts keep every message in `[Gmail]/All Mail`, with INBOX (and other label-backed mailbox) membership recorded only in the `labels` table, so INBOX queries matched zero rows and returned a silent empty list; mailbox names containing spaces or brackets ("Sent Mail", "All Mail") also never matched because URLs store percent-encoded paths. The fast path now resolves the requested mailbox to ROWIDs first (percent-decoding URLs, matching the full path or its bare final segment, case-insensitively) and treats a message as a member via either `messages.mailbox` or a `labels` row. An unknown mailbox raises the new `MailboxNotFoundError` and falls back to JXA instead of masquerading as an empty mailbox. Two adjacent silent-scoping holes are closed in the same path: an unresolvable account name now falls back to JXA instead of silently querying every account, and an unspecified account scopes to the first account (matching the documented default and the JXA path) instead of all of them. (#102)
+
 ## [0.4.1] - 2026-06-12
 
 ### Fixed

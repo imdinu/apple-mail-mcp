@@ -28,8 +28,19 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
+
+
+class MailboxNotFoundError(LookupError):
+    """The requested mailbox has no match in the Envelope Index.
+
+    Raised instead of returning an empty result so the caller can
+    distinguish "mailbox unknown to the index" from "mailbox is
+    empty" and fall back to JXA, which resolves mailbox names
+    authoritatively.
+    """
 
 
 @dataclass(frozen=True)
@@ -68,7 +79,9 @@ def _parse_mailbox_url(url: str) -> tuple[str, str]:
 
     Mail.app URLs look like `ews://<UUID>/<mailbox-name>` or
     `imap://<UUID>/<mailbox-name>`. The scheme varies; the shape
-    after `://` is consistent.
+    after `://` is consistent. The path is stored percent-encoded
+    (`Sent%20Mail`, `%5BGmail%5D/All%20Mail`) and is returned
+    fully decoded.
 
     Returns ("", "") if the URL doesn't parse.
     """
@@ -77,7 +90,7 @@ def _parse_mailbox_url(url: str) -> tuple[str, str]:
     _, _, rest = url.partition("://")
     parts = rest.split("/", 1)
     if len(parts) == 2:
-        return (parts[0], parts[1].replace("%20", " "))
+        return (parts[0], unquote(parts[1]))
     return (parts[0], "")
 
 
@@ -115,6 +128,49 @@ def list_account_uuids(envelope_path: Path) -> list[str]:
         conn.close()
 
 
+def _has_labels_table(conn: sqlite3.Connection) -> bool:
+    """Whether this Envelope Index has the Gmail `labels` table."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'labels'"
+    ).fetchone()
+    return row is not None
+
+
+def _resolve_mailbox_rowids(
+    conn: sqlite3.Connection,
+    account_uuid: str | None,
+    mailbox_name: str,
+) -> list[int]:
+    """Find ROWIDs of mailboxes whose decoded name matches.
+
+    Mailbox URLs store percent-encoded paths, so matching a raw
+    name against the URL misses any mailbox whose name contains a
+    space or bracket. Decode each URL and match the full path or
+    its final segment: Gmail mailboxes live under a `[Gmail]/`
+    prefix but are displayed and addressed by their bare name
+    (`Sent Mail`, not `[Gmail]/Sent Mail`). Matching is
+    case-insensitive because the configured default mailbox is
+    "Inbox" while IMAP stores "INBOX".
+    """
+    if account_uuid:
+        cur = conn.execute(
+            "SELECT ROWID, url FROM mailboxes WHERE url LIKE ?",
+            (f"%://{account_uuid}/%",),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT ROWID, url FROM mailboxes WHERE url IS NOT NULL"
+        )
+    want = mailbox_name.casefold()
+    rowids: list[int] = []
+    for rowid, url in cur:
+        _, path = _parse_mailbox_url(url)
+        decoded = path.casefold()
+        if decoded == want or decoded.rsplit("/", 1)[-1] == want:
+            rowids.append(rowid)
+    return rowids
+
+
 def fetch_recent_messages(
     envelope_path: Path,
     *,
@@ -129,12 +185,19 @@ def fetch_recent_messages(
     columns; honors read/flagged/date filters as WHERE clauses on
     the direct integer columns of `messages`.
 
+    Mailbox membership is checked both via the `messages.mailbox`
+    FK and via the Gmail `labels` table: Gmail-backed accounts
+    keep every message in `[Gmail]/All Mail`, and membership in
+    INBOX (and other label-backed mailboxes) exists only as
+    `labels` rows.
+
     Args:
         envelope_path: Path to Apple's Envelope Index SQLite.
         account_uuid: Account UUID to restrict to, or None for
             all accounts.
-        mailbox_name: Mailbox name to restrict to (matched as a
-            suffix of the mailbox URL), or None for all mailboxes
+        mailbox_name: Mailbox name to restrict to (matched
+            case-insensitively against the percent-decoded URL
+            path or its final segment), or None for all mailboxes
             within the account.
         filter_kind: One of "all", "unread", "flagged", "today",
             "last_7_days", "this_week".
@@ -146,17 +209,58 @@ def fetch_recent_messages(
     Raises:
         sqlite3.OperationalError: On schema mismatch. Caller
             should fall back to JXA.
+        MailboxNotFoundError: When `mailbox_name` matches no
+            mailbox in the index. Caller should fall back to
+            JXA rather than report an empty mailbox.
     """
+    conn = sqlite3.connect(f"file:{envelope_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        return _fetch_recent_messages(
+            conn,
+            account_uuid=account_uuid,
+            mailbox_name=mailbox_name,
+            filter_kind=filter_kind,
+            limit=limit,
+        )
+    finally:
+        conn.close()
+
+
+def _fetch_recent_messages(
+    conn: sqlite3.Connection,
+    *,
+    account_uuid: str | None,
+    mailbox_name: str | None,
+    filter_kind: str,
+    limit: int,
+) -> list[EnvelopeMessageRow]:
+    """Body of fetch_recent_messages, on an open connection."""
     where_clauses: list[str] = ["m.deleted = 0"]
     params: list[object] = []
 
-    if account_uuid:
-        if mailbox_name:
-            where_clauses.append("mb.url LIKE ?")
-            params.append(f"%://{account_uuid}/{mailbox_name}%")
+    if mailbox_name:
+        mailbox_ids = _resolve_mailbox_rowids(conn, account_uuid, mailbox_name)
+        if not mailbox_ids:
+            scope = f" in account {account_uuid}" if account_uuid else ""
+            raise MailboxNotFoundError(
+                f"no mailbox named {mailbox_name!r}{scope} in Envelope Index"
+            )
+        placeholders = ", ".join("?" for _ in mailbox_ids)
+        if _has_labels_table(conn):
+            where_clauses.append(
+                f"(m.mailbox IN ({placeholders}) OR m.ROWID IN "
+                f"(SELECT message_id FROM labels "
+                f"WHERE mailbox_id IN ({placeholders})))"
+            )
+            params.extend(mailbox_ids)
+            params.extend(mailbox_ids)
         else:
-            where_clauses.append("mb.url LIKE ?")
-            params.append(f"%://{account_uuid}/%")
+            where_clauses.append(f"m.mailbox IN ({placeholders})")
+            params.extend(mailbox_ids)
+    elif account_uuid:
+        where_clauses.append("mb.url LIKE ?")
+        params.append(f"%://{account_uuid}/%")
 
     if filter_kind == "unread":
         where_clauses.append("m.read = 0")
@@ -200,26 +304,21 @@ def fetch_recent_messages(
     """
     params.append(int(limit))
 
-    conn = sqlite3.connect(f"file:{envelope_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        cur = conn.execute(sql, params)
-        rows: list[EnvelopeMessageRow] = []
-        for r in cur:
-            uuid, mailbox_n = _parse_mailbox_url(r["mailbox_url"] or "")
-            rows.append(
-                EnvelopeMessageRow(
-                    message_id=int(r["message_id"]) if r["message_id"] else 0,
-                    subject=r["subject"] or "",
-                    sender=r["sender"] or "",
-                    date_received=_unix_ts_to_iso(r["date_received"]),
-                    mailbox_url=r["mailbox_url"] or "",
-                    account_uuid=uuid,
-                    mailbox_name=mailbox_n,
-                    read=bool(r["read_flag"]),
-                    flagged=bool(r["flagged_flag"]),
-                )
+    cur = conn.execute(sql, params)
+    rows: list[EnvelopeMessageRow] = []
+    for r in cur:
+        uuid, mailbox_n = _parse_mailbox_url(r["mailbox_url"] or "")
+        rows.append(
+            EnvelopeMessageRow(
+                message_id=int(r["message_id"]) if r["message_id"] else 0,
+                subject=r["subject"] or "",
+                sender=r["sender"] or "",
+                date_received=_unix_ts_to_iso(r["date_received"]),
+                mailbox_url=r["mailbox_url"] or "",
+                account_uuid=uuid,
+                mailbox_name=mailbox_n,
+                read=bool(r["read_flag"]),
+                flagged=bool(r["flagged_flag"]),
             )
-        return rows
-    finally:
-        conn.close()
+        )
+    return rows
