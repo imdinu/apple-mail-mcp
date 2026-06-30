@@ -496,6 +496,7 @@ silently using degraded config.
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | `[index] max_emails` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `[index] staleness_hours` | `24` | Hours before refresh |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `[index] exclude_mailboxes` | `["Drafts"]` | Mailboxes to skip during indexing |
+| `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` | `[index] exclude_accounts` | _unset_ | Accounts (by display name, exact/case-sensitive) hidden from the whole server: never indexed, filtered from search, invisible to list/get tools (#90) |
 | `APPLE_MAIL_READ_ONLY` | `[server] read_only` | `false` | Disable write operations (enforced via `_ensure_writable()` in `server.py`, #80) |
 
 **Empty list semantics**: `exclude_mailboxes = []` in TOML (or empty

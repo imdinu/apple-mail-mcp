@@ -41,6 +41,7 @@ class TestProcessPendingResilience:
         watcher._thread = None
         watcher.on_update = None
         watcher.debounce_ms = 500
+        watcher._exclude_account_uuids = set()
         return watcher
 
     @patch("apple_mail_mcp.index.watcher.parse_emlx")
@@ -238,6 +239,7 @@ class TestPendingLimits:
         watcher._thread = None
         watcher.on_update = None
         watcher.debounce_ms = 500
+        watcher._exclude_account_uuids = set()
         return watcher
 
     def test_pending_adds_are_bounded(self, watcher_db):

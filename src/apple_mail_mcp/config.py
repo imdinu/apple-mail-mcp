@@ -261,6 +261,31 @@ def get_index_exclude_mailboxes() -> set[str]:
     return {"Drafts"}
 
 
+def get_index_exclude_accounts() -> set[str]:
+    """
+    Get accounts to exclude entirely from the server.
+
+    Resolution: ``APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS`` env (CSV; empty string
+    = no exclusions), then ``[index] exclude_accounts`` in ``config.toml``
+    (empty list = no exclusions), then ``set()`` (no exclusions).
+
+    Returns account *display names* (exact, case-sensitive — same
+    convention as ``APPLE_MAIL_DEFAULT_ACCOUNT``). Unlike
+    :func:`get_index_exclude_mailboxes`, there is no default: an account
+    is only ever hidden when explicitly named, since hiding an account
+    by default would be surprising. Excluded accounts are skipped at
+    index/sync/watch time, filtered from search, and made invisible to
+    the live ``get_emails``/``get_email``/``list_mailboxes`` tools.
+    """
+    env = os.environ.get("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS")
+    if env is not None:
+        return {a.strip() for a in env.split(",") if a.strip()}
+    val = _from_toml("index", "exclude_accounts")
+    if val is not None:
+        return {a for a in val if a}
+    return set()
+
+
 def get_index_staleness_hours() -> float:
     """
     Get the staleness threshold for the index, in hours.
@@ -356,6 +381,12 @@ config_version = 1
 # Empty list ([]) explicitly disables all exclusions.
 # Env: APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES (comma-separated)
 # exclude_mailboxes = ["Drafts"]
+
+# Accounts to hide entirely (by display name, exact/case-sensitive).
+# Excluded accounts are never indexed, never searched, and invisible
+# to get_emails/get_email/list_mailboxes. No default (nothing hidden).
+# Env: APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS (comma-separated)
+# exclude_accounts = ["Work PHI"]
 
 
 [server]

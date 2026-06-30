@@ -341,6 +341,9 @@ def status(
             f"Capped:       {stats.capped_mailboxes} mailbox(es) at"
             " APPLE_MAIL_INDEX_MAX_EMAILS — raise or unset to index more"
         )
+    if stats.excluded_accounts:
+        excluded = ", ".join(stats.excluded_accounts)
+        print(f"Excluded:     {excluded} (hidden from the whole server)")
     print()
 
     if stats.last_sync:

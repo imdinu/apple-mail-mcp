@@ -1069,6 +1069,7 @@ def _extract_links_from_message(
 def scan_emlx_files(
     mail_dir: Path,
     exclude_mailboxes: set[str] | None = None,
+    exclude_account_uuids: set[str] | None = None,
 ) -> Iterator[Path]:
     """
     Find all .emlx files in the Mail directory.
@@ -1077,6 +1078,11 @@ def scan_emlx_files(
         mail_dir: Path to ~/Library/Mail/V10/
         exclude_mailboxes: Mailbox names to skip (e.g. {"Drafts"}).
             Uses APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES config if None.
+        exclude_account_uuids: Account UUIDs (the on-disk folder names)
+            to skip entirely. Must be pre-resolved by the caller from
+            configured account *names* — this layer is JXA-free and the
+            name↔UUID map only exists via JXA. None/empty = no account
+            exclusion.
 
     Yields:
         Paths to .emlx files
@@ -1088,10 +1094,17 @@ def scan_emlx_files(
 
     # .emlx files are in: account-uuid/mailbox.mbox/Data/x/y/Messages/
     for emlx_path in mail_dir.rglob("*.emlx"):
-        # Skip excluded mailboxes by checking .mbox dir name
-        if exclude_mailboxes:
+        if exclude_mailboxes or exclude_account_uuids:
             parts = emlx_path.relative_to(mail_dir).parts
-            if len(parts) > 1:
+            # parts[0] is the account UUID directory.
+            if (
+                exclude_account_uuids
+                and parts
+                and parts[0] in exclude_account_uuids
+            ):
+                continue
+            # parts[1] is the "<mailbox>.mbox" directory.
+            if exclude_mailboxes and len(parts) > 1:
                 mbox_dir = parts[1]
                 mbox_name = (
                     mbox_dir[:-5] if mbox_dir.endswith(".mbox") else mbox_dir
@@ -1102,7 +1115,10 @@ def scan_emlx_files(
         yield emlx_path
 
 
-def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
+def scan_all_emails(
+    mail_dir: Path,
+    exclude_account_uuids: set[str] | None = None,
+) -> Iterator[dict]:
     """
     Scan all emails from the Mail directory.
 
@@ -1111,6 +1127,8 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
 
     Args:
         mail_dir: Path to ~/Library/Mail/V10/
+        exclude_account_uuids: Account UUIDs to skip entirely (see
+            :func:`scan_emlx_files`). None/empty = no account exclusion.
 
     Yields:
         Email dicts with: id, account, mailbox, subject, sender,
@@ -1123,7 +1141,9 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
         metadata = {}
 
     # Scan .emlx files and combine with metadata
-    for emlx_path in scan_emlx_files(mail_dir):
+    for emlx_path in scan_emlx_files(
+        mail_dir, exclude_account_uuids=exclude_account_uuids
+    ):
         try:
             parsed = parse_emlx(emlx_path)
         except Exception as e:
@@ -1157,6 +1177,7 @@ def scan_all_emails(mail_dir: Path) -> Iterator[dict]:
 
 def iter_disk_inventory(
     mail_dir: Path,
+    exclude_account_uuids: set[str] | None = None,
 ) -> Iterator[tuple[str, str, int, str]]:
     """Stream the disk inventory as `(account, mailbox, msg_id, path)` tuples.
 
@@ -1165,9 +1186,12 @@ def iter_disk_inventory(
     SQL temp table for diffing.
 
     Yields tuples instead of building a full dict. Files with non-numeric
-    or unparseable names are skipped silently.
+    or unparseable names are skipped silently. ``exclude_account_uuids``
+    skips whole accounts (see :func:`scan_emlx_files`).
     """
-    for emlx_path in scan_emlx_files(mail_dir):
+    for emlx_path in scan_emlx_files(
+        mail_dir, exclude_account_uuids=exclude_account_uuids
+    ):
         try:
             msg_id = extract_message_id(emlx_path)
             account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
