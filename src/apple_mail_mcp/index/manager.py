@@ -103,6 +103,19 @@ class IndexManager:
         self._watcher_callback: Callable[[int, int], None] | None = None
         # (count, expiry_monotonic) — None until first successful read.
         self._disk_count_cache: tuple[int, float] | None = None
+        # Excluded-account UUIDs from the most recent resolution
+        # (build/sync/watcher). Lets JXA-free paths like the disk
+        # email count honor exclusions without their own JXA call.
+        self._exclude_account_uuids: set[str] = set()
+
+    def _resolve_exclusions(self) -> set[str]:
+        """Resolve configured account exclusions to UUIDs and remember
+        them for JXA-free consumers (see ``_exclude_account_uuids``).
+        """
+        from .accounts import resolve_excluded_account_uuids
+
+        self._exclude_account_uuids = resolve_excluded_account_uuids()
+        return self._exclude_account_uuids
 
     @classmethod
     def get_instance(cls) -> IndexManager:
@@ -235,7 +248,15 @@ class IndexManager:
             from .disk import find_mail_directory, get_disk_inventory
 
             mail_dir = find_mail_directory()
-            count = len(get_disk_inventory(mail_dir))
+            # Honor exclusions (as last resolved — this path is
+            # JXA-free by design) so the count matches what the
+            # index is allowed to contain (#90).
+            count = len(
+                get_disk_inventory(
+                    mail_dir,
+                    exclude_account_uuids=self._exclude_account_uuids,
+                )
+            )
         except (FileNotFoundError, PermissionError):
             # Don't cache failures — the next call should retry in
             # case Full Disk Access has since been granted.
@@ -276,8 +297,6 @@ class IndexManager:
             PermissionError: If Full Disk Access is not granted
             FileNotFoundError: If Mail directory not found
         """
-        from ..config import get_index_exclude_accounts
-        from .accounts import resolve_excluded_account_uuids
         from .disk import find_mail_directory, scan_all_emails
 
         # Verify we can access the mail directory
@@ -286,9 +305,7 @@ class IndexManager:
         # Resolve excluded account names -> UUIDs (one JXA call, only
         # when exclusions are configured) so the JXA-free disk walk can
         # skip whole accounts. Excluded accounts never enter the index.
-        exclude_account_uuids = resolve_excluded_account_uuids(
-            get_index_exclude_accounts()
-        )
+        exclude_account_uuids = self._resolve_exclusions()
 
         conn = self._get_conn()
         max_per_mailbox = get_index_max_emails()
@@ -492,8 +509,6 @@ class IndexManager:
         Returns:
             Number of changes (added + deleted + moved)
         """
-        from ..config import get_index_exclude_accounts
-        from .accounts import resolve_excluded_account_uuids
         from .disk import find_mail_directory
         from .sync import sync_from_disk
 
@@ -503,9 +518,7 @@ class IndexManager:
             logger.warning("Cannot access mail directory for sync: %s", e)
             return 0
 
-        exclude_account_uuids = resolve_excluded_account_uuids(
-            get_index_exclude_accounts()
-        )
+        exclude_account_uuids = self._resolve_exclusions()
 
         result = sync_from_disk(
             self._get_conn(),
@@ -904,17 +917,13 @@ class IndexManager:
         if self._watcher is not None and self._watcher.is_running:
             return False
 
-        from ..config import get_index_exclude_accounts
-        from .accounts import resolve_excluded_account_uuids
         from .watcher import IndexWatcher
 
         self._watcher_callback = on_update
         self._watcher = IndexWatcher(
             db_path=self._db_path,
             on_update=on_update,
-            exclude_account_uuids=resolve_excluded_account_uuids(
-                get_index_exclude_accounts()
-            ),
+            exclude_account_uuids=self._resolve_exclusions(),
         )
 
         return self._watcher.start()

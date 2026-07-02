@@ -267,6 +267,53 @@ async def _excluded_account_uuids() -> set[str]:
     return _get_account_map().names_to_uuids(names)
 
 
+def _hidden_account(account: str | None) -> bool:
+    """True when the caller explicitly named a hidden account.
+
+    The single audit point for the explicit-account gate every tool
+    applies at entry (matching semantics live here: exact,
+    case-sensitive display names).
+    """
+    return account is not None and account in _excluded_account_names()
+
+
+def _path_in_excluded_account(emlx_path, excluded_uuids: set[str]) -> bool:
+    """True when an .emlx path lives under a hidden account's UUID dir.
+
+    Guards stale index rows: an account excluded after indexing (but
+    before the next self-healing sync) can still resolve to a path
+    under ``V10/<account-uuid>/``. Shared by every disk-read gate so
+    the matching rule can't drift between tools.
+    """
+    return any(u in str(emlx_path) for u in excluded_uuids)
+
+
+async def _resolve_visible_account(account: str | None) -> str | None:
+    """Resolve to a concrete, non-excluded account name for the JXA paths.
+
+    The JXA tools pass ``None`` straight to ``Mail.accounts()[0]`` — so if
+    the user gives no account (and no, or an excluded, default), a JXA
+    fallback could silently target a hidden account. This resolves ``None``
+    (or an excluded default) to the first non-excluded cached account, so a
+    hidden account is never the implicit JXA target. Returns ``None`` only
+    when there is no visible account at all. Explicit excluded accounts are
+    still caught by each tool's early gate before this runs.
+    """
+    excluded = _excluded_account_names()
+    resolved = _resolve_account(account)
+    if resolved is not None and resolved not in excluded:
+        return resolved
+    if not excluded and resolved is None:
+        # Nothing hidden and no default — keep the legacy None (JXA
+        # picks Mail.accounts()[0]) to avoid a needless JXA map load.
+        return None
+    await _get_account_map().ensure_loaded()
+    for acct in _get_account_map().get_cached_accounts() or []:
+        if acct["name"] not in excluded:
+            return acct["name"]
+    return resolved if not excluded else None
+
+
 def _detect_matched_columns(query: str, result) -> str:
     """Delegate to search.detect_matched_columns."""
     from .index.search import detect_matched_columns
@@ -296,7 +343,8 @@ async def list_accounts() -> list[Account]:
     excluded = _excluded_account_names()
     cached = _get_account_map().get_cached_accounts()
     if cached is not None:
-        return [a for a in cached if a.get("name") not in excluded]  # type: ignore[return-value]
+        visible = [a for a in cached if a.get("name") not in excluded]
+        return visible  # type: ignore[return-value]
 
     # Strategy 1: cold path — JXA, then populate cache.
     script = AccountsQueryBuilder().list_accounts()
@@ -324,9 +372,13 @@ async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
         >>> list_mailboxes("Work")
         [{"name": "INBOX", "unreadCount": 5}, ...]
     """
-    resolved = _resolve_account(account)
-    if resolved in _excluded_account_names():
+    if _hidden_account(account):
         # Hidden account: do not list its mailboxes, do not fall to JXA.
+        return []
+    # Resolve None/excluded-default to a visible account so JXA never
+    # implicitly lists a hidden account's mailboxes.
+    resolved = await _resolve_visible_account(account)
+    if resolved is None and _excluded_account_names():
         return []
     script = AccountsQueryBuilder().list_mailboxes(resolved)
     return await execute_with_core_async(script)
@@ -370,15 +422,18 @@ async def get_emails(
         >>> get_emails("Work", "INBOX", filter="today")  # Today's work emails
     """
     limit, _ = _validate_pagination(limit)
-    target_account = _resolve_account(account)
-    target_mailbox = _resolve_mailbox(mailbox)
-
-    if account is not None and account in _excluded_account_names():
+    if _hidden_account(account):
         # Hidden account explicitly requested: return nothing and do
-        # NOT fall through to JXA (which would surface its mail). When
-        # no account is given, the default picker below skips hidden
-        # accounts instead, so an excluded *default* doesn't hard-stop.
+        # NOT fall through to JXA (which would surface its mail).
         return []
+    # Resolve None/excluded-default to a visible account so neither the
+    # fast path nor the JXA fallback implicitly targets a hidden one.
+    target_account = await _resolve_visible_account(account)
+    if target_account is None and _excluded_account_names():
+        # No visible account at all (every account is hidden): the JXA
+        # fallback would target Mail.accounts()[0] — a hidden one.
+        return []
+    target_mailbox = _resolve_mailbox(mailbox)
 
     # Strategy 0: direct read against Apple's Envelope Index SQLite.
     # 100-1000x faster than JXA at scale because we skip the
@@ -593,14 +648,19 @@ async def get_email(
         {"id": 12345, "subject": "Meeting notes",
          "content": "Hi team,\\n\\nHere are the notes...", ...}
     """
-    resolved_account = _resolve_account(account)
-    resolved_mailbox = _resolve_mailbox(mailbox)
-
-    if account is not None and account in _excluded_account_names():
+    if _hidden_account(account):
         # Hidden account: surface as a plain "not found" so a hidden
         # account is indistinguishable from a missing message, and do
         # not fall through to any strategy that would fetch it live.
         raise ValueError(f"Email {message_id} not found.")
+    # Resolve None/excluded-default to a visible account so the JXA
+    # strategies never implicitly scan a hidden default account.
+    resolved_account = await _resolve_visible_account(account)
+    if resolved_account is None and _excluded_account_names():
+        # No visible account at all (every account is hidden): the JXA
+        # strategies would scan Mail.accounts()[0] — a hidden one.
+        raise ValueError(f"Email {message_id} not found.")
+    resolved_mailbox = _resolve_mailbox(mailbox)
 
     def _enrich_attachments(result: dict) -> dict:
         """Replace JXA attachments with richer index data when available."""
@@ -640,9 +700,8 @@ async def get_email(
             )
             if emlx_path:
                 # A stale index row (account excluded after indexing,
-                # before re-sync) could still resolve here. The path is
-                # V10/<account-uuid>/...; refuse if it's a hidden one.
-                if any(u in str(emlx_path) for u in excluded_uuids):
+                # before re-sync) could still resolve here.
+                if _path_in_excluded_account(emlx_path, excluded_uuids):
                     raise _AccountHiddenError(f"Email {message_id} not found.")
                 if emlx_path.exists():
                     parsed = await asyncio.to_thread(parse_emlx, emlx_path)
@@ -735,6 +794,7 @@ async def get_email(
             if account is not None:
                 idx_acct = acct_map.name_to_uuid(account)
             idx_mb = mailbox
+            excluded_uuids = acct_map.names_to_uuids(_excluded_account_names())
 
             location = manager.find_email_location(
                 message_id, account=idx_acct, mailbox=idx_mb
@@ -743,7 +803,10 @@ async def get_email(
                 idx_account, idx_mailbox = location
                 friendly_account = acct_map.uuid_to_name(idx_account)
 
-                if friendly_account in _excluded_account_names():
+                # Compare by UUID, not display name: uuid_to_name falls
+                # back to the raw UUID when the map can't resolve it,
+                # which would slip past a name-based check.
+                if idx_account in excluded_uuids:
                     # Message lives in a hidden account: refuse rather
                     # than fetch it live via JXA.
                     raise _AccountHiddenError(f"Email {message_id} not found.")
@@ -834,10 +897,18 @@ async def _resolve_emlx_path(
     Raises:
         ValueError: If the index is missing or email not found.
     """
+    if _hidden_account(account):
+        # Hidden account: links/attachment extractors must not reach it.
+        raise ValueError(f"Email {message_id} not found.")
+
     manager = _get_index_manager()
     if not manager.has_index():
         raise ValueError("No search index. Run 'apple-mail-mcp index'.")
 
+    # Loads the JXA-backed map only when needed (an account to resolve
+    # or exclusions to enforce) — with neither, this path must stay
+    # index-only so it keeps working when Mail.app is unavailable.
+    excluded_uuids = await _excluded_account_uuids()
     idx_acct = None
     if account:
         acct_map = _get_account_map()
@@ -849,6 +920,10 @@ async def _resolve_emlx_path(
     )
     if not emlx_path:
         raise ValueError(f"Email {message_id} not found in index.")
+    # A stale index row for a now-excluded account resolves to a path
+    # under its UUID dir; refuse to read it.
+    if _path_in_excluded_account(emlx_path, excluded_uuids):
+        raise ValueError(f"Email {message_id} not found.")
     return emlx_path
 
 
@@ -1048,7 +1123,7 @@ async def search(
     if exclude_mailboxes is None:
         exclude_mailboxes = ["Drafts"]
 
-    if account is not None and account in _excluded_account_names():
+    if _hidden_account(account):
         # Hidden account explicitly requested: no results, no fallback.
         return []
 
@@ -1087,9 +1162,6 @@ async def search(
             offset=offset,
         )
 
-        acct_map = _get_account_map()
-        await acct_map.ensure_loaded()
-
         return _maybe_hint(
             [
                 {
@@ -1110,8 +1182,9 @@ async def search(
     # FTS5: None = search all accounts/mailboxes
     fts_account = account
     fts_mailbox = mailbox
-    # JXA: resolve defaults (needs a concrete target)
-    jxa_account = _resolve_account(account)
+    # JXA: resolve to a concrete, non-excluded target (never let a
+    # None/excluded default implicitly scan a hidden account).
+    jxa_account = await _resolve_visible_account(account)
     jxa_mailbox = _resolve_mailbox(mailbox)
 
     # Try FTS5 index for all searchable scopes
@@ -1187,8 +1260,13 @@ async def search(
         )
 
     # JXA-based search for subject/sender or when no index
-    if jxa_account is not None and jxa_account in _excluded_account_names():
-        # The (default) target resolved to a hidden account.
+    if _excluded_account_names() and (
+        jxa_account is None or jxa_account in _excluded_account_names()
+    ):
+        # With exclusions active, a None target means no visible
+        # account exists — JXA would scan Mail.accounts()[0], a hidden
+        # one. (The name check is defense-in-depth; the resolver never
+        # returns a hidden name.)
         return []
 
     safe_query_js = json.dumps(query.lower())

@@ -173,36 +173,50 @@ class AccountMap:
             self.load_from_jxa(accounts)
 
 
-def resolve_excluded_account_uuids(names: set[str]) -> set[str]:
+def resolve_excluded_account_uuids(
+    names: set[str] | None = None,
+) -> set[str]:
     """Resolve excluded account names to UUIDs from a synchronous context.
 
     The index build, disk sync, watcher, and CLI run without an event
     loop and are otherwise JXA-free, but the only name↔UUID bridge is
     JXA (account display names live nowhere on disk). This performs a
     single synchronous JXA fetch to populate the shared
-    :class:`AccountMap`, then resolves — but **only when** ``names`` is
-    non-empty, so the common no-exclusions case stays JXA-free and free.
+    :class:`AccountMap` (skipped when the map is still fresh — e.g.
+    ``sync_updates`` then ``start_watcher`` back-to-back at ``serve``
+    startup), then resolves — but **only when** ``names`` is non-empty,
+    so the common no-exclusions case stays JXA-free and free.
+
+    ``names=None`` (the default) reads the configured exclusions via
+    :func:`~apple_mail_mcp.config.get_index_exclude_accounts`, so the
+    index/sync/watcher callers can never diverge on which config key
+    feeds the exclusion set.
 
     Returns an empty set (and logs) if the JXA fetch fails, so a
     transient Mail.app hiccup degrades to "nothing excluded at the
     index layer" rather than crashing the build. The server-layer gates
     remain as a second line of defense.
     """
+    if names is None:
+        from ..config import get_index_exclude_accounts
+
+        names = get_index_exclude_accounts()
     if not names:
         return set()
 
-    from ..builders import AccountsQueryBuilder
-    from ..executor import execute_with_core
-
     acct_map = AccountMap.get_instance()
-    try:
-        accounts = execute_with_core(AccountsQueryBuilder().list_accounts())
-    except Exception as exc:
-        logger.warning(
-            "Could not resolve excluded accounts via JXA (%s); "
-            "no accounts excluded at the index layer this run.",
-            exc,
-        )
-        return set()
-    acct_map.load_from_jxa(accounts)
+    if acct_map.get_cached_accounts() is None:  # cold or stale
+        from ..builders import AccountsQueryBuilder
+        from ..executor import execute_with_core
+
+        try:
+            accounts = execute_with_core(AccountsQueryBuilder().list_accounts())
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve excluded accounts via JXA (%s); "
+                "no accounts excluded at the index layer this run.",
+                exc,
+            )
+            return set()
+        acct_map.load_from_jxa(accounts)
     return acct_map.names_to_uuids(names)

@@ -1200,7 +1200,10 @@ def iter_disk_inventory(
         yield (account, mailbox, msg_id, str(emlx_path))
 
 
-def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
+def get_disk_inventory(
+    mail_dir: Path,
+    exclude_account_uuids: set[str] | None = None,
+) -> dict[tuple[str, str, int], str]:
     """
     Fast inventory of all emails on disk WITHOUT parsing content.
 
@@ -1213,13 +1216,17 @@ def get_disk_inventory(mail_dir: Path) -> dict[tuple[str, str, int], str]:
 
     Args:
         mail_dir: Path to ~/Library/Mail/V10/
+        exclude_account_uuids: Account UUIDs to skip entirely (see
+            :func:`scan_emlx_files`). None/empty = no account exclusion.
 
     Returns:
         Dict mapping (account, mailbox, msg_id) -> emlx_path string
     """
     return {
         (account, mailbox, msg_id): path
-        for account, mailbox, msg_id, path in iter_disk_inventory(mail_dir)
+        for account, mailbox, msg_id, path in iter_disk_inventory(
+            mail_dir, exclude_account_uuids=exclude_account_uuids
+        )
     }
 
 

@@ -553,3 +553,4 @@ Chart PNGs are committed (they ARE the results). JSON and HTML in `benchmarks/re
 | **Path Traversal** | Path validation in file watcher | watcher.py |
 | **Data Exposure** | Database and attachment cache files created with 0o600 permissions | schema.py, server.py |
 | **Unbounded Memory** | Pending changes limit in watcher | watcher.py |
+| **Excluded-Account Exposure** | `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` boundary (#90). Every NEW tool/read path must gate: `_hidden_account()` at tool entry, `exclude_accounts` in SQL search, `_path_in_excluded_account()` before disk reads, `_resolve_visible_account()` before any JXA call that defaults to `Mail.accounts()[0]` | server.py, index/search.py |

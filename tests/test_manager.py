@@ -799,7 +799,7 @@ class TestDiskCountCache:
 
         call_count = {"n": 0}
 
-        def fake_inventory(mail_dir):
+        def fake_inventory(mail_dir, exclude_account_uuids=None):
             call_count["n"] += 1
             return {("acc", "INBOX", i): "/p" for i in range(7)}
 
@@ -825,7 +825,7 @@ class TestDiskCountCache:
 
         call_count = {"n": 0}
 
-        def fake_inventory(mail_dir):
+        def fake_inventory(mail_dir, exclude_account_uuids=None):
             call_count["n"] += 1
             return {("acc", "INBOX", i): "/p" for i in range(3)}
 
@@ -851,7 +851,7 @@ class TestDiskCountCache:
 
         call_count = {"n": 0}
 
-        def boom(_):
+        def boom(_, exclude_account_uuids=None):
             call_count["n"] += 1
             raise PermissionError("no FDA")
 
@@ -875,7 +875,7 @@ class TestDiskCountCache:
 
         call_count = {"n": 0}
 
-        def fake_inventory(_):
+        def fake_inventory(_, exclude_account_uuids=None):
             call_count["n"] += 1
             return {("acc", "INBOX", i): "/p" for i in range(5)}
 
