@@ -74,6 +74,7 @@ def sync_from_disk(
     conn: sqlite3.Connection,
     mail_dir: Path,
     progress_callback: Callable[[int, int | None, str], None] | None = None,
+    exclude_account_uuids: set[str] | None = None,
 ) -> SyncResult:
     """
     Sync index with disk using state reconciliation.
@@ -96,6 +97,11 @@ def sync_from_disk(
         conn: Database connection
         mail_dir: Path to ~/Library/Mail/V10/
         progress_callback: Optional callback(current, total, message)
+        exclude_account_uuids: Account UUIDs to skip during the disk
+            walk. Their files never enter the temp table, so any rows
+            already in the index for a newly-excluded account are
+            diffed as DELETED and removed — i.e. excluding an account
+            self-heals a previously-indexed one on the next sync.
 
     Returns:
         SyncResult with counts of added/deleted/moved emails
@@ -126,7 +132,9 @@ def sync_from_disk(
     BATCH_SIZE = 1000
     batch: list[tuple[str, str, int, str]] = []
     inserted = 0
-    for entry in iter_disk_inventory(mail_dir):
+    for entry in iter_disk_inventory(
+        mail_dir, exclude_account_uuids=exclude_account_uuids
+    ):
         batch.append(entry)
         if len(batch) >= BATCH_SIZE:
             conn.executemany(INSERT_TEMP_SQL, batch)

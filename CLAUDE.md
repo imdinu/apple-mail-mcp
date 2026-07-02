@@ -496,6 +496,7 @@ silently using degraded config.
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | `[index] max_emails` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `[index] staleness_hours` | `24` | Hours before refresh |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `[index] exclude_mailboxes` | `["Drafts"]` | Mailboxes to skip during indexing |
+| `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` | `[index] exclude_accounts` | _unset_ | Accounts (by display name, exact/case-sensitive) hidden from the whole server: never indexed, filtered from search, invisible to list/get tools (#90) |
 | `APPLE_MAIL_READ_ONLY` | `[server] read_only` | `false` | Disable write operations (enforced via `_ensure_writable()` in `server.py`, #80) |
 
 **Empty list semantics**: `exclude_mailboxes = []` in TOML (or empty
@@ -552,3 +553,4 @@ Chart PNGs are committed (they ARE the results). JSON and HTML in `benchmarks/re
 | **Path Traversal** | Path validation in file watcher | watcher.py |
 | **Data Exposure** | Database and attachment cache files created with 0o600 permissions | schema.py, server.py |
 | **Unbounded Memory** | Pending changes limit in watcher | watcher.py |
+| **Excluded-Account Exposure** | `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` boundary (#90). Every NEW tool/read path must gate: `_hidden_account()` at tool entry, `exclude_accounts` in SQL search, `_path_in_excluded_account()` before disk reads, `_resolve_visible_account()` before any JXA call that defaults to `Mail.accounts()[0]` | server.py, index/search.py |

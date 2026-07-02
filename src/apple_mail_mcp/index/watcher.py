@@ -66,6 +66,7 @@ class IndexWatcher:
         db_path: Path,
         on_update: Callable[[int, int], None] | None = None,
         debounce_ms: int = 500,
+        exclude_account_uuids: set[str] | None = None,
     ):
         """
         Initialize the watcher.
@@ -74,10 +75,15 @@ class IndexWatcher:
             db_path: Path to the index database
             on_update: Optional callback(added, removed) after processing
             debounce_ms: Milliseconds to wait before processing changes
+            exclude_account_uuids: Account UUIDs whose new files must
+                not be indexed. Paths carry the account UUID directly
+                (see `_parse_path`), so no JXA is needed in the watcher
+                thread. None/empty = index everything.
         """
         self.db_path = db_path
         self.on_update = on_update
         self.debounce_ms = debounce_ms
+        self._exclude_account_uuids = exclude_account_uuids or set()
 
         self._mail_dir: Path | None = None
         self._stop_event = threading.Event()
@@ -289,6 +295,11 @@ class IndexWatcher:
             # Process adds with retry for files still being written
             for key, path in adds.items():
                 account, mailbox, _ = key
+                # account is the UUID directory (see _parse_path).
+                # Excluded accounts must never enter the index, even
+                # via the live watcher.
+                if account in self._exclude_account_uuids:
+                    continue
                 email = None
                 last_error: BaseException | None = None
 

@@ -35,6 +35,7 @@ config_version = 1
 # max_emails = 5000             # Per-mailbox ceiling (omit for uncapped)
 # staleness_hours = 24.0        # Hours before re-sync
 # exclude_mailboxes = ["Drafts"]   # Mailboxes to skip during indexing
+# exclude_accounts = ["Work PHI"]  # Accounts to hide from the whole server
 
 [server]
 # read_only = false             # Disable write operations
@@ -43,6 +44,19 @@ config_version = 1
 **Empty list semantics**: `exclude_mailboxes = []` explicitly means "no
 exclusions" — different from omitting the key, which uses the
 `["Drafts"]` default.
+
+**Account exclusion is a global boundary**: `exclude_accounts` lists
+account *display names* (exact, case-sensitive) that the server treats
+as nonexistent. They are never written to the index, filtered out of
+`search()`, and made invisible to `list_accounts`, `list_mailboxes`,
+`get_emails`, and `get_email` (no fall-through to live JXA). There is no
+default — an account is hidden only when explicitly named, and a name
+that matches no account is logged as a warning rather than silently
+ignored. Use it to keep a regulated-data account (e.g. PHI) out of LLM
+reach. One residual: `get_email(message_id)` with no account specified
+can still reach a hidden account's message via the live fallback if the
+id is already known — but ids for hidden accounts are not discoverable
+through the (filtered) listing and search tools.
 
 **Validation**: malformed TOML, unknown keys, type mismatches, and
 `config_version` mismatches all raise a clear error with the file path
@@ -63,6 +77,7 @@ in CI or in MCP client launch configs.
 | `APPLE_MAIL_INDEX_MAX_EMAILS` | _unset_ | Optional per-mailbox ceiling (default: uncapped) |
 | `APPLE_MAIL_INDEX_STALENESS_HOURS` | `24` | Hours before index is considered stale |
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip in search |
+| `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` | _unset_ | Comma-separated account names (exact, case-sensitive) hidden from the entire server: never indexed, filtered from search, invisible to the list/get tools |
 | `APPLE_MAIL_READ_ONLY` | `false` | When `true`, disables any write operations |
 
 ## Precedence

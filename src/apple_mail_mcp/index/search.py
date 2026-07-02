@@ -126,6 +126,7 @@ def add_account_mailbox_filter(
     mailbox: str | None,
     table_alias: str = "e",
     exclude_mailboxes: list[str] | None = None,
+    exclude_accounts: list[str] | None = None,
     *,
     before: str | None = None,
     after: str | None = None,
@@ -143,6 +144,9 @@ def add_account_mailbox_filter(
         mailbox: Optional mailbox filter
         table_alias: Table alias prefix (default: "e")
         exclude_mailboxes: Optional list of mailboxes to exclude
+        exclude_accounts: Optional list of account UUIDs to exclude.
+            Matched case-sensitively (the `account` column stores
+            UUIDs; callers resolve display names -> UUIDs upstream).
         before: Exclude emails on/after this date (YYYY-MM-DD)
         after: Include emails on/after this date (YYYY-MM-DD)
 
@@ -159,6 +163,10 @@ def add_account_mailbox_filter(
         placeholders = ", ".join("LOWER(?)" for _ in exclude_mailboxes)
         sql += f" AND LOWER({table_alias}.mailbox) NOT IN ({placeholders})"
         params.extend(exclude_mailboxes)
+    if exclude_accounts:
+        placeholders = ", ".join("?" for _ in exclude_accounts)
+        sql += f" AND {table_alias}.account NOT IN ({placeholders})"
+        params.extend(exclude_accounts)
     if after:
         sql += f" AND {table_alias}.date_received >= ?"
         params.append(after)
@@ -242,6 +250,7 @@ def search_fts(
     *,
     column: str | None = None,
     exclude_mailboxes: list[str] | None = None,
+    exclude_accounts: list[str] | None = None,
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
@@ -307,6 +316,7 @@ def search_fts(
         account,
         mailbox,
         exclude_mailboxes=exclude_mailboxes,
+        exclude_accounts=exclude_accounts,
         before=before,
         after=after,
     )
@@ -349,6 +359,7 @@ def search_fts(
                 limit=limit,
                 column=column,
                 exclude_mailboxes=exclude_mailboxes,
+                exclude_accounts=exclude_accounts,
                 before=before,
                 after=after,
                 offset=offset,
@@ -366,6 +377,7 @@ def search_fts_highlight(
     *,
     column: str | None = None,
     exclude_mailboxes: list[str] | None = None,
+    exclude_accounts: list[str] | None = None,
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
@@ -426,6 +438,7 @@ def search_fts_highlight(
         account,
         mailbox,
         exclude_mailboxes=exclude_mailboxes,
+        exclude_accounts=exclude_accounts,
         before=before,
         after=after,
     )
@@ -466,6 +479,7 @@ def search_fts_highlight(
                 limit=limit,
                 column=column,
                 exclude_mailboxes=exclude_mailboxes,
+                exclude_accounts=exclude_accounts,
                 before=before,
                 after=after,
                 offset=offset,
@@ -480,6 +494,7 @@ def search_fts_highlight(
             limit,
             column=column,
             exclude_mailboxes=exclude_mailboxes,
+            exclude_accounts=exclude_accounts,
             before=before,
             after=after,
             offset=offset,
@@ -537,6 +552,7 @@ def search_attachments(
     mailbox: str | None = None,
     limit: int = 20,
     exclude_mailboxes: list[str] | None = None,
+    exclude_accounts: list[str] | None = None,
     *,
     before: str | None = None,
     after: str | None = None,
@@ -576,6 +592,7 @@ def search_attachments(
         account,
         mailbox,
         exclude_mailboxes=exclude_mailboxes,
+        exclude_accounts=exclude_accounts,
         before=before,
         after=after,
     )

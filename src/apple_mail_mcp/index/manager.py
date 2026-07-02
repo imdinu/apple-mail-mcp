@@ -18,7 +18,7 @@ import logging
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,6 +58,7 @@ class IndexStats:
     attachment_count: int = 0
     disk_email_count: int | None = None
     failed_jobs_count: int = 0
+    excluded_accounts: list[str] = field(default_factory=list)
 
 
 # SearchResult is imported from .search to avoid duplication
@@ -102,6 +103,19 @@ class IndexManager:
         self._watcher_callback: Callable[[int, int], None] | None = None
         # (count, expiry_monotonic) — None until first successful read.
         self._disk_count_cache: tuple[int, float] | None = None
+        # Excluded-account UUIDs from the most recent resolution
+        # (build/sync/watcher). Lets JXA-free paths like the disk
+        # email count honor exclusions without their own JXA call.
+        self._exclude_account_uuids: set[str] = set()
+
+    def _resolve_exclusions(self) -> set[str]:
+        """Resolve configured account exclusions to UUIDs and remember
+        them for JXA-free consumers (see ``_exclude_account_uuids``).
+        """
+        from .accounts import resolve_excluded_account_uuids
+
+        self._exclude_account_uuids = resolve_excluded_account_uuids()
+        return self._exclude_account_uuids
 
     @classmethod
     def get_instance(cls) -> IndexManager:
@@ -202,6 +216,12 @@ class IndexManager:
         # `index://status` on a tight loop. (#78)
         disk_email_count = self._get_disk_email_count_cached()
 
+        # Configured account exclusions (display names — no JXA needed
+        # to report them; resolution to UUIDs happens at index time).
+        from ..config import get_index_exclude_accounts
+
+        excluded_accounts = sorted(get_index_exclude_accounts())
+
         return IndexStats(
             email_count=email_count,
             mailbox_count=mailbox_count,
@@ -212,6 +232,7 @@ class IndexManager:
             attachment_count=attachment_count,
             disk_email_count=disk_email_count,
             failed_jobs_count=failed_jobs_count,
+            excluded_accounts=excluded_accounts,
         )
 
     def _get_disk_email_count_cached(self) -> int | None:
@@ -227,7 +248,15 @@ class IndexManager:
             from .disk import find_mail_directory, get_disk_inventory
 
             mail_dir = find_mail_directory()
-            count = len(get_disk_inventory(mail_dir))
+            # Honor exclusions (as last resolved — this path is
+            # JXA-free by design) so the count matches what the
+            # index is allowed to contain (#90).
+            count = len(
+                get_disk_inventory(
+                    mail_dir,
+                    exclude_account_uuids=self._exclude_account_uuids,
+                )
+            )
         except (FileNotFoundError, PermissionError):
             # Don't cache failures — the next call should retry in
             # case Full Disk Access has since been granted.
@@ -273,6 +302,11 @@ class IndexManager:
         # Verify we can access the mail directory
         mail_dir = find_mail_directory()
 
+        # Resolve excluded account names -> UUIDs (one JXA call, only
+        # when exclusions are configured) so the JXA-free disk walk can
+        # skip whole accounts. Excluded accounts never enter the index.
+        exclude_account_uuids = self._resolve_exclusions()
+
         conn = self._get_conn()
         max_per_mailbox = get_index_max_emails()
 
@@ -297,7 +331,9 @@ class IndexManager:
         batch_size = 500
 
         try:
-            for email_data in scan_all_emails(mail_dir):
+            for email_data in scan_all_emails(
+                mail_dir, exclude_account_uuids=exclude_account_uuids
+            ):
                 key = (email_data["account"], email_data["mailbox"])
                 count = mailbox_counts.get(key, 0)
 
@@ -482,10 +518,13 @@ class IndexManager:
             logger.warning("Cannot access mail directory for sync: %s", e)
             return 0
 
+        exclude_account_uuids = self._resolve_exclusions()
+
         result = sync_from_disk(
             self._get_conn(),
             mail_dir,
             progress_callback,
+            exclude_account_uuids=exclude_account_uuids,
         )
         # Disk inventory just changed (or was just verified) — drop
         # the get_stats cache so the next status call reflects truth.
@@ -499,6 +538,7 @@ class IndexManager:
         mailbox: str | None = None,
         limit: int = 20,
         exclude_mailboxes: list[str] | None = None,
+        exclude_accounts: list[str] | None = None,
         column: str | None = None,
         *,
         before: str | None = None,
@@ -536,6 +576,7 @@ class IndexManager:
             limit=limit,
             column=column,
             exclude_mailboxes=exclude_mailboxes,
+            exclude_accounts=exclude_accounts,
             before=before,
             after=after,
             offset=offset,
@@ -766,6 +807,7 @@ class IndexManager:
         mailbox: str | None = None,
         limit: int = 20,
         exclude_mailboxes: list[str] | None = None,
+        exclude_accounts: list[str] | None = None,
         *,
         before: str | None = None,
         after: str | None = None,
@@ -796,6 +838,7 @@ class IndexManager:
             mailbox=mailbox,
             limit=limit,
             exclude_mailboxes=exclude_mailboxes,
+            exclude_accounts=exclude_accounts,
             before=before,
             after=after,
             offset=offset,
@@ -880,6 +923,7 @@ class IndexManager:
         self._watcher = IndexWatcher(
             db_path=self._db_path,
             on_update=on_update,
+            exclude_account_uuids=self._resolve_exclusions(),
         )
 
         return self._watcher.start()
