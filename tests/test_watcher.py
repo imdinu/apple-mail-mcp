@@ -194,23 +194,34 @@ class TestPathParsing:
         assert m.group(1) == "9C1979D8-5686-4309-9EE8-1FB7F450F1FE"
         assert m.group(2) == "Inbox"
 
-    def test_handles_nested_mbox(self):
-        """Gmail-style [Gmail].mbox/All Mail.mbox paths.
+    def test_handles_nested_mbox(self, tmp_path: Path):
+        """Gmail-style [Gmail].mbox/All Mail.mbox paths keep the leaf.
 
-        The regex captures up to the first .mbox boundary,
-        so nested mailboxes like [Gmail].mbox/All Mail.mbox
-        capture '[Gmail]' as the mailbox name — this matches
-        how the index stores Gmail mailboxes.
+        This previously asserted '[Gmail]', describing the non-greedy
+        regex's first-boundary behaviour rather than a Gmail decision:
+        the nested-mailbox change (#48) predates it and never mentions
+        Gmail. #102/#103 later established, verified against a live
+        account, that Gmail keeps messages in '[Gmail]/All Mail' — and
+        envelope_direct._resolve_mailbox_rowids matches a stored path by
+        its full value *or* its last segment, so the leaf name is what
+        makes 'All Mail' addressable. Collapsing to '[Gmail]' throws it
+        away and merges every Gmail mailbox into one.
         """
-        from apple_mail_mcp.index.watcher import PATH_PATTERN
+        db_path = tmp_path / "w.db"
+        conn = create_connection(str(db_path))
+        conn.executescript(get_schema_sql())
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (4,))
+        conn.commit()
+        conn.close()
 
-        m = PATH_PATTERN.search(
-            "/Users/x/Library/Mail/V11/acc"
-            "/[Gmail].mbox/All Mail.mbox"
-            "/Data/1/Messages/100.partial.emlx"
+        result = IndexWatcher(db_path)._parse_path(
+            Path(
+                "/Users/x/Library/Mail/V11/acc"
+                "/[Gmail].mbox/All Mail.mbox"
+                "/Data/1/Messages/100.partial.emlx"
+            )
         )
-        assert m is not None
-        assert m.group(2) == "[Gmail]"
+        assert result == ("acc", "[Gmail]/All Mail", 100)
 
     def test_handles_v11_directory(self):
         """Dynamic version detection: V11 paths should match."""
@@ -258,6 +269,48 @@ class TestPendingLimits:
             )
 
         assert len(watcher._pending_adds) == MAX_PENDING_CHANGES
+
+
+class TestMboxPerLevelPaths:
+    """Each level of a real mailbox hierarchy is its own .mbox (#105)."""
+
+    def _parse(self, tmp_path: Path, raw: str) -> tuple[str, str, int] | None:
+        db_path = tmp_path / "w.db"
+        conn = create_connection(str(db_path))
+        conn.executescript(get_schema_sql())
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (4,))
+        conn.commit()
+        conn.close()
+        return IndexWatcher(db_path)._parse_path(Path(raw))
+
+    def test_child_keeps_parent_and_leaf(self, tmp_path: Path):
+        # A store UUID sits between the leaf .mbox and Data/.
+        assert self._parse(
+            tmp_path,
+            "/Users/x/Library/Mail/V10/acc/Ablage.mbox/Nebenkosten.mbox"
+            "/E93C0B8E-7306-46F1-9BF5-ADD723DD3190/Data/2/Messages/262370.emlx",
+        ) == ("acc", "Ablage/Nebenkosten", 262370)
+
+    def test_several_levels(self, tmp_path: Path):
+        assert self._parse(
+            tmp_path,
+            "/Users/x/Library/Mail/V10/acc/Ablage.mbox/IHK.mbox"
+            "/IHK Stuttgart.mbox/Data/1/Messages/5.emlx",
+        ) == ("acc", "Ablage/IHK/IHK Stuttgart", 5)
+
+    def test_imap_inbox_prefix(self, tmp_path: Path):
+        # IMAP servers with an INBOX. prefix nest everything below INBOX.mbox.
+        assert self._parse(
+            tmp_path,
+            "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Junk.mbox"
+            "/store-uuid/Data/9/Messages/239389.emlx",
+        ) == ("acc", "INBOX/Junk", 239389)
+
+    def test_flat_mailbox_unchanged(self, tmp_path: Path):
+        assert self._parse(
+            tmp_path,
+            "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/123.emlx",
+        ) == ("acc", "INBOX", 123)
 
 
 class TestNestedMailboxRegex:

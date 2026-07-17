@@ -1234,10 +1234,23 @@ def _infer_account_mailbox(emlx_path: Path, mail_dir: Path) -> tuple[str, str]:
     """
     Infer account and mailbox from .emlx file path.
 
-    Handles nested mailboxes like Work/Projects/Q1.mbox by scanning
-    forward to find the first .mbox-ending path component.
+    A mailbox hierarchy nests one .mbox per level, so the name spans every
+    component up to the Data/ payload directory:
 
-    Path structure: V10/account-uuid/[nested/]mailbox.mbox/Data/.../id.emlx
+        V10/<uuid>/Ablage.mbox/Nebenkosten.mbox/<store-uuid>/Data/.../1.emlx
+            -> ("<uuid>", "Ablage/Nebenkosten")
+
+    IMAP accounts that nest below an INBOX. prefix have the same shape
+    (INBOX.mbox/Junk.mbox/...) and yield "INBOX/Junk". Taking only the first
+    .mbox collapses every child onto its outermost parent.
+
+    Components are accumulated until Data/ so that a hierarchy expressed as
+    plain directories (Work/Projects.mbox) keeps working, while the .mbox
+    suffix is stripped per level and the per-mailbox store UUID that may sit
+    between the leaf .mbox and Data/ is left out.
+
+    Path structure:
+        V10/account-uuid/[nested/]mailbox.mbox/[store-uuid/]Data/.../id.emlx
     """
     try:
         relative = emlx_path.relative_to(mail_dir)
@@ -1246,15 +1259,22 @@ def _infer_account_mailbox(emlx_path: Path, mail_dir: Path) -> tuple[str, str]:
         # First part is account UUID
         account = parts[0] if parts else "Unknown"
 
-        # Find the part ending with .mbox — may span multiple components
-        # e.g. parts = ("UUID", "Work", "Projects", "Q1.mbox", "Data", ...)
-        mailbox = "Unknown"
-        for i, part in enumerate(parts[1:], start=1):
-            if part.endswith(".mbox"):
-                # Join components from parts[1] to parts[i], strip .mbox
-                components = (*parts[1:i], part[:-5])
-                mailbox = "/".join(components)
+        components: list[str] = []
+        saw_mbox = False
+        for part in parts[1:]:
+            if part == "Data":
                 break
+            if part.endswith(".mbox"):
+                components.append(part[:-5])
+                saw_mbox = True
+            elif saw_mbox:
+                # Store UUID between the leaf .mbox and Data/ — not a level.
+                break
+            else:
+                # Plain parent directory above the first .mbox.
+                components.append(part)
+
+        mailbox = "/".join(components) if saw_mbox else "Unknown"
 
         return (account, mailbox)
     except ValueError:

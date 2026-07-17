@@ -1558,6 +1558,66 @@ class TestInferNestedMailbox:
         assert account == "acc"
         assert mailbox == "Unknown"
 
+    def test_infer_mbox_per_level(self, tmp_path: Path):
+        """Each hierarchy level is its own .mbox on disk (#105)."""
+        mail_dir = tmp_path / "V10"
+        emlx = (
+            mail_dir
+            / "acc"
+            / "Ablage.mbox"
+            / "Nebenkosten.mbox"
+            / "E93C0B8E-7306-46F1-9BF5-ADD723DD3190"
+            / "Data"
+            / "2"
+            / "Messages"
+            / "262370.emlx"
+        )
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert account == "acc"
+        assert mailbox == "Ablage/Nebenkosten"
+
+    def test_infer_mbox_per_level_several(self, tmp_path: Path):
+        mail_dir = tmp_path / "V10"
+        emlx = (
+            mail_dir
+            / "acc"
+            / "Ablage.mbox"
+            / "IHK.mbox"
+            / "IHK Stuttgart.mbox"
+            / "Data"
+            / "1"
+            / "Messages"
+            / "5.emlx"
+        )
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        _account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert mailbox == "Ablage/IHK/IHK Stuttgart"
+
+    def test_infer_imap_inbox_prefix(self, tmp_path: Path):
+        """IMAP INBOX. prefix nests siblings below INBOX.mbox."""
+        mail_dir = tmp_path / "V10"
+        emlx = (
+            mail_dir
+            / "acc"
+            / "INBOX.mbox"
+            / "Junk.mbox"
+            / "store-uuid"
+            / "Data"
+            / "9"
+            / "Messages"
+            / "239389.emlx"
+        )
+        emlx.parent.mkdir(parents=True)
+        emlx.touch()
+
+        _account, mailbox = _infer_account_mailbox(emlx, mail_dir)
+        assert mailbox == "INBOX/Junk"
+
 
 class TestExtractLinksFromMessage:
     """_extract_links_from_message parses HTML <a> tags."""
