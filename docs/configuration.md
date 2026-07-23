@@ -39,6 +39,7 @@ config_version = 1
 
 [server]
 # read_only = false             # Disable write operations
+# lock_retry_seconds = 180      # Index-passive lock retry interval
 ```
 
 **Empty list semantics**: `exclude_mailboxes = []` explicitly means "no
@@ -79,6 +80,7 @@ in CI or in MCP client launch configs.
 | `APPLE_MAIL_INDEX_EXCLUDE_MAILBOXES` | `Drafts` | Comma-separated mailboxes to skip in search |
 | `APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS` | _unset_ | Comma-separated account names (exact, case-sensitive) hidden from the entire server: never indexed, filtered from search, invisible to the list/get tools |
 | `APPLE_MAIL_READ_ONLY` | `false` | When `true`, disables any write operations |
+| `APPLE_MAIL_LOCK_RETRY_SECONDS` | `180` | How often an index-passive server instance retries the index writer lock (minimum 1) |
 
 ## Precedence
 
@@ -127,6 +129,32 @@ Or via environment variable:
 export APPLE_MAIL_READ_ONLY=true
 apple-mail-mcp serve
 ```
+
+## Single index writer
+
+Only one server process syncs and watches the index at a time. On
+startup, each `serve` instance tries to take an advisory lock on
+`index.db.lock` next to the database. The winner runs the background
+sync (and the file watcher with `--watch`); any other instance runs
+**index-passive** — searches and mail actions work normally, but it
+leaves index writes to the winner. This makes it safe for MCP clients
+that spawn multiple server instances (Claude Desktop starts every
+configured server twice).
+
+A passive instance retries the lock every `lock_retry_seconds`
+(default 180) and takes over automatically if the writer exits — the
+lock is released by the kernel even on a crash, so no cleanup is ever
+needed.
+
+`apple-mail-mcp index` and `apple-mail-mcp rebuild` need the same lock.
+If a running server holds it, they wait briefly and then exit with an
+error — stop the server, run the command, then start the server again.
+(A server left running in passive mode picks the lock back up within
+one retry interval of the command finishing.)
+
+Note that this is unrelated to read-only mode: `read_only` restricts
+what MCP tools may do to your mail; index-passive only concerns which
+process maintains the search index.
 
 When read-only mode is active, write-capable MCP tools raise
 `PermissionError` with a clear message rather than silently no-oping.

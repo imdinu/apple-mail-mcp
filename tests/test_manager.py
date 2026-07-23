@@ -906,3 +906,56 @@ class TestWatcher:
         assert manager.watcher_running is False
         manager.stop_watcher()  # Should not raise
         assert manager.watcher_running is False
+
+
+class TestIndexWriterGate:
+    """index_writer=False (#106): this process lost the writer lock.
+
+    Orchestrated writers refuse loudly; opportunistic writes (reachable
+    from read paths like get_email's stale-entry cleanup) no-op so the
+    winning process's sync/watcher reconciles instead.
+    """
+
+    def teardown_method(self):
+        IndexManager._instance = None
+
+    def test_defaults_to_writer(self, temp_db_path):
+        assert IndexManager(db_path=temp_db_path).index_writer is True
+
+    @pytest.mark.parametrize(
+        "method,args",
+        [
+            ("sync_updates", ()),
+            ("build_from_disk", ()),
+            ("rebuild", ()),
+            ("start_watcher", ()),
+        ],
+    )
+    def test_orchestrated_writers_raise_when_passive(
+        self, temp_db_path, method, args
+    ):
+        manager = IndexManager(db_path=temp_db_path)
+        manager.index_writer = False
+        with pytest.raises(RuntimeError, match="index-passive"):
+            getattr(manager, method)(*args)
+
+    def test_delete_email_noops_when_passive(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        manager.index_writer = False
+        assert manager.delete_email(12345) == 0
+        # The gate short-circuits before a connection is opened.
+        assert not temp_db_path.exists()
+
+    def test_record_parse_failure_noops_when_passive(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        manager.index_writer = False
+        manager.record_parse_failure(
+            "/tmp/x.emlx", "acc", "INBOX", ValueError("boom")
+        )
+        assert not temp_db_path.exists()
+
+    def test_clear_parse_failure_noops_when_passive(self, temp_db_path):
+        manager = IndexManager(db_path=temp_db_path)
+        manager.index_writer = False
+        assert manager.clear_parse_failure("/tmp/x.emlx") == 0
+        assert not temp_db_path.exists()

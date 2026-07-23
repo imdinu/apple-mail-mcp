@@ -19,6 +19,7 @@ from apple_mail_mcp.config import (
     get_index_max_emails,
     get_index_path,
     get_index_staleness_hours,
+    get_lock_retry_seconds,
     get_read_only_mode,
     set_read_only_mode,
 )
@@ -79,6 +80,9 @@ class TestNoFile:
 
     def test_read_only(self, config_file):
         assert get_read_only_mode() is False
+
+    def test_lock_retry_seconds(self, config_file):
+        assert get_lock_retry_seconds() == 180.0
 
 
 class TestFileOnly:
@@ -176,6 +180,19 @@ staleness_hours = 48
         assert result == 48.0
         assert isinstance(result, float)
 
+    def test_lock_retry_seconds_int_is_coerced_to_float(self, config_file):
+        _write(
+            config_file,
+            f"""
+config_version = {CONFIG_SCHEMA_VERSION}
+[server]
+lock_retry_seconds = 300
+""",
+        )
+        result = get_lock_retry_seconds()
+        assert result == 300.0
+        assert isinstance(result, float)
+
     def test_read_only(self, config_file):
         _write(
             config_file,
@@ -243,6 +260,28 @@ read_only = true
         )
         monkeypatch.setenv("APPLE_MAIL_READ_ONLY", "false")
         assert get_read_only_mode() is False
+
+    def test_lock_retry_seconds_env_overrides_file(
+        self, config_file, monkeypatch
+    ):
+        _write(
+            config_file,
+            f"""
+config_version = {CONFIG_SCHEMA_VERSION}
+[server]
+lock_retry_seconds = 300
+""",
+        )
+        monkeypatch.setenv("APPLE_MAIL_LOCK_RETRY_SECONDS", "60")
+        assert get_lock_retry_seconds() == 60.0
+
+    def test_lock_retry_seconds_env_is_floored_at_one(
+        self, config_file, monkeypatch
+    ):
+        """Env bypasses TOML validation, so the getter enforces the
+        floor — a zero interval would busy-spin flock."""
+        monkeypatch.setenv("APPLE_MAIL_LOCK_RETRY_SECONDS", "0")
+        assert get_lock_retry_seconds() == 1.0
 
 
 class TestProgrammaticOverridesAll:
@@ -365,6 +404,18 @@ staleness_hours = -1
 """,
         )
         with pytest.raises(ConfigError, match="must be >= 0"):
+            get_default_account()
+
+    def test_lock_retry_seconds_below_one_raises(self, config_file):
+        _write(
+            config_file,
+            f"""
+config_version = {CONFIG_SCHEMA_VERSION}
+[server]
+lock_retry_seconds = 0
+""",
+        )
+        with pytest.raises(ConfigError, match="must be >= 1"):
             get_default_account()
 
     def test_list_with_non_string_element_raises(self, config_file):

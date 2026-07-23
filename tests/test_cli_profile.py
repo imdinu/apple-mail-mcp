@@ -66,10 +66,12 @@ def test_profile_propagates_op_return_value(tmp_path: Path) -> None:
 class TestNonBlockingStartup:
     """_run_serve should not block on sync."""
 
-    def test_run_serve_does_not_block(self):
+    def test_run_serve_does_not_block(self, tmp_path):
         """mcp.run() is called immediately, not after sync."""
         mock_manager = MagicMock()
         mock_manager.has_index.return_value = True
+        # Real path so the IndexLock (#106) can create its lockfile.
+        mock_manager.db_path = tmp_path / "index.db"
         # sync_updates sleeps to simulate slow sync
         mock_manager.sync_updates.side_effect = lambda: (time.sleep(5) or 0)
 
