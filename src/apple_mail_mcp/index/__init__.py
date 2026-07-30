@@ -8,7 +8,14 @@ This module provides:
 - FTS5 full-text search with BM25 ranking
 """
 
+from .lock import IndexLock
 from .manager import IndexManager, IndexStats, SearchResult
 from .watcher import IndexWatcher
 
-__all__ = ["IndexManager", "IndexStats", "IndexWatcher", "SearchResult"]
+__all__ = [
+    "IndexLock",
+    "IndexManager",
+    "IndexStats",
+    "IndexWatcher",
+    "SearchResult",
+]

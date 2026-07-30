@@ -35,6 +35,7 @@ CONFIG_SCHEMA: dict[str, dict[str, tuple[type, ...]]] = {
     },
     "server": {
         "read_only": (bool,),
+        "lock_retry_seconds": (int, float),
     },
 }
 
@@ -152,6 +153,15 @@ def _validate(data: dict, path: Path) -> None:
         raise ConfigError(
             f"{path}: `[index] staleness_hours` must be >= 0, "
             f"got {index['staleness_hours']}."
+        )
+
+    server = data.get("server", {})
+    # Floor of 1: a zero interval would busy-spin flock in the
+    # index-passive retry loop.
+    if "lock_retry_seconds" in server and server["lock_retry_seconds"] < 1:
+        raise ConfigError(
+            f"{path}: `[server] lock_retry_seconds` must be >= 1, "
+            f"got {server['lock_retry_seconds']}."
         )
 
 
@@ -332,6 +342,27 @@ def set_read_only_mode(value: bool) -> None:
     _read_only_mode = value
 
 
+def get_lock_retry_seconds() -> float:
+    """
+    Get the interval at which an index-passive server retries the
+    index writer lock (see :class:`~.index.lock.IndexLock`).
+
+    Resolution: ``APPLE_MAIL_LOCK_RETRY_SECONDS`` env, then
+    ``[server] lock_retry_seconds`` in ``config.toml``, then ``180.0``.
+
+    The value is floored at 1 second regardless of source — a zero
+    interval would busy-spin flock. (The TOML path also rejects < 1 at
+    validation time; the floor here covers the env path.)
+    """
+    env = os.environ.get("APPLE_MAIL_LOCK_RETRY_SECONDS")
+    if env is not None and env != "":
+        return max(1.0, float(env))
+    val = _from_toml("server", "lock_retry_seconds")
+    if val is not None:
+        return max(1.0, float(val))
+    return 180.0
+
+
 # Template emitted by `apple-mail-mcp init`. Every key is commented out so
 # the file is documentation that happens to be machine-readable: a new user
 # sees the full surface and the matching env-var name on each line, then
@@ -395,4 +426,11 @@ config_version = 1
 # Env: APPLE_MAIL_READ_ONLY
 # CLI: apple-mail-mcp serve -r
 # read_only = false
+
+# How often (seconds) an index-passive server instance retries the
+# index writer lock. Only one instance syncs/watches the index at a
+# time; others retry at this interval and take over if the writer
+# exits. Minimum 1.
+# Env: APPLE_MAIL_LOCK_RETRY_SECONDS
+# lock_retry_seconds = 180
 """
