@@ -1,0 +1,22 @@
+{
+  "name": "imdinu",
+  "owner": {
+    "name": "Ioan Dinu",
+    "email": "dinu.ioan.94@gmail.com"
+  },
+  "metadata": {
+    "description": "Apple Mail MCP — FTS5 full-text search over Apple Mail, reliable on large mailboxes",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "apple-mail",
+      "source": "./plugin",
+      "description": "Apple Mail for Claude — search, read, and triage email backed by an FTS5 index with full body coverage and no recency cap. Tested on ~73K-message mailboxes where AppleScript-based servers time out.",
+      "version": "0.4.3",
+      "author": {
+        "name": "Ioan Dinu"
+      }
+    }
+  ]
+}

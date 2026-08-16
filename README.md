@@ -19,6 +19,25 @@ The only Apple Mail MCP server with **full-coverage body search** — reliable o
 
 ## Quick Start
 
+### Claude Code (plugin)
+
+```bash
+claude plugin marketplace add imdinu/apple-mail-mcp
+claude plugin install apple-mail@imdinu
+```
+
+### Claude Desktop (one-click bundle)
+
+Download `apple-mail-mcp-<version>.mcpb` from the
+[latest release](https://github.com/imdinu/apple-mail-mcp/releases/latest)
+and double-click it.
+
+Both the plugin and the bundle run the released PyPI package via a thin
+launcher (uvx → pipx → private venv, whichever is available) — no
+vendored code, identical behavior to a manual install.
+
+### Any MCP client
+
 ```bash
 pipx install apple-mail-mcp
 ```
