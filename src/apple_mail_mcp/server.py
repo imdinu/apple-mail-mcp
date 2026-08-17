@@ -506,9 +506,13 @@ async def get_emails(
                 ]
     except (
         FileNotFoundError,
+        PermissionError,
         sqlite3.OperationalError,
         MailboxNotFoundError,
     ) as exc:
+        # PermissionError: find_mail_directory() raises it when Full
+        # Disk Access is not granted. Without it here, get_emails()
+        # errors instead of falling back to JXA on no-FDA installs.
         logger.debug(
             "Envelope Index fast path unavailable (%s); falling back to JXA",
             exc,

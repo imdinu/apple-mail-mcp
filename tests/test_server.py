@@ -121,6 +121,39 @@ class TestGetEmails:
 
     @pytest.mark.asyncio
     @patch("apple_mail_mcp.server.execute_query_async")
+    async def test_falls_back_to_jxa_without_full_disk_access(
+        self, mock_exec, monkeypatch
+    ):
+        """No Full Disk Access -> find_mail_directory raises
+        PermissionError -> get_emails must fall back to JXA, not error."""
+
+        def _no_fda():
+            raise PermissionError("Cannot access ~/Library/Mail/V10")
+
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory", _no_fda
+        )
+        mock_exec.return_value = [
+            {
+                "id": 7,
+                "subject": "Fallback",
+                "sender": "a@b.c",
+                "date_received": "2024-01-15T10:00:00",
+                "read": False,
+                "flagged": False,
+            }
+        ]
+
+        from apple_mail_mcp.server import get_emails
+
+        result = await get_emails(filter="unread")
+
+        assert len(result) == 1
+        assert result[0]["subject"] == "Fallback"
+        mock_exec.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server.execute_query_async")
     async def test_filter_all_returns_emails(self, mock_exec):
         """get_emails with filter='all' returns all emails."""
         mock_exec.return_value = [
