@@ -66,7 +66,7 @@ For each email, the index stores:
 Attachment metadata (filename, MIME type, file size) is stored in a separate `attachments` table, enabling `search(scope="attachments")` queries.
 
 !!! note
-    All FTS5-backed scopes (`all`, `body`, `subject`, `sender`) cover the full set of indexed emails. By default the index is uncapped — every email in every mailbox is searchable. Setting `APPLE_MAIL_INDEX_MAX_EMAILS` introduces an optional per-mailbox ceiling (newest by file mtime kept). When no index is available, subject and sender search fall back to live JXA queries against a single mailbox.
+    All FTS5-backed scopes (`all`, `body`, `subject`, `sender`) cover the full set of indexed emails. By default the index is uncapped — every email in every mailbox is searchable. Setting `APPLE_MAIL_INDEX_MAX_EMAILS` introduces an optional per-mailbox ceiling (newest by file mtime kept). When no index is available, subject and sender search fall back to live JXA queries against a single mailbox — and an empty result from that fallback says so, rather than suggesting different keywords. `body` and `attachments` scopes have no fallback and raise instead of returning empty.
 
 ### Account UUIDs vs Friendly Names
 

@@ -119,6 +119,44 @@ def _index_writer_retry_loop(
 # writer lock before giving up with instructions.
 _CLI_LOCK_TIMEOUT_SEC = 30.0
 
+# One warning per process for a sync that cannot read the Mail store
+# (#110) — a promoted writer retries the same sync, and repeating the
+# notice every cycle would train the reader to ignore it.
+_sync_blocked_warned = False
+
+
+def _warn_sync_blocked(reason: str) -> None:
+    """Report a sync that could not read the Mail store.
+
+    Without this the sync returns 0 changes and the server reports
+    "Index up to date", so an index that stopped updating months ago
+    looks healthy while search silently decays.
+    """
+    global _sync_blocked_warned
+    if _sync_blocked_warned:
+        return
+    _sync_blocked_warned = True
+
+    if reason == "permission":
+        detail = (
+            "Full Disk Access is not granted to the process running "
+            "the server, so ~/Library/Mail could not be read.\n"
+            "  Grant it in System Settings → Privacy & Security → "
+            "Full Disk Access, then restart the server."
+        )
+    else:
+        detail = (
+            "The Apple Mail data directory was not found. Ensure Mail "
+            "has been set up and used on this Mac."
+        )
+
+    print(
+        f"Warning: index sync could not read your mail — the index is "
+        f"NOT up to date and search results will be stale.\n  {detail}",
+        file=sys.stderr,
+        flush=True,
+    )
+
 
 def _acquire_cli_index_lock(manager: "IndexManager") -> "IndexLock":
     """Acquire the index writer lock for a CLI write command (#106).
@@ -186,7 +224,12 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
                 start = time.time()
                 count = manager.sync_updates()
                 elapsed = time.time() - start
-                if count > 0:
+                if manager.last_sync_blocked:
+                    # A blocked sync also returns 0 changes. Reporting
+                    # "up to date" here is how a once-good index goes
+                    # quietly stale for months (#110).
+                    _warn_sync_blocked(manager.last_sync_blocked)
+                elif count > 0:
                     print(
                         f"Background sync: {count} changes "
                         f"({_format_time(elapsed)})",
@@ -245,6 +288,18 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
                 daemon=True,
             )
             retry_thread.start()
+    else:
+        # Serving with no index at all is legal — subject and sender
+        # searches fall back to live Mail queries — but body search
+        # is unavailable, and nothing else says so (#110).
+        print(
+            f"No search index found at {manager.db_path} — body search "
+            "is unavailable and subject/sender searches fall back to "
+            "slower live queries.\n  Run 'apple-mail-mcp index' to "
+            "build it (needs Full Disk Access for your terminal).",
+            file=sys.stderr,
+            flush=True,
+        )
 
     mcp.run()
 

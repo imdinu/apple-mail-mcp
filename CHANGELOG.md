@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`search()` no longer reports an unusable index as an empty mailbox.** A missing index, an index containing 0 emails, and a genuine zero-match all returned the same `{"result": [], "hint": ...}` payload, and the hint suggested trying different keywords. That is good advice for a real no-match (#99) and actively misleading otherwise: it tells the calling model its vocabulary was wrong, so it rephrases and retries instead of diagnosing, and every retry produces the same empty result and the same hint. One user lost roughly four months of silently empty searches over an 18,232-message mailbox this way — `apple-mail-mcp status` would have said "no index" the whole time, but nothing on the search path ever looked. The zero-match hint is unchanged; the other two states now name the index path, the `apple-mail-mcp index` command, and the Full Disk Access prerequisite. Scopes that only the index can serve (`body`, `attachments`, and any `before`/`after` filter) raise with the same guidance rather than returning empty — `scope="body"` previously fell through to the JXA fallback, which searches subject and sender, and returned those matches labelled `matched_in: "body"`. An index that exists but cannot be opened now reports the access problem and its path instead of a bare "Search index error". (#110)
+- **A background sync that cannot read your mail no longer reports "Index up to date".** `sync_updates()` catches a `PermissionError` from the Mail directory and returns 0 changes, which is indistinguishable from a clean sync — so a server whose launching process lacks Full Disk Access printed the healthy message on every startup while the index froze at its last good state. The manager now records *why* a sync returned nothing, and `serve` prints a one-time warning naming Full Disk Access (or a missing Mail directory) instead. Starting the server with no index at all also says so, rather than starting silently. The docs claimed the server "does not need Full Disk Access" — true for serving an existing index, not for keeping one current; corrected. (#110)
+
 ## [0.4.2] - 2026-07-02
 
 ### Added

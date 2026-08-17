@@ -112,6 +112,12 @@ class IndexManager:
         # (build/sync/watcher). Lets JXA-free paths like the disk
         # email count honor exclusions without their own JXA call.
         self._exclude_account_uuids: set[str] = set()
+        # Why the most recent sync_updates() could not read the Mail
+        # store, or None if it ran (#110). "permission" = Full Disk
+        # Access denied; "missing" = Mail directory not found. A
+        # blocked sync still returns 0 changes, which is
+        # indistinguishable from "already up to date" without this.
+        self.last_sync_blocked: str | None = None
 
     def _resolve_exclusions(self) -> set[str]:
         """Resolve configured account exclusions to UUIDs and remember
@@ -164,6 +170,22 @@ class IndexManager:
     def has_index(self) -> bool:
         """Check if an index database exists."""
         return self._db_path.exists()
+
+    def is_empty(self) -> bool:
+        """Check whether an existing index holds no emails.
+
+        A database file is created before any mail is read, so an
+        index build that ran without Full Disk Access leaves a
+        well-formed but empty index behind. Searching it returns
+        zero rows, which reads exactly like a genuine no-match
+        (#110). Cheaper than :meth:`get_stats`, which also walks
+        the Mail directory.
+
+        Raises:
+            sqlite3.Error: If the index exists but cannot be read.
+        """
+        cursor = self._get_conn().execute("SELECT EXISTS(SELECT 1 FROM emails)")
+        return cursor.fetchone()[0] == 0
 
     def get_stats(self) -> IndexStats:
         """
@@ -535,9 +557,15 @@ class IndexManager:
         try:
             mail_dir = find_mail_directory()
         except (FileNotFoundError, PermissionError) as e:
+            # Record *why* before returning 0 — callers otherwise
+            # report a blocked sync as "index up to date" (#110).
+            self.last_sync_blocked = (
+                "permission" if isinstance(e, PermissionError) else "missing"
+            )
             logger.warning("Cannot access mail directory for sync: %s", e)
             return 0
 
+        self.last_sync_blocked = None
         exclude_account_uuids = self._resolve_exclusions()
 
         result = sync_from_disk(
