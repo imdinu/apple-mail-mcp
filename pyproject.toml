@@ -94,6 +94,13 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# -ra: one-line reason for every non-pass (skips, xfails, errors) so a
+# red run is diagnosable from the summary alone. No xdist: the suite
+# runs in ~3s single-process; worker startup made it slower.
+addopts = "-ra --strict-markers"
+markers = [
+    "real_mail_dir: allow find_mail_directory() to run for real (against a sandboxed Path.home) instead of the conftest stub",
+]
 
 [tool.ruff]
 target-version = "py311"
