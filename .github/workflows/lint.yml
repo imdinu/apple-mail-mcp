@@ -21,6 +21,7 @@ jobs:
       - run: uv sync --group dev
       - run: uv run ruff check src/
       - run: uv run ruff format --check src/
+      - run: uv run ty check src/
 
   # macOS runner: the project is macOS-only, and most of the suite runs
   # without Mail.app present (parsing, search, config, builders).
