@@ -33,7 +33,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal
+from typing import Literal, cast
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -624,7 +624,7 @@ async def get_emails(
     query = query.order_by("date_received", descending=True).limit(limit)
 
     try:
-        return await execute_query_async(query)
+        return cast(list[EmailSummary], await execute_query_async(query))
     except Exception as exc:
         # An unknown mailbox makes JXA fail with a raw "...Error:
         # Error: Can't get object. (-1728)". Surface a clean,
@@ -751,7 +751,7 @@ async def get_email(
         raise ValueError(f"Email {message_id} not found.")
     resolved_mailbox = _resolve_mailbox(mailbox)
 
-    def _enrich_attachments(result: dict) -> dict:
+    def _enrich_attachments(result: dict) -> EmailFull:
         """Replace JXA attachments with richer index data when available."""
         try:
             mgr = _get_index_manager()
@@ -763,7 +763,7 @@ async def get_email(
                     result["attachments"] = idx_atts
         except Exception:
             pass
-        return result
+        return cast(EmailFull, result)
 
     # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
     # Stale-entry detection: if find_email_path returns a path but the file
@@ -1021,7 +1021,7 @@ async def get_email_links(
     message_id: int,
     account: str | None = None,
     mailbox: str | None = None,
-) -> dict:
+) -> AttachmentContent:
     """
     Extract hyperlinks from an email's HTML content.
 

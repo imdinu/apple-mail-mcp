@@ -445,9 +445,9 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
                 if not date_received:
                     ts = plist.get("date-received")
                     if ts:
-                        from datetime import datetime
+                        from datetime import UTC, datetime
 
-                        dt = datetime.fromtimestamp(ts, tz=datetime.UTC)
+                        dt = datetime.fromtimestamp(ts, tz=UTC)
                         date_received = dt.isoformat()
             except Exception:
                 pass  # Plist parsing is best-effort
@@ -472,6 +472,17 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         return None
 
 
+def _decoded_payload(part: email.message.Message) -> bytes | None:
+    """``part.get_payload(decode=True)`` narrowed to bytes.
+
+    The stdlib signature is ``Message | bytes | Any``; for a leaf part
+    it is always ``bytes`` (or ``None``), but narrowing here keeps every
+    caller type-clean without per-site asserts.
+    """
+    payload = part.get_payload(decode=True)
+    return payload if isinstance(payload, bytes) and payload else None
+
+
 def _extract_body_text(msg: email.message.Message) -> str:
     """
     Extract plain text body from email message.
@@ -483,7 +494,7 @@ def _extract_body_text(msg: email.message.Message) -> str:
         for part in msg.walk():
             content_type = part.get_content_type()
             if content_type == "text/plain":
-                payload = part.get_payload(decode=True)
+                payload = _decoded_payload(part)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
                     try:
@@ -499,7 +510,7 @@ def _extract_body_text(msg: email.message.Message) -> str:
         for part in msg.walk():
             content_type = part.get_content_type()
             if content_type == "text/html":
-                payload = part.get_payload(decode=True)
+                payload = _decoded_payload(part)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
                     try:
@@ -509,7 +520,7 @@ def _extract_body_text(msg: email.message.Message) -> str:
                         pass
         return ""
     else:
-        payload = msg.get_payload(decode=True)
+        payload = _decoded_payload(msg)
         if payload:
             charset = msg.get_content_charset() or "utf-8"
             try:
@@ -633,15 +644,21 @@ def _mime_part_numbers(
     """
     result: dict[int, str] = {}
 
+    def _children(part: email.message.Message) -> list[email.message.Message]:
+        payload = part.get_payload()
+        if not isinstance(payload, list):
+            return []
+        return [c for c in payload if isinstance(c, email.message.Message)]
+
     def _walk(part: email.message.Message, prefix: list[str]) -> None:
         if part.is_multipart():
-            for i, child in enumerate(part.get_payload(), 1):
+            for i, child in enumerate(_children(part), 1):
                 _walk(child, [*prefix, str(i)])
         else:
             result[id(part)] = ".".join(prefix)
 
     if msg.is_multipart():
-        for i, child in enumerate(msg.get_payload(), 1):
+        for i, child in enumerate(_children(msg), 1):
             _walk(child, [str(i)])
     else:
         result[id(msg)] = "1"
@@ -892,7 +909,7 @@ def get_attachment_content(
                 continue
 
             # Primary path: embedded MIME payload
-            payload = part.get_payload(decode=True)
+            payload = _decoded_payload(part)
             if payload:
                 return (payload, ct)
 
@@ -1027,7 +1044,7 @@ def _extract_links_from_message(
         if part.get_content_type() != "text/html":
             continue
 
-        payload = part.get_payload(decode=True)
+        payload = _decoded_payload(part)
         if not payload:
             continue
 
@@ -1042,7 +1059,10 @@ def _extract_links_from_message(
             soup = BeautifulSoup(html, "html.parser")
 
         for a_tag in soup.find_all("a", href=True):
-            url = a_tag["href"].strip()
+            href = a_tag.get("href")
+            if not isinstance(href, str):
+                continue
+            url = href.strip()
             if not url:
                 continue
 
