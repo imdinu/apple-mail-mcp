@@ -6,7 +6,7 @@ Apple Mail MCP Server
 2. FTS5 search — full-text body search in ~2ms with BM25 ranking
 3. JXA fallback — batch property fetching for multi-email listing
 
-TOOLS (8 total):
+TOOLS (11 total):
 - list_accounts() - List email accounts
 - list_mailboxes(account?) - List mailboxes
 - get_emails(..., filter?) - Unified email listing with filters
@@ -15,6 +15,12 @@ TOOLS (8 total):
 - get_email_links(id) - Extract hyperlinks from an email
 - get_email_attachment(id, filename) - Extract a file attachment
 - get_attachment(id, filename?) - Deprecated alias
+- update_email_status(ids, read?, flagged?) - Mark read/unread, flag/unflag
+- move_email(ids, target_mailbox) - Move / archive / trash
+- send_email(to, subject, body, ..., confirm?) - Draft; send on confirm
+
+Write tools (the last three) refuse in read-only mode (#80), never
+target a hidden account (#90), and return the resulting state.
 
 RESOURCES (1 total):
 - index://status - JSON snapshot of search-index health
@@ -110,6 +116,23 @@ STRATEGY3_MAX_MAILBOXES = _clamped_env_int(
 # limits push entire result sets into the model's context; negative
 # LIMIT means "unlimited" in SQLite.
 MAX_RESULT_LIMIT = 200
+
+# Write tools take a list of message ids; anything longer is clamped to
+# this many (clamp-don't-raise, like _validate_pagination) so one call
+# can never fan out into an unbounded number of JXA mutations.
+MAX_WRITE_BATCH = 10
+
+
+def _validate_write_batch(message_ids: list[int]) -> list[int]:
+    """Dedupe (order-preserving) and clamp a write tool's id list.
+
+    Raises ``ValueError`` on an empty list — an empty write is always a
+    caller mistake, and silently doing nothing would read as success.
+    """
+    unique = list(dict.fromkeys(int(i) for i in message_ids))
+    if not unique:
+        raise ValueError("message_ids must contain at least one id.")
+    return unique[:MAX_WRITE_BATCH]
 
 
 def _validate_pagination(limit: int, offset: int = 0) -> tuple[int, int]:
@@ -410,7 +433,7 @@ def _detect_matched_columns(query: str, result) -> str:
     return detect_matched_columns(query, result)
 
 
-# ========== MCP Tools (8 total) ==========
+# ========== MCP Tools (11 total; write tools further down) ==========
 
 
 @mcp.tool
@@ -1431,6 +1454,156 @@ async def search(
 
 
 # ========== MCP Resources ==========
+
+
+# ========== Write Tools ==========
+#
+# Contract (see .claude/skills/write-tool/SKILL.md): `_ensure_writable()`
+# first, hidden-account gate before any JXA, every string into the
+# script through json.dumps(), bounded batches, return the new state.
+
+
+class EmailStatus(TypedDict):
+    """Resulting state of one message after update_email_status."""
+
+    id: int
+    read: bool
+    flagged: bool
+
+
+class MoveResult(TypedDict):
+    """Resulting location of one message after move_email."""
+
+    id: int
+    account: str
+    mailbox: str
+
+
+class SendResult(TypedDict):
+    """Outcome of send_email: a saved draft, or a sent message."""
+
+    status: Literal["draft", "sent"]
+    account: str
+    to: list[str]
+    cc: list[str]
+    bcc: list[str]
+    subject: str
+
+
+@mcp.tool
+async def update_email_status(
+    message_ids: list[int],
+    read: bool | None = None,
+    flagged: bool | None = None,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> list[EmailStatus]:
+    """
+    Mark messages read/unread and/or flagged/unflagged.
+
+    Pass only the flags you want to change; ``None`` leaves that flag
+    untouched. At least one of ``read``/``flagged`` must be given.
+    Bounded to MAX_WRITE_BATCH ids per call (extra ids are dropped).
+
+    Index coherence: read/flagged live in the .emlx plist footer and the
+    Envelope Index, not in the FTS5 index, so no index write is needed.
+
+    Args:
+        message_ids: Mail.app message ids (see get_emails / search).
+        read: True = mark read, False = mark unread, None = unchanged.
+        flagged: True = flag, False = unflag, None = unchanged.
+        account: Account name (default: configured default account).
+        mailbox: Mailbox holding the messages (default: INBOX).
+
+    Returns:
+        One ``{"id", "read", "flagged"}`` per message, reflecting the
+        state Mail.app reports after the update.
+
+    Example:
+        >>> update_email_status([12345], read=True)
+        [{"id": 12345, "read": True, "flagged": False}]
+    """
+    _ensure_writable()
+    raise NotImplementedError("update_email_status: implemented in #64")
+
+
+@mcp.tool
+async def move_email(
+    message_ids: list[int],
+    target_mailbox: str,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> list[MoveResult]:
+    """
+    Move messages to another mailbox (archive and trash are just targets).
+
+    The target mailbox is resolved (alias-aware: "Archive", "Trash",
+    "Sent", nested "Work/Projects") before any message is touched; an
+    unknown target raises ``ValueError`` and nothing moves. Bounded to
+    MAX_WRITE_BATCH ids per call (extra ids are dropped).
+
+    Index coherence (#66): after Mail.app confirms the move, the stale
+    FTS5 row for the source mailbox is removed immediately so a
+    follow-up search() cannot return a ghost; the watcher / next sync
+    indexes the message under its new mailbox.
+
+    Args:
+        message_ids: Mail.app message ids (see get_emails / search).
+        target_mailbox: Destination mailbox name, e.g. "Archive",
+            "Trash", or "Work/Projects".
+        account: Account name (default: configured default account).
+        mailbox: Source mailbox holding the messages (default: INBOX).
+
+    Returns:
+        One ``{"id", "account", "mailbox"}`` per message with its new
+        location.
+
+    Example:
+        >>> move_email([12345], "Archive")
+        [{"id": 12345, "account": "iCloud", "mailbox": "Archive"}]
+    """
+    _ensure_writable()
+    raise NotImplementedError("move_email: implemented in #65")
+
+
+@mcp.tool
+async def send_email(
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    account: str | None = None,
+    confirm: bool = False,
+) -> SendResult:
+    """
+    Compose an email. Saves a draft by default; sends only with confirm=True.
+
+    Safety (#22): without ``confirm=True`` the message is created as a
+    draft in Mail.app (visible in Drafts, never transmitted) and the
+    result says ``"status": "draft"``. Call again with ``confirm=True``
+    after the user has approved the content to actually send it.
+
+    Args:
+        to: Recipient addresses (at least one).
+        subject: Subject line.
+        body: Plain-text body.
+        cc: CC addresses (optional).
+        bcc: BCC addresses (optional).
+        account: Account to send from (default: configured default
+            account). The account's primary address is the sender.
+        confirm: False = save as draft (default). True = send now.
+
+    Returns:
+        ``{"status": "draft" | "sent", "account", "to", "cc", "bcc",
+        "subject"}``.
+
+    Example:
+        >>> send_email(["a@example.com"], "Hi", "Body")  # draft
+        >>> send_email(["a@example.com"], "Hi", "Body", confirm=True)
+    """
+    _ensure_writable()
+    raise NotImplementedError("send_email: implemented in #22")
 
 
 @mcp.resource(

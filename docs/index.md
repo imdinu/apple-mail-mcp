@@ -1,6 +1,6 @@
 # Apple Mail MCP
 
-The only Apple Mail MCP server with **full-coverage FTS5 body search**. Reliable on large mailboxes where AppleScript-based servers timeout — with 8 tools for reading, searching, and extracting email content. Also works as a standalone CLI.
+The only Apple Mail MCP server with **full-coverage FTS5 body search**. Reliable on large mailboxes where AppleScript-based servers timeout — with 11 tools for reading, searching, extracting — and, opt-in, updating, moving, and sending — email. Also works as a standalone CLI.
 
 ---
 
@@ -17,7 +17,7 @@ Tested against [6 other Apple Mail MCP servers](benchmarks.md) on a real ~73K-me
 
 ## Key Features
 
-- **8 MCP tools + CLI** — search, read, list, extract attachments and links — usable as MCP server or standalone CLI
+- **11 MCP tools + CLI** — search, read, list, extract attachments and links, plus mark/move/send write tools (off in read-only mode) — usable as MCP server or standalone CLI
 - **Unified filtering** — unread, flagged, today, last 7 days
 - **FTS5 search index** — full-text body search in ~2ms with BM25 ranking
 - **Real-time updates** — `--watch` flag for automatic index updates
@@ -68,7 +68,7 @@ apple-mail-mcp integrate claude > ~/.claude/skills/apple-mail.md
 
 - [Getting Started](getting-started.md) — first-use walkthrough
 - [Installation](installation.md) — all installation methods
-- [Tools](tools.md) — full API reference for all 8 tools
+- [Tools](tools.md) — full API reference for all 11 tools
 - [Search & Indexing](search.md) — FTS5 deep dive
 - [Architecture](architecture.md) — how it works under the hood
 - [Architecture Deep Dive](architecture-deep-dive.md) — `.emlx` format, JXA IPC, FTS5 index design
