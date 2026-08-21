@@ -15,6 +15,37 @@ from apple_mail_mcp.index.schema import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_mail_directory(request, monkeypatch):
+    """Keep the suite off the developer's real ``~/Library/Mail``.
+
+    ``IndexManager.get_stats()`` (and everything that calls it, e.g.
+    ``is_stale()``) counts ``.emlx`` files on disk. Unpatched, that is
+    a full walk of the real mailbox — ~20s per call on a 73K-message
+    Mail.app, which made 9 tests account for ~98% of suite wall time.
+    Raising ``FileNotFoundError`` exercises the documented "no Full
+    Disk Access" branch instead. Tests that patch
+    ``apple_mail_mcp.index.disk.find_mail_directory`` themselves still
+    win (their patch is applied later). Opt out with
+    ``@pytest.mark.real_mail_dir`` for tests that exercise the real
+    lookup against a sandboxed ``Path.home``.
+    """
+    import apple_mail_mcp.index.disk as disk_mod
+
+    monkeypatch.setattr(disk_mod, "_cached_mail_dir", None)
+    if request.node.get_closest_marker("real_mail_dir"):
+        return
+
+    def _blocked() -> Path:
+        raise FileNotFoundError(
+            "tests must not touch the real Mail directory — patch "
+            "apple_mail_mcp.index.disk.find_mail_directory or mark the "
+            "test @pytest.mark.real_mail_dir"
+        )
+
+    monkeypatch.setattr(disk_mod, "find_mail_directory", _blocked)
+
+
 @pytest.fixture
 def temp_db():
     """Create an in-memory database with the schema and standard PRAGMAs."""
