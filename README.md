@@ -120,6 +120,9 @@ apple-mail-mcp emails --filter unread --limit 10
 apple-mail-mcp accounts
 apple-mail-mcp mailboxes --account Work
 apple-mail-mcp extract 12345 invoice.pdf
+apple-mail-mcp mark 12345 --read --flag            # write tools: off with --read-only
+apple-mail-mcp move 12345 --to Archive
+apple-mail-mcp send --to a@example.com -s "Hi" -b "…" # draft; add --confirm to send
 ```
 
 All commands output JSON. Generate a [Claude Code skill](https://imdinu.github.io/apple-mail-mcp/configuration/#cli-commands) for CLI-based access:

@@ -728,6 +728,19 @@ Filters: all, unread, flagged, today, last_7_days
 !apple-mail-mcp extract <message_id>  # links mode
 ```
 
+## Write operations (ask the user before each)
+
+```
+!apple-mail-mcp mark <message_id> --read     # --unread, --flag, --unflag
+!apple-mail-mcp move <message_id> --to Trash # or Archive, Work/Projects
+!apple-mail-mcp send --to a@b.com -s "Subj" -b "Body"   # saves a DRAFT
+!apple-mail-mcp send ... --confirm           # sends — only on approval
+```
+
+Write commands fail with "read-only mode" if the server is configured
+read-only; pass `-a <account>` / `-m <mailbox>` when the message is not
+in the default account's INBOX.
+
 ## Output format
 
 All commands return JSON. Use jq for filtering:
