@@ -776,13 +776,19 @@ async def get_email(
             from .index.disk import parse_emlx
 
             acct_map = _get_account_map()
-            await acct_map.ensure_loaded()
+            excluded_names = _excluded_account_names()
+            # The map is only needed to translate a caller-supplied
+            # account name and/or the configured exclusions to UUIDs.
+            # With neither, skip the JXA round-trip (~250ms cold) —
+            # the disk path below is pure index + .emlx.
+            if account is not None or excluded_names:
+                await acct_map.ensure_loaded()
 
             idx_acct = None
             if account is not None:
                 idx_acct = acct_map.name_to_uuid(account)
 
-            excluded_uuids = acct_map.names_to_uuids(_excluded_account_names())
+            excluded_uuids = acct_map.names_to_uuids(excluded_names)
 
             emlx_path = manager.find_email_path(
                 message_id, account=idx_acct, mailbox=mailbox
