@@ -214,6 +214,95 @@ def _get_index_manager():
     return IndexManager.get_instance()
 
 
+# Permission-shaped SQLite failures. sqlite3 reports a denied open as
+# a generic OperationalError, so the message is the only signal.
+_DB_ACCESS_ERRORS = (
+    "unable to open database file",
+    "permission denied",
+    "attempt to write a readonly database",
+    "not authorized",
+)
+
+_FDA_STEPS = (
+    "That command needs Full Disk Access for your terminal "
+    "(System Settings → Privacy & Security → Full Disk Access)."
+)
+
+
+def _no_index_message(manager, what: str) -> str:
+    """Explain that an unbuilt index cannot answer this search.
+
+    Distinct from the zero-match hint: nothing was searched, so
+    suggesting different keywords would send the caller round a loop
+    that can never succeed (#110).
+    """
+    return (
+        f"{what} requires the search index, and no index was found at "
+        f"{manager.db_path}. Run 'apple-mail-mcp index' to build it. "
+        f"{_FDA_STEPS}"
+    )
+
+
+def _jxa_fallback_message(manager) -> str:
+    """Explain an empty result from the index-free JXA fallback.
+
+    Subject and sender were genuinely searched; body text was not.
+    Saying only "no results" invites the caller to retry with other
+    keywords, which cannot reach the mail bodies either (#110).
+    """
+    return (
+        "No match in subject or sender. Body text was NOT searched: "
+        f"no index was found at {manager.db_path}, so this fell back "
+        "to a live Mail query, which can only see message metadata "
+        "in one mailbox. Run 'apple-mail-mcp index' to search message "
+        f"bodies. {_FDA_STEPS}"
+    )
+
+
+def _empty_index_message(manager) -> str:
+    """Explain that the index exists but holds nothing."""
+    return (
+        f"The search index at {manager.db_path} is empty — it contains "
+        "0 emails, so no query can match. This usually means the build "
+        f"could not read your mail. Run 'apple-mail-mcp index'. "
+        f"{_FDA_STEPS}"
+    )
+
+
+def _search_index_error(manager, exc: Exception) -> str:
+    """Message for an index that exists but could not be queried."""
+    detail = str(exc) or repr(exc)
+    lowered = detail.lower()
+    if isinstance(exc, PermissionError) or any(
+        marker in lowered for marker in _DB_ACCESS_ERRORS
+    ):
+        return (
+            f"The search index at {manager.db_path} exists but could "
+            f"not be opened: {detail}. Check that the file is readable "
+            "by the account running the server, then run "
+            "'apple-mail-mcp rebuild' to recreate it."
+        )
+    return (
+        f"Search index error: {detail}. "
+        f"Try 'apple-mail-mcp rebuild' if this persists."
+    )
+
+
+def _index_is_empty(manager) -> bool:
+    """Best-effort check for an index with no rows.
+
+    Only ever consulted on an already-empty result, and never allowed
+    to turn a working search into an error: an unreadable index is
+    reported by the query path itself.
+    """
+    try:
+        # Strict identity: only a real True reroutes the message.
+        return manager.is_empty() is True
+    except Exception:
+        # Diagnosis only — never turn a search into an error here.
+        return False
+
+
 def _get_account_map():
     """Get the AccountMap singleton, lazily imported."""
     from .index.accounts import AccountMap
@@ -1110,6 +1199,17 @@ async def search(
         {"result": [], "hint": "..."} — the hint suggests how to
         adjust the query (fewer keywords, different scope).
 
+        When the search index cannot answer, the hint says so
+        instead of suggesting other keywords: an unbuilt index
+        (subject/sender still searched live, bodies not) or an
+        index holding 0 emails. Scopes that only the index can
+        serve — "body", "attachments", and any date filter —
+        raise instead, naming the index path and how to build it.
+
+    Raises:
+        ValueError: Index required for this scope and not built.
+        RuntimeError: Index exists but could not be queried.
+
     Examples:
         >>> search("Kim Foulds")  # Find person across all fields
         >>> search("quarterly budget")  # Keywords, not sentences
@@ -1132,16 +1232,32 @@ async def search(
         "check spelling, or use scope='all' to search everywhere."
     )
 
+    manager = _get_index_manager()
+    indexed = manager.has_index()
+
     def _maybe_hint(results: list) -> list | dict:
-        if not results:
-            return {"result": [], "hint": _EMPTY_HINT}
-        return results
+        """Return results, or explain an empty one.
+
+        A genuine zero-match keeps the keyword hint (#99). An index
+        that could not answer says so instead, because retrying with
+        different keywords cannot fix it (#110).
+        """
+        if results:
+            return results
+        if not indexed:
+            return {"result": [], "hint": _jxa_fallback_message(manager)}
+        if _index_is_empty(manager):
+            return {"result": [], "hint": _empty_index_message(manager)}
+        return {"result": [], "hint": _EMPTY_HINT}
 
     # Attachment filename search (SQL LIKE query, no JXA needed)
     if scope == "attachments":
-        manager = _get_index_manager()
-        if not manager.has_index():
-            return []
+        if not indexed:
+            # Attachment filenames live only in the index — there is
+            # no live fallback, so an empty list would be a lie.
+            raise ValueError(
+                _no_index_message(manager, "Attachment filename search")
+            )
 
         acct_map = _get_account_map()
         await acct_map.ensure_loaded()
@@ -1189,8 +1305,7 @@ async def search(
 
     # Try FTS5 index for all searchable scopes
     if scope in ("all", "body", "subject", "sender"):
-        manager = _get_index_manager()
-        if manager.has_index():
+        if indexed:
             # Translate friendly name → UUID for index lookup
             acct_map = _get_account_map()
             await acct_map.ensure_loaded()
@@ -1226,11 +1341,7 @@ async def search(
                     highlight=highlight,
                 )
             except Exception as e:
-                err_msg = str(e) or repr(e)
-                raise RuntimeError(
-                    f"Search index error: {err_msg}. "
-                    f"Try 'apple-mail-mcp rebuild' if this persists."
-                ) from e
+                raise RuntimeError(_search_index_error(manager, e)) from e
             return _maybe_hint(
                 [
                     {
@@ -1251,6 +1362,12 @@ async def search(
                     for r in results
                 ]
             )
+
+    # Body search requires the FTS5 index: the JXA fallback below can
+    # only read subject and sender, so answering from it would return
+    # metadata matches labelled as body matches (#110).
+    if scope == "body":
+        raise ValueError(_no_index_message(manager, "Body search"))
 
     # Date filtering and highlight require the FTS5 index
     if before or after:

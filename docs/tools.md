@@ -156,6 +156,16 @@ Search emails with automatic FTS5 optimization. Uses the FTS5 index for fast sea
 
 **Returns:** List of results sorted by relevance (FTS5) or date (JXA fallback), each with: `id`, `subject`, `sender`, `date_received`, `score`, `matched_in`, and optionally `content_snippet`, `account`, `mailbox`.
 
+**When nothing is found**, the return is `{"result": [], "hint": "..."}` instead of a list. The hint distinguishes three different situations, so a caller never mistakes an unusable index for an empty mailbox:
+
+| Situation | What the hint says |
+|-----------|--------------------|
+| Genuine zero match | Try fewer keywords, check spelling, widen the scope |
+| No index built | Subject and sender were searched live; **body text was not**. Names the index path and `apple-mail-mcp index` |
+| Index exists but holds 0 emails | The build could not read your mail — names the index path and the Full Disk Access prerequisite |
+
+**Scopes only the index can serve raise instead of returning empty**: `scope="body"`, `scope="attachments"`, and any `before`/`after` filter fail with a message naming the index path and how to build it. Subject and sender searches keep their live fallback.
+
 ```python
 search("invoice")
 # Search everywhere — uses FTS5 for instant results

@@ -16,15 +16,20 @@ Common issues and their solutions.
 4. **Restart your terminal** (required for changes to take effect)
 
 !!! note
-    The MCP server itself does **not** need Full Disk Access — only the `index` and `rebuild` commands do. Once the index is built, the server uses disk-based sync which works without FDA.
+    The MCP server does **not** need Full Disk Access to *serve* an existing index — searches keep working. It does need it to *update* one: the background sync reads `.emlx` files from `~/Library/Mail/`, the same protected location the indexer reads. If the process that launches the server (your MCP client, not your terminal) lacks FDA, the sync reads nothing and the index freezes at its last successful state, going quietly stale while search still answers.
+
+    As of 0.4.4 the server prints a warning at startup when this happens, instead of reporting "Index up to date". If you see it, grant Full Disk Access to the app that launches the server and restart it.
 
 ## Empty Search Results
 
 **Symptom:** `search()` returns no results for queries you know should match.
 
+!!! tip "Read the hint text"
+    As of 0.4.4, an empty result explains *which* of these it is. If the hint names your index path and `apple-mail-mcp index`, the index is missing or empty and no rewording of the query will help. Only the generic "try fewer keywords" hint means the index searched your mail and genuinely found nothing.
+
 **Possible causes:**
 
-1. **No index built yet.** Run `apple-mail-mcp index --verbose` first. Without the index, only JXA-based search is available (limited to a single mailbox).
+1. **No index built yet.** Run `apple-mail-mcp index --verbose` first. Without the index, only JXA-based search is available (limited to a single mailbox, subject and sender only — body text is not searched at all).
 
 2. **Too many keywords.** FTS5 uses AND semantics — all terms must match. Use 2–3 specific keywords instead of full sentences.
 
