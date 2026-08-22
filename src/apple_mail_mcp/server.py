@@ -234,6 +234,24 @@ _NO_INDEX_DATE_MESSAGE = (
 )
 
 
+def _disk_permission_message(what: str, message_id: int) -> str:
+    """Explain a denied read of an email's file on disk.
+
+    Reported distinctly from "not found": the metadata paths work
+    without Full Disk Access, so the item likely exists — only the
+    raw file read is refused. On macOS, stat() on a TCC-protected
+    file succeeds and only the read fails, which otherwise makes
+    this look like a data bug (#109).
+    """
+    return (
+        f"Cannot {what} for email {message_id}: reading the email "
+        "file on disk was denied. This is a permission problem, not "
+        "a missing item — grant Full Disk Access to the process "
+        "running this server (System Settings → Privacy & Security "
+        "→ Full Disk Access), then retry."
+    )
+
+
 def _no_index_message(manager, what: str) -> str:
     """Explain that an unbuilt index cannot answer this search.
 
@@ -1054,7 +1072,14 @@ async def get_email_links(
     emlx_path = await _resolve_emlx_path(message_id, account, mailbox)
     from .index.disk import get_email_links as _get_links
 
-    link_infos = await asyncio.to_thread(_get_links, emlx_path)
+    try:
+        link_infos = await asyncio.to_thread(_get_links, emlx_path)
+    except PermissionError as exc:
+        # Without this, a denied read returns [] — "this email has
+        # no links" — and the permission problem stays invisible.
+        raise RuntimeError(
+            _disk_permission_message("extract links", message_id)
+        ) from exc
     return {
         "links": [{"url": li.url, "text": li.text} for li in link_infos],
     }
@@ -1099,9 +1124,19 @@ async def get_email_attachment(
     emlx_path = await _resolve_emlx_path(message_id, account, mailbox)
     from .index.disk import get_attachment_content
 
-    result = await asyncio.to_thread(
-        get_attachment_content, emlx_path, filename
-    )
+    try:
+        result = await asyncio.to_thread(
+            get_attachment_content, emlx_path, filename
+        )
+    except PermissionError as exc:
+        # Without this, a denied read collapses into None and the
+        # message below claims the attachment doesn't exist — while
+        # get_email() happily lists it (#109).
+        raise RuntimeError(
+            _disk_permission_message(
+                f"read attachment '{filename}'", message_id
+            )
+        ) from exc
     if result is None:
         raise ValueError(
             f"Attachment '{filename}' not found in email {message_id}."

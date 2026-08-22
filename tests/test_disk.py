@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import email
+import os
 from pathlib import Path
+
+import pytest
 
 from apple_mail_mcp.index.disk import (
     MAX_EMLX_SIZE,
@@ -13,6 +16,7 @@ from apple_mail_mcp.index.disk import (
     _find_external_attachment,
     _infer_account_mailbox,
     _mime_part_numbers,
+    _read_external_attachment,
     _strip_html,
     get_attachment_content,
     get_email_links,
@@ -1683,3 +1687,74 @@ class TestGetEmailLinks:
             _synthetic_inline_name("logo.png", "image/jpeg")
             == "inline_logo.png.jpg"
         )
+
+
+class TestPermissionSurfacing:
+    """A denied disk read must raise, not read as "not found" (#109).
+
+    On macOS, stat() on a TCC-protected file succeeds and only the
+    read is refused, so these functions must let PermissionError
+    escape instead of collapsing it into their "nothing there"
+    return values. Uses chmod 0o000 fixtures (skipped under root,
+    which bypasses file permissions).
+    """
+
+    def _make_emlx(self, tmp_path: Path) -> Path:
+        mime_content = (
+            b'Content-Type: multipart/mixed; boundary="----=_P"\n\n'
+            b"------=_P\nContent-Type: text/html\n\n"
+            b'<a href="https://example.com">x</a>\n'
+            b"------=_P\n"
+            b"Content-Type: application/octet-stream\n"
+            b'Content-Disposition: attachment; filename="data.bin"\n\n'
+            b"BYTES\n"
+            b"------=_P--\n"
+        )
+        plist = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<plist version="1.0"><dict></dict></plist>\n'
+        )
+        emlx = f"{len(mime_content)}\n".encode() + mime_content + plist
+        path = tmp_path / "77.emlx"
+        path.write_bytes(emlx)
+        return path
+
+    @pytest.fixture
+    def unreadable_emlx(self, tmp_path: Path):
+        if os.geteuid() == 0:
+            pytest.skip("file permissions do not apply to root")
+        path = self._make_emlx(tmp_path)
+        path.chmod(0o000)
+        yield path
+        path.chmod(0o600)
+
+    def test_attachment_read_denied_raises(self, unreadable_emlx: Path):
+        with pytest.raises(PermissionError):
+            get_attachment_content(unreadable_emlx, "data.bin")
+
+    def test_links_read_denied_raises(self, unreadable_emlx: Path):
+        with pytest.raises(PermissionError):
+            get_email_links(unreadable_emlx)
+
+    def test_missing_file_still_returns_not_found(self, tmp_path: Path):
+        missing = tmp_path / "0.emlx"
+        assert get_attachment_content(missing, "data.bin") is None
+        assert get_email_links(missing) == []
+
+    def test_external_attachment_read_denied_raises(self, tmp_path: Path):
+        if os.geteuid() == 0:
+            pytest.skip("file permissions do not apply to root")
+        messages = tmp_path / "Messages"
+        messages.mkdir()
+        emlx_path = messages / "88.partial.emlx"
+        emlx_path.write_bytes(b"0\n")
+        ext_dir = tmp_path / "Attachments" / "88" / "2"
+        ext_dir.mkdir(parents=True)
+        ext_file = ext_dir / "img.png"
+        ext_file.write_bytes(b"\x89PNG")
+        ext_file.chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                _read_external_attachment(emlx_path, 2, "img.png")
+        finally:
+            ext_file.chmod(0o600)

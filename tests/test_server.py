@@ -1877,3 +1877,77 @@ class TestSearchIndexHonesty:
                 await search("worldpay")
 
         assert "malformed" in str(excinfo.value)
+
+
+class TestDiskPermissionErrors:
+    """A denied .emlx read must name the FDA cause, not lie (#109).
+
+    Without the PermissionError wrap, get_email_attachment reported
+    an existing attachment as "not found" and get_email_links
+    reported "no links" — while the metadata paths (which need no
+    Full Disk Access) list both correctly.
+    """
+
+    def _manager(self):
+        from pathlib import Path
+
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = True
+        mock_manager.find_email_path.return_value = Path("/fake/42.emlx")
+        return mock_manager
+
+    @pytest.mark.asyncio
+    async def test_attachment_permission_error_names_fda(self):
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+        ):
+            mock_get.return_value = self._manager()
+            # First to_thread call is the best-effort cache cleanup
+            # (its error is swallowed); second is the actual read.
+            mock_thread.side_effect = PermissionError(
+                "[Errno 1] Operation not permitted: '/fake/42.emlx'"
+            )
+
+            from apple_mail_mcp.server import get_email_attachment
+
+            with pytest.raises(RuntimeError, match="Full Disk Access"):
+                await get_email_attachment(42, "invoice.pdf")
+
+    @pytest.mark.asyncio
+    async def test_attachment_permission_error_is_not_not_found(self):
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+        ):
+            mock_get.return_value = self._manager()
+            mock_thread.side_effect = PermissionError("denied")
+
+            from apple_mail_mcp.server import get_email_attachment
+
+            with pytest.raises(RuntimeError) as excinfo:
+                await get_email_attachment(42, "invoice.pdf")
+            assert "not found" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_links_permission_error_names_fda(self):
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                new_callable=AsyncMock,
+            ) as mock_thread,
+        ):
+            mock_get.return_value = self._manager()
+            mock_thread.side_effect = PermissionError("denied")
+
+            from apple_mail_mcp.server import get_email_links
+
+            with pytest.raises(RuntimeError, match="Full Disk Access"):
+                await get_email_links(42)
