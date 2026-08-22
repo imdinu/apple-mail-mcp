@@ -496,6 +496,13 @@ class TestGetEmail:
         acct_map = mock_acct_map.return_value
         acct_map.ensure_loaded = AsyncMock()
         acct_map.names_to_uuids.return_value = {"UUID-HIDDEN"}
+        # No default account is configured (conftest strips host
+        # config), so _resolve_visible_account() must find a visible
+        # account in the cache or get_email() refuses to run at all.
+        acct_map.get_cached_accounts.return_value = [
+            {"name": "Hidden"},
+            {"name": "Visible"},
+        ]
 
         with (
             patch(
@@ -506,11 +513,12 @@ class TestGetEmail:
         ):
             from apple_mail_mcp.server import get_email
 
-            await get_email(42)
+            result = await get_email(42)
 
-        # >= 1: _resolve_visible_account may also load it when no
-        # visible default account is configured on the test host.
-        assert acct_map.ensure_loaded.await_count >= 1
+        assert result["id"] == 42
+        # Loaded once by _resolve_visible_account (no visible default)
+        # and once by the Strategy 0 UUID gate.
+        assert acct_map.ensure_loaded.await_count == 2
         acct_map.names_to_uuids.assert_called_with({"Hidden"})
 
     @pytest.mark.asyncio

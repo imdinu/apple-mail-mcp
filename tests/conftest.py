@@ -46,6 +46,33 @@ def _no_real_mail_directory(request, monkeypatch):
     monkeypatch.setattr(disk_mod, "find_mail_directory", _blocked)
 
 
+@pytest.fixture(autouse=True)
+def _no_host_config(monkeypatch, tmp_path):
+    """Keep the suite off the developer's ``~/.apple-mail-mcp/config.toml``
+    and ``APPLE_MAIL_*`` environment.
+
+    A real ``[defaults] account`` on the host changes which branch
+    ``_resolve_visible_account()`` takes, so a test can pass locally
+    and fail on a clean CI runner (or vice versa). Every test starts
+    from "no config file, no env"; tests that need a value set it with
+    ``monkeypatch`` (applied after this fixture, so it wins).
+    """
+    import os
+
+    from apple_mail_mcp import config
+
+    monkeypatch.setattr(config, "CONFIG_FILE_PATH", tmp_path / "no.toml")
+    for key in [k for k in os.environ if k.startswith("APPLE_MAIL_")]:
+        monkeypatch.delenv(key)
+    config._invalidate_config_cache()
+    # Warm the cache as "empty config" now, so tests that patch
+    # ``pathlib.Path.exists`` globally never trigger a lazy load that
+    # tries to open the non-existent file.
+    config._load_config_file()
+    yield
+    config._invalidate_config_cache()
+
+
 @pytest.fixture
 def temp_db():
     """Create an in-memory database with the schema and standard PRAGMAs."""
