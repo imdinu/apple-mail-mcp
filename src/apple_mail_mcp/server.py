@@ -228,6 +228,11 @@ _FDA_STEPS = (
     "(System Settings → Privacy & Security → Full Disk Access)."
 )
 
+_NO_INDEX_DATE_MESSAGE = (
+    "Date filtering (before/after) requires the search "
+    "index. Run 'apple-mail-mcp index' to build it."
+)
+
 
 def _no_index_message(manager, what: str) -> str:
     """Explain that an unbuilt index cannot answer this search.
@@ -1223,10 +1228,6 @@ async def search(
     if exclude_mailboxes is None:
         exclude_mailboxes = ["Drafts"]
 
-    if _hidden_account(account):
-        # Hidden account explicitly requested: no results, no fallback.
-        return []
-
     _EMPTY_HINT = (
         "No results. Try fewer keywords (2-3 specific terms), "
         "check spelling, or use scope='all' to search everywhere."
@@ -1249,6 +1250,24 @@ async def search(
         if _index_is_empty(manager):
             return {"result": [], "hint": _empty_index_message(manager)}
         return {"result": [], "hint": _EMPTY_HINT}
+
+    if _hidden_account(account):
+        # Hidden account explicitly requested: no backend may touch
+        # it, but the response must be byte-identical to what a
+        # name that matches nothing would produce in the same state
+        # (#90) — a distinct shape here is an oracle revealing which
+        # account names are excluded.
+        if scope == "attachments" and not indexed:
+            raise ValueError(
+                _no_index_message(manager, "Attachment filename search")
+            )
+        if scope == "attachments" or indexed:
+            return _maybe_hint([])
+        if scope == "body":
+            raise ValueError(_no_index_message(manager, "Body search"))
+        if before or after:
+            raise ValueError(_NO_INDEX_DATE_MESSAGE)
+        return _maybe_hint([])
 
     # Attachment filename search (SQL LIKE query, no JXA needed)
     if scope == "attachments":
@@ -1371,10 +1390,7 @@ async def search(
 
     # Date filtering and highlight require the FTS5 index
     if before or after:
-        raise ValueError(
-            "Date filtering (before/after) requires the search "
-            "index. Run 'apple-mail-mcp index' to build it."
-        )
+        raise ValueError(_NO_INDEX_DATE_MESSAGE)
 
     # JXA-based search for subject/sender or when no index
     if _excluded_account_names() and (
@@ -1383,8 +1399,9 @@ async def search(
         # With exclusions active, a None target means no visible
         # account exists — JXA would scan Mail.accounts()[0], a hidden
         # one. (The name check is defense-in-depth; the resolver never
-        # returns a hidden name.)
-        return []
+        # returns a hidden name.) Same shape as an empty JXA result,
+        # for the same oracle reason as the hidden-account gate (#90).
+        return _maybe_hint([])
 
     safe_query_js = json.dumps(query.lower())
 

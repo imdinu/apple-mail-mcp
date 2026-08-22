@@ -167,3 +167,88 @@ class TestServeWithoutIndex:
         assert "No search index found" in err
         assert "apple-mail-mcp index" in err
         mock_mcp.run.assert_called_once()
+
+
+class TestNoIndexLockAcquisition:
+    """A server with no index still takes the writer lock (#106).
+
+    Opportunistic index writes (stale-entry cleanup, DLQ records)
+    create the database file on first use, so an unlocked no-index
+    server could materialize an empty index concurrently with a
+    legitimate `apple-mail-mcp index` build.
+    """
+
+    def _run(self, tmp_path, on_run):
+        mock_manager = MagicMock()
+        mock_manager.has_index.return_value = False
+        mock_manager.db_path = tmp_path / "index.db"
+        mock_manager.index_writer = True
+
+        mock_mcp = MagicMock()
+        mock_mcp.run.side_effect = on_run
+
+        with (
+            patch(
+                "apple_mail_mcp.index.IndexManager.get_instance",
+                return_value=mock_manager,
+            ),
+            patch("apple_mail_mcp.server.mcp", mock_mcp),
+            patch("apple_mail_mcp.server._cleanup_old_attachments"),
+        ):
+            from apple_mail_mcp.cli import _run_serve
+
+            _run_serve(watch=False)
+        return mock_manager
+
+    def test_no_index_server_holds_the_lock(self, tmp_path):
+        """While serving, a contender cannot take the lock."""
+        from apple_mail_mcp.index.lock import IndexLock
+
+        state = {}
+
+        def probe():
+            contender = IndexLock(tmp_path / "index.db")
+            state["contended"] = not contender.try_acquire()
+            contender.release()
+
+        manager = self._run(tmp_path, probe)
+        assert state["contended"] is True
+        assert manager.index_writer is True
+
+    def test_no_index_server_goes_passive_when_lock_held(self, tmp_path):
+        """Lock already taken (an index build, another server): the
+        no-index server must not stay a writer."""
+        from apple_mail_mcp.index.lock import IndexLock
+
+        holder = IndexLock(tmp_path / "index.db")
+        assert holder.try_acquire() is True
+        state = {}
+
+        def probe():
+            state["index_writer"] = state["manager"].index_writer
+
+        try:
+            mock_manager = MagicMock()
+            mock_manager.has_index.return_value = False
+            mock_manager.db_path = tmp_path / "index.db"
+            mock_manager.index_writer = True
+            state["manager"] = mock_manager
+
+            mock_mcp = MagicMock()
+            mock_mcp.run.side_effect = probe
+
+            with (
+                patch(
+                    "apple_mail_mcp.index.IndexManager.get_instance",
+                    return_value=mock_manager,
+                ),
+                patch("apple_mail_mcp.server.mcp", mock_mcp),
+                patch("apple_mail_mcp.server._cleanup_old_attachments"),
+            ):
+                from apple_mail_mcp.cli import _run_serve
+
+                _run_serve(watch=False)
+        finally:
+            holder.release()
+
+        assert state["index_writer"] is False

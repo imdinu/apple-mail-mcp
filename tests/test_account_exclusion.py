@@ -277,11 +277,93 @@ class TestServerGates:
             await get_email(message_id=123, account="PHI")
 
     @pytest.mark.asyncio
-    async def test_search_hidden_account_returns_empty(self, monkeypatch):
+    @patch("apple_mail_mcp.server.execute_query_async", new_callable=AsyncMock)
+    async def test_search_hidden_shape_matches_nonexistent(
+        self, mock_jxa, monkeypatch
+    ):
+        """An excluded account's response is byte-identical to a
+        nonexistent one's. Any distinct shape — the old bare `[]`
+        against everyone else's hint dict — is an oracle revealing
+        which account names are excluded (#90)."""
         monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "PHI")
-        from apple_mail_mcp.server import search
+        AccountMap.get_instance().load_from_jxa(
+            [
+                {"name": "PHI", "id": "UUID-P"},
+                {"name": "Personal", "id": "UUID-V"},
+            ]
+        )
+        from apple_mail_mcp import server
 
-        assert await search("anything", account="PHI") == []
+        class _NoIndex:
+            db_path = Path("/nonexistent/index.db")
+
+            def has_index(self):
+                return False
+
+        monkeypatch.setattr(server, "_get_index_manager", lambda: _NoIndex())
+        mock_jxa.return_value = []
+
+        ghost = await server.search("anything", account="NoSuchAccount")
+        ghost_jxa_calls = mock_jxa.call_count
+        hidden = await server.search("anything", account="PHI")
+
+        assert ghost_jxa_calls >= 1, "nonexistent account reaches JXA"
+        assert hidden == ghost
+        assert mock_jxa.call_count == ghost_jxa_calls, (
+            "hidden account must not reach JXA"
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_hidden_raise_paths_match_nonexistent(
+        self, monkeypatch
+    ):
+        """Index-required paths raise identically for excluded and
+        nonexistent accounts — raise-vs-return is the same oracle
+        through a different channel (#90)."""
+        monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "PHI")
+        from apple_mail_mcp import server
+
+        class _NoIndex:
+            db_path = Path("/nonexistent/index.db")
+
+            def has_index(self):
+                return False
+
+        monkeypatch.setattr(server, "_get_index_manager", lambda: _NoIndex())
+
+        for kwargs in (
+            {"scope": "body"},
+            {"scope": "attachments"},
+            {"after": "2026-01-01"},
+        ):
+            with pytest.raises(ValueError) as hidden_exc:
+                await server.search("x", account="PHI", **kwargs)
+            with pytest.raises(ValueError) as ghost_exc:
+                await server.search("x", account="NoSuchAccount", **kwargs)
+            assert str(hidden_exc.value) == str(ghost_exc.value), kwargs
+
+    @pytest.mark.asyncio
+    async def test_search_hidden_indexed_gets_standard_hint(self, monkeypatch):
+        """With a healthy index, a hidden account gets the ordinary
+        zero-match hint — the shape shared by every account that
+        matches nothing."""
+        monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "PHI")
+        from apple_mail_mcp import server
+
+        class _Indexed:
+            db_path = Path("/nonexistent/index.db")
+
+            def has_index(self):
+                return True
+
+            def is_empty(self):
+                return False
+
+        monkeypatch.setattr(server, "_get_index_manager", lambda: _Indexed())
+
+        result = await server.search("anything", account="PHI")
+        assert result["result"] == []
+        assert "keywords" in result["hint"]
 
     # The accessory extractors (links/attachments) must be gated too —
     # they were the leak Gemini's review caught. The explicit-account
@@ -362,11 +444,17 @@ class TestServerGates:
         from apple_mail_mcp import server
 
         class _NoIndex:
+            db_path = Path("/nonexistent/index.db")
+
             def has_index(self):
                 return False
 
         monkeypatch.setattr(server, "_get_index_manager", lambda: _NoIndex())
-        assert await server.search("anything") == []
+        result = await server.search("anything")
+        # Same shape as an empty JXA result — not a bare [], which
+        # would signal "every account here is excluded" (#90).
+        assert result["result"] == []
+        assert "hint" in result
         mock_jxa.assert_not_called()
 
 

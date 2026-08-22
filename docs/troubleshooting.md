@@ -18,14 +18,14 @@ Common issues and their solutions.
 !!! note
     The MCP server does **not** need Full Disk Access to *serve* an existing index — searches keep working. It does need it to *update* one: the background sync reads `.emlx` files from `~/Library/Mail/`, the same protected location the indexer reads. If the process that launches the server (your MCP client, not your terminal) lacks FDA, the sync reads nothing and the index freezes at its last successful state, going quietly stale while search still answers.
 
-    As of 0.4.4 the server prints a warning at startup when this happens, instead of reporting "Index up to date". If you see it, grant Full Disk Access to the app that launches the server and restart it.
+    As of 0.5.0 the server prints a warning at startup when this happens, instead of reporting "Index up to date". If you see it, grant Full Disk Access to the app that launches the server and restart it.
 
 ## Empty Search Results
 
 **Symptom:** `search()` returns no results for queries you know should match.
 
 !!! tip "Read the hint text"
-    As of 0.4.4, an empty result explains *which* of these it is. If the hint names your index path and `apple-mail-mcp index`, the index is missing or empty and no rewording of the query will help. Only the generic "try fewer keywords" hint means the index searched your mail and genuinely found nothing.
+    As of 0.5.0, an empty result explains *which* of these it is. If the hint names your index path and `apple-mail-mcp index`, the index is missing or empty and no rewording of the query will help. Only the generic "try fewer keywords" hint means the index searched your mail and genuinely found nothing.
 
 **Possible causes:**
 
