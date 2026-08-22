@@ -1588,6 +1588,46 @@ JSON.stringify(results);
         raise
 
 
+async def _evict_index_rows(
+    ids: list[int], account_name: str, mailbox: str
+) -> None:
+    """Best-effort removal of index rows for messages that just moved.
+
+    The index keys accounts by UUID, so the display name is translated
+    via the AccountMap first. Skips (with a warning) rather than
+    deleting by message id alone when the name can't be resolved —
+    ids are only unique per mailbox, so an account-less delete could
+    hit another account's rows. ``delete_email`` itself no-ops when
+    this process is not the index writer (#106).
+    """
+    try:
+        mgr = _get_index_manager()
+        if not mgr.has_index():
+            return
+        acct_map = _get_account_map()
+        await acct_map.ensure_loaded()
+        uuid = acct_map.name_to_uuid(account_name)
+        if not uuid:
+            logger.warning(
+                "Skipping index eviction for %s: no UUID for account %r",
+                ids,
+                account_name,
+            )
+            return
+        for message_id in ids:
+            await asyncio.to_thread(
+                mgr.delete_email, message_id, account=uuid, mailbox=mailbox
+            )
+    except Exception:
+        logger.warning(
+            "Failed to evict stale index rows for %s in %r/%r",
+            ids,
+            account_name,
+            mailbox,
+            exc_info=True,
+        )
+
+
 @mcp.tool
 async def move_email(
     message_ids: list[int],
@@ -1624,7 +1664,88 @@ async def move_email(
         [{"id": 12345, "account": "iCloud", "mailbox": "Archive"}]
     """
     _ensure_writable()
-    raise NotImplementedError("move_email: implemented in #65")
+    ids = _validate_write_batch(message_ids)
+    target = target_mailbox.strip() if target_mailbox else ""
+    if not target:
+        raise ValueError("target_mailbox must be a non-empty mailbox name.")
+    if _hidden_account(account):
+        raise ValueError(f"Account {account!r} not found.")
+    resolved_account = await _resolve_visible_account(account)
+    resolved_mailbox = _resolve_mailbox(mailbox)
+
+    # Resolve the target before touching any message, and validate every
+    # id before moving any, so a bad input moves nothing. Messages are
+    # addressed by id (not index) for the move itself: after the first
+    # move the remaining by-index specifiers would shift under us.
+    setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)
+    target_json = json.dumps(target)
+    source_json = json.dumps(resolved_mailbox)
+    script = f"""{setup}
+let target;
+try {{
+    target = MailCore.getMailbox(account, {target_json});
+    target.name();
+}} catch (e) {{
+    throw new Error('Target mailbox not found: ' + {target_json});
+}}
+const wanted = {json.dumps(ids)};
+let ids;
+try {{
+    ids = mailbox.messages.id();
+}} catch (e) {{
+    throw new Error('Source mailbox not found: ' + {source_json});
+}}
+for (const id of wanted) {{
+    if (ids.indexOf(id) === -1) {{
+        throw new Error('Message not found with ID: ' + id);
+    }}
+}}
+for (const id of wanted) {{
+    Mail.move(mailbox.messages.byId(id), {{to: target}});
+}}
+JSON.stringify({{
+    account: account.name(),
+    mailbox: target.name(),
+    ids: wanted
+}});
+"""
+    try:
+        result = await execute_with_core_async(script)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "target mailbox not found" in msg:
+            raise ValueError(
+                f"Mailbox {target!r} not found in account {resolved_account!r}."
+            ) from None
+        if "source mailbox not found" in msg:
+            raise ValueError(
+                f"Mailbox {resolved_mailbox!r} not found"
+                f" in account {resolved_account!r}."
+            ) from None
+        if "message not found with id:" in msg:
+            # osascript wraps it: "...Error: Message not found with ID:
+            # 42 (-2700)" — pull the id back out for a clean message.
+            tail = msg.split("message not found with id:", 1)[1].split()
+            missing = tail[0] if tail else "?"
+            raise ValueError(f"Message {missing} not found.") from None
+        if "-1728" in msg or "can't get object" in msg:
+            raise ValueError(
+                f"Mailbox {target!r} not found in account {resolved_account!r}."
+            ) from None
+        raise
+
+    account_name = result.get("account") or resolved_account or ""
+    new_mailbox = result.get("mailbox") or target
+
+    # Optimistic index update (#66): Mail.app has confirmed the move, so
+    # the rows indexed under the source mailbox are now ghosts. Evict
+    # them immediately; the watcher / next sync indexes the messages
+    # under their new mailbox. Never let this fail the move itself.
+    await _evict_index_rows(ids, account_name, resolved_mailbox)
+
+    return [
+        {"id": i, "account": account_name, "mailbox": new_mailbox} for i in ids
+    ]
 
 
 @mcp.tool
