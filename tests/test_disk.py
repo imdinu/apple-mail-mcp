@@ -198,6 +198,29 @@ class TestParseEmlxExtendedFields:
         assert result.read is None
         assert result.flagged is None
 
+    def test_plist_date_received_fallback(self, tmp_path: Path):
+        """No Received/Date header: date_received comes from the plist
+        footer's ``date-received`` (seconds since the Unix epoch, UTC).
+
+        Regression: the fallback referenced ``datetime.UTC`` (the
+        constant lives on the module, not the class), raised inside a
+        best-effort ``except Exception``, and silently left the field
+        empty.
+        """
+        mime = b"From: x@y.z\nSubject: Undated\n\nBody"
+        plist = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<plist version="1.0"><dict>'
+            b"<key>date-received</key><real>1705314600</real>"
+            b"</dict></plist>\n"
+        )
+        path = tmp_path / "102.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime + plist)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.date_received == "2024-01-15T10:30:00+00:00"
+
 
 class TestExtractBodyText:
     """Tests for email body extraction."""
