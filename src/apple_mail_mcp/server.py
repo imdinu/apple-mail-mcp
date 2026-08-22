@@ -39,7 +39,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal
+from typing import Literal, cast
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -1458,9 +1458,9 @@ async def search(
 
 # ========== Write Tools ==========
 #
-# Contract (see .claude/skills/write-tool/SKILL.md): `_ensure_writable()`
-# first, hidden-account gate before any JXA, every string into the
-# script through json.dumps(), bounded batches, return the new state.
+# Contract for every mutating tool: `_ensure_writable()` first,
+# hidden-account gate before any JXA, every string into the script
+# through json.dumps(), bounded batches, return the new state.
 
 
 class EmailStatus(TypedDict):
