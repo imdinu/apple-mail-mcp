@@ -1524,7 +1524,68 @@ async def update_email_status(
         [{"id": 12345, "read": True, "flagged": False}]
     """
     _ensure_writable()
-    raise NotImplementedError("update_email_status: implemented in #64")
+    if read is None and flagged is None:
+        raise ValueError("Specify read and/or flagged.")
+    ids = _validate_write_batch(message_ids)
+    if _hidden_account(account):
+        raise ValueError(f"Account {account!r} not found.")
+    resolved_account = await _resolve_visible_account(account)
+    resolved_mailbox = _resolve_mailbox(mailbox)
+
+    # Only emit an assignment for the flags the caller asked to change;
+    # an untouched flag is read back as-is. Every value enters the
+    # script through json.dumps() (Python bools → JS true/false).
+    mutations = ""
+    if read is not None:
+        mutations += f"    msg.readStatus = {json.dumps(read)};\n"
+    if flagged is not None:
+        mutations += f"    msg.flaggedStatus = {json.dumps(flagged)};\n"
+
+    setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)
+    script = f"""{setup}
+const targetIds = {json.dumps(ids)};
+const ids = mailbox.messages.id();
+const found = [];
+for (const targetId of targetIds) {{
+    const idx = ids.indexOf(targetId);
+    if (idx === -1) {{
+        throw new Error('Message not found with ID: ' + targetId);
+    }}
+    found.push(mailbox.messages[idx]);
+}}
+const results = [];
+for (let i = 0; i < found.length; i++) {{
+    const msg = found[i];
+{mutations}    results.push({{
+        id: targetIds[i],
+        read: msg.readStatus(),
+        flagged: msg.flaggedStatus()
+    }});
+}}
+JSON.stringify(results);
+"""
+    try:
+        return cast(list[EmailStatus], await execute_with_core_async(script))
+    except Exception as exc:
+        # Surface clean, model-friendly errors for the two expected
+        # failure shapes; re-raise anything else intact.
+        raw = str(exc)
+        marker = "Message not found with ID: "
+        if marker in raw:
+            tail = raw.split(marker, 1)[1].lstrip()
+            missing = ""
+            for ch in tail:
+                if not ch.isdigit():
+                    break
+                missing += ch
+            raise ValueError(f"Message {missing or '?'} not found.") from None
+        lowered = raw.lower()
+        if "-1728" in lowered or "can't get object" in lowered:
+            raise ValueError(
+                f"Mailbox {resolved_mailbox!r} not found"
+                f" in account {resolved_account!r}."
+            ) from None
+        raise
 
 
 @mcp.tool
