@@ -1748,6 +1748,51 @@ JSON.stringify({{
     ]
 
 
+# Characters that can never appear in a bare address. Whitespace and
+# angle brackets reject display-name forms ("Name <a@b>"); the rest
+# are header/list separators. Control characters are rejected below.
+_ADDRESS_FORBIDDEN = frozenset(' \t\r\n<>,;:"()[]\\')
+
+
+def _validate_addresses(field: str, addresses: list[str] | None) -> list[str]:
+    """Strictly validate one recipient list for send_email.
+
+    This is an injection boundary: every address is passed to Mail.app
+    and ends up in a header, so only bare ``local@domain`` strings are
+    accepted — no display names, no whitespace, no separators. Blank
+    entries are dropped; anything else malformed raises ``ValueError``
+    naming ``field``. ``None`` is treated as an empty list.
+    """
+    if addresses is None:
+        return []
+    if isinstance(addresses, str) or not isinstance(addresses, list):
+        raise ValueError(f"{field} must be a list of addresses.")
+    clean: list[str] = []
+    for raw in addresses:
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"{field}: addresses must be strings, got {type(raw).__name__}."
+            )
+        addr = raw.strip()
+        if not addr:
+            continue
+        bad = (
+            addr.count("@") != 1
+            or any(c in _ADDRESS_FORBIDDEN for c in addr)
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in addr)
+        )
+        if not bad:
+            local, domain = addr.split("@")
+            bad = not local or not domain
+        if bad:
+            raise ValueError(
+                f"{field}: invalid address {addr!r} "
+                "(expected a bare local@domain, no display name)."
+            )
+        clean.append(addr)
+    return clean
+
+
 @mcp.tool
 async def send_email(
     to: list[str],
@@ -1761,10 +1806,12 @@ async def send_email(
     """
     Compose an email. Saves a draft by default; sends only with confirm=True.
 
-    Safety (#22): without ``confirm=True`` the message is created as a
-    draft in Mail.app (visible in Drafts, never transmitted) and the
-    result says ``"status": "draft"``. Call again with ``confirm=True``
-    after the user has approved the content to actually send it.
+    Safety (#22): without ``confirm=True`` the message is saved to the
+    account's Drafts mailbox (never transmitted, no compose window) and
+    the result says ``"status": "draft"``. Call again with
+    ``confirm=True`` after the user has approved the content to
+    actually send it. A server-stored Drafts folder (iCloud, Gmail)
+    can take a few seconds to list the new draft.
 
     Args:
         to: Recipient addresses (at least one).
@@ -1785,7 +1832,103 @@ async def send_email(
         >>> send_email(["a@example.com"], "Hi", "Body", confirm=True)
     """
     _ensure_writable()
-    raise NotImplementedError("send_email: implemented in #22")
+
+    # Validation first: nothing below may run on malformed input.
+    if not isinstance(subject, str):
+        raise ValueError("subject must be a string.")
+    if not isinstance(body, str):
+        raise ValueError("body must be a string.")
+    to_clean = _validate_addresses("to", to)
+    cc_clean = _validate_addresses("cc", cc)
+    bcc_clean = _validate_addresses("bcc", bcc)
+    if not to_clean:
+        raise ValueError("to must contain at least one recipient address.")
+    total = len(to_clean) + len(cc_clean) + len(bcc_clean)
+    if total > MAX_WRITE_BATCH:
+        # Unlike the id-list tools this does NOT clamp: silently
+        # dropping recipients from an email would change its meaning.
+        raise ValueError(
+            f"Too many recipients ({total}); at most {MAX_WRITE_BATCH} "
+            "across to/cc/bcc per call."
+        )
+
+    if _hidden_account(account):
+        raise ValueError(f"Account {account!r} not found.")
+    resolved_account = await _resolve_visible_account(account)
+
+    # The draft/send decision is made HERE, in Python: the draft script
+    # contains no send() call at all, so no content or runtime state
+    # can flip a draft into a transmission. Every value enters the
+    # script through json.dumps().
+    #
+    # Draft mode: an invisible OutgoingMessage + save() lands in the
+    # account's Drafts mailbox without a compose window popping up
+    # (verified live on Mail 16.0 / macOS 26.6; for a server-stored
+    # Drafts folder it can take a few seconds to show in the mailbox).
+    status: Literal["draft", "sent"]
+    if confirm:
+        status = "sent"
+        action = (
+            "const ok = msg.send();\n"
+            'if (!ok) throw new Error("Mail.app refused to send the message");'
+        )
+    else:
+        status = "draft"
+        action = "msg.save();"
+    script = f"""
+const acct = MailCore.getAccount({json.dumps(resolved_account)});
+const addr = acct.emailAddresses()[0];
+const fullName = acct.fullName();
+const sender = fullName ? fullName + " <" + addr + ">" : addr;
+const msg = Mail.OutgoingMessage({{
+    subject: {json.dumps(subject)},
+    content: {json.dumps(body)},
+    visible: false,
+    sender: sender,
+}});
+Mail.outgoingMessages.push(msg);
+for (const a of {json.dumps(to_clean)}) {{
+    msg.toRecipients.push(Mail.ToRecipient({{address: a}}));
+}}
+for (const a of {json.dumps(cc_clean)}) {{
+    msg.ccRecipients.push(Mail.CcRecipient({{address: a}}));
+}}
+for (const a of {json.dumps(bcc_clean)}) {{
+    msg.bccRecipients.push(Mail.BccRecipient({{address: a}}));
+}}
+{action}
+JSON.stringify({{
+    status: {json.dumps(status)},
+    account: acct.name(),
+    to: {json.dumps(to_clean)},
+    cc: {json.dumps(cc_clean)},
+    bcc: {json.dumps(bcc_clean)},
+    subject: {json.dumps(subject)},
+}});
+"""
+    try:
+        result = await execute_with_core_async(script)
+    except TimeoutError:
+        # Seen live: Mail.app stops answering Apple Events while it is
+        # busy syncing, and TimeoutError stringifies to "". For a send
+        # that is an ambiguous state, so say exactly what to check.
+        verb = "sending" if confirm else "saving"
+        raise RuntimeError(
+            f"Mail.app did not respond while {verb} {subject!r}. It may"
+            " still be queued in Mail.app (outgoing messages / Outbox);"
+            " check Sent and Drafts before retrying."
+        ) from None
+    except Exception as exc:
+        # An unknown account makes JXA fail with a raw "...Error:
+        # Error: Can't get object. (-1728)". Surface a clean message;
+        # re-raise other failures (e.g. SMTP refusal) intact.
+        msg = str(exc).lower()
+        if "-1728" in msg or "can't get object" in msg:
+            raise ValueError(
+                f"Account {resolved_account!r} not found."
+            ) from None
+        raise
+    return cast(SendResult, result)
 
 
 @mcp.resource(
