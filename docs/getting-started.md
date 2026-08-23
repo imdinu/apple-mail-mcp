@@ -62,7 +62,7 @@ apple-mail-mcp index --verbose
 ```
 
 !!! note
-    The MCP server itself does **not** need Full Disk Access — it uses disk-based sync at startup to keep the index fresh.
+    The MCP server can *serve* this index without Full Disk Access, but keeping it fresh needs FDA too: the startup sync reads the same protected `~/Library/Mail/` location the indexer does. Grant it to the app that launches the server (your MCP client); the server warns at startup when it can't read your mail.
 
 ## Step 3: Use It
 

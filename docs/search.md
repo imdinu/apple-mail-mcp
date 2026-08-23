@@ -32,7 +32,7 @@ Building requires **Full Disk Access** for your terminal:
 4. Restart your terminal
 
 !!! note
-    The MCP server itself does **not** need Full Disk Access. It uses disk-based sync to keep the index updated.
+    The MCP server can *serve* an existing index without Full Disk Access, but *updating* one needs it: the background sync reads the same protected `~/Library/Mail/` location the indexer does. Grant FDA to the app that launches the server (your MCP client) to keep the index fresh; the server warns at startup when it can't.
 
 ### Commands
 

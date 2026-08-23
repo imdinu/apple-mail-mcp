@@ -209,15 +209,21 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
     except Exception:
         pass
 
-    if manager.has_index():
-        from .config import get_lock_retry_seconds
-        from .index import IndexLock
+    from .config import get_lock_retry_seconds
+    from .index import IndexLock
 
-        # Single-writer coordination (#106): only one process may sync
-        # and watch the index. The lock object must outlive this
-        # function's sync block — it is held for the process lifetime
-        # (the frame stays alive while mcp.run() blocks below).
-        index_lock = IndexLock(manager.db_path)
+    # Single-writer coordination (#106): only one process may write
+    # the index. Acquired even when no index exists yet — the
+    # opportunistic write paths (stale-entry cleanup, DLQ records)
+    # create the database file on first use, and two uncoordinated
+    # instances doing that is exactly what the lock exists to
+    # prevent. The lock object must outlive this function's sync
+    # block — it is held for the process lifetime (the frame stays
+    # alive while mcp.run() blocks below).
+    index_lock = IndexLock(manager.db_path)
+    is_writer = index_lock.try_acquire()
+
+    if manager.has_index():
 
         def _background_sync() -> None:
             try:
@@ -265,7 +271,7 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
                         file=sys.stderr,
                     )
 
-        if index_lock.try_acquire():
+        if is_writer:
             sync_thread = threading.Thread(target=_background_sync, daemon=True)
             sync_thread.start()
             print(
@@ -300,6 +306,19 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
             file=sys.stderr,
             flush=True,
         )
+        if not is_writer:
+            # No index AND another process holds the lock (an index
+            # build, or another server whose opportunistic writes may
+            # create one). Stay index-passive so this instance can't
+            # create a competing database file; promote when freed.
+            manager.index_writer = False
+            interval = get_lock_retry_seconds()
+            retry_thread = threading.Thread(
+                target=_index_writer_retry_loop,
+                args=(index_lock, manager, lambda: None, interval),
+                daemon=True,
+            )
+            retry_thread.start()
 
     mcp.run()
 
