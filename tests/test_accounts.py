@@ -135,3 +135,82 @@ class TestEnsureLoaded:
         await m.ensure_loaded()
 
         mock_exec.assert_not_called()
+
+
+class TestEnsureLoadedJxaUnavailable:
+    """ensure_loaded() degrades instead of failing when JXA is down.
+
+    Mail.app may be quit, or Apple Events to it may be denied. The
+    name↔UUID map is cosmetic for index and disk reads, so a failed
+    fetch must not propagate to callers that never needed a name.
+    """
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.executor.execute_with_core_async")
+    async def test_swallows_jxa_error(self, mock_exec):
+        """A failing JXA fetch does not raise out of ensure_loaded."""
+        mock_exec.side_effect = RuntimeError("JXA script failed")
+
+        await AccountMap().ensure_loaded()  # must not raise
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.executor.execute_with_core_async")
+    async def test_falls_back_to_uuid_passthrough(self, mock_exec):
+        """Lookups degrade to UUID passthrough, not an error."""
+        mock_exec.side_effect = RuntimeError("JXA script failed")
+        m = AccountMap()
+
+        await m.ensure_loaded()
+
+        uuid = SAMPLE_ACCOUNTS[0]["id"]
+        assert m.uuid_to_name(uuid) == uuid  # renders as its UUID
+        assert m.name_to_uuid("Work") is None  # callers fall back
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.executor.execute_with_core_async")
+    async def test_does_not_retry_within_ttl(self, mock_exec):
+        """One failed fetch per TTL — not one per tool call.
+
+        Each attempt spawns an osascript process that will time out
+        the same way, so retrying on every call would make every
+        index read pay for a lookup it does not need.
+        """
+        mock_exec.side_effect = RuntimeError("JXA script failed")
+        m = AccountMap()
+
+        await m.ensure_loaded()
+        await m.ensure_loaded()
+
+        mock_exec.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.executor.execute_with_core_async")
+    async def test_retries_after_ttl_expires(self, mock_exec):
+        """A later call re-attempts, so recovery needs no restart."""
+        mock_exec.side_effect = RuntimeError("JXA script failed")
+        m = AccountMap()
+        await m.ensure_loaded()
+
+        m._loaded_at -= _CACHE_TTL + 1
+        mock_exec.side_effect = None
+        mock_exec.return_value = SAMPLE_ACCOUNTS
+        await m.ensure_loaded()
+
+        assert m.name_to_uuid("Work") == SAMPLE_ACCOUNTS[0]["id"]
+        assert m.get_cached_accounts() is not None
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.executor.execute_with_core_async")
+    async def test_cached_accounts_stays_none(self, mock_exec):
+        """get_cached_accounts() reports "unknown", not "none exist".
+
+        The map is marked loaded to throttle retries, but returning
+        [] here would let list_accounts() serve an empty list as a
+        successful answer instead of surfacing the JXA failure.
+        """
+        mock_exec.side_effect = RuntimeError("JXA script failed")
+        m = AccountMap()
+
+        await m.ensure_loaded()
+
+        assert m.get_cached_accounts() is None
