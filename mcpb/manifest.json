@@ -1,7 +1,7 @@
 {
   "dxt_version": "0.1",
   "name": "Apple Mail MCP",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Apple Mail for Claude — full-coverage FTS5 body search with no recency cap, ~3ms disk-first reads, reliable on large mailboxes where AppleScript-based servers time out. To enable full-text search, run `apple-mail-mcp index` once in a terminal with Full Disk Access.",
   "author": {
     "name": "Ioan Dinu"
