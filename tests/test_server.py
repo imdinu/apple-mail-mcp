@@ -1720,7 +1720,7 @@ class TestSearchIndexHonesty:
 
             from apple_mail_mcp.server import search
 
-            result = await search("worldpay")
+            result = await search("renewal")
 
         assert result["result"] == []
         hint = result["hint"]
@@ -1740,7 +1740,7 @@ class TestSearchIndexHonesty:
         mock_exec.return_value = [
             {
                 "id": 7,
-                "subject": "Worldpay renewal",
+                "subject": "Contract renewal",
                 "sender": "a@b.com",
                 "date_received": "2026-01-05T09:00:00",
             }
@@ -1751,7 +1751,7 @@ class TestSearchIndexHonesty:
 
             from apple_mail_mcp.server import search
 
-            result = await search("worldpay")
+            result = await search("renewal")
 
         assert isinstance(result, list)
         assert result[0]["id"] == 7
@@ -1800,7 +1800,7 @@ class TestSearchIndexHonesty:
 
             from apple_mail_mcp.server import search
 
-            result = await search("worldpay")
+            result = await search("renewal")
 
         assert result["result"] == []
         assert "0 emails" in result["hint"]
@@ -1848,7 +1848,7 @@ class TestSearchIndexHonesty:
             from apple_mail_mcp.server import search
 
             with pytest.raises(RuntimeError) as excinfo:
-                await search("worldpay")
+                await search("renewal")
 
         message = str(excinfo.value)
         assert "index.db" in message
@@ -1874,6 +1874,6 @@ class TestSearchIndexHonesty:
             from apple_mail_mcp.server import search
 
             with pytest.raises(RuntimeError, match="rebuild") as excinfo:
-                await search("worldpay")
+                await search("renewal")
 
         assert "malformed" in str(excinfo.value)
