@@ -692,6 +692,8 @@ def _find_external_attachment(
     try:
         if not candidate.resolve().is_relative_to(part_dir.resolve()):
             return None
+    except PermissionError:
+        raise
     except (ValueError, OSError):
         return None
     if candidate.is_file():
@@ -702,6 +704,8 @@ def _find_external_attachment(
     # a generic name like "Mail Attachment.jpeg").
     try:
         files = [f for f in part_dir.iterdir() if f.is_file()]
+    except PermissionError:
+        raise
     except OSError:
         return None
 
@@ -844,10 +848,17 @@ def get_attachment_content(
 
     Returns:
         (raw_bytes, mime_type) tuple, or None if not found
+
+    Raises:
+        PermissionError: The email file exists but cannot be read
+            (typically missing Full Disk Access). Distinct from the
+            ``None`` "not found" return so callers can report the
+            real cause (#109).
     """
     try:
-        if not emlx_path.exists():
-            return None
+        # stat() rather than an exists() pre-check: Path.exists()
+        # returns False on EACCES, which would turn a permission
+        # denial into "not found" before the read is even attempted.
         if emlx_path.stat().st_size > MAX_EMLX_SIZE:
             return None
 
@@ -909,6 +920,8 @@ def get_attachment_content(
                 return result
 
         return None
+    except PermissionError:
+        raise
     except (OSError, ValueError, UnicodeDecodeError):
         return None
 
@@ -950,7 +963,9 @@ def _read_external_attachment(
         if ext_path.stat().st_size > MAX_EMLX_SIZE:
             return None
         data = ext_path.read_bytes()
-    except (OSError, PermissionError):
+    except PermissionError:
+        raise
+    except OSError:
         return None
 
     mime_type, _ = mimetypes.guess_type(ext_path.name)
@@ -987,10 +1002,17 @@ def get_email_links(emlx_path: Path) -> list[LinkInfo]:
     Returns:
         List of LinkInfo with url and anchor text, deduplicated
         by URL.
+
+    Raises:
+        PermissionError: The email file exists but cannot be read
+            (typically missing Full Disk Access). Distinct from the
+            empty "no links" return so callers can report the real
+            cause (#109).
     """
     try:
-        if not emlx_path.exists():
-            return []
+        # stat() rather than an exists() pre-check: Path.exists()
+        # returns False on EACCES, which would turn a permission
+        # denial into "no links" before the read is even attempted.
         if emlx_path.stat().st_size > MAX_EMLX_SIZE:
             return []
 
@@ -1005,6 +1027,8 @@ def get_email_links(emlx_path: Path) -> list[LinkInfo]:
         msg = email.message_from_bytes(content[mime_start:mime_end])
 
         return _extract_links_from_message(msg)
+    except PermissionError:
+        raise
     except (OSError, ValueError, UnicodeDecodeError):
         return []
 
