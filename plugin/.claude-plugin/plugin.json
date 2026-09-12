@@ -1,0 +1,15 @@
+{
+  "name": "apple-mail",
+  "description": "Apple Mail for Claude — full-coverage FTS5 body search that stays fast on large mailboxes. Run `apple-mail-mcp index` once in a terminal with Full Disk Access to enable full-text search.",
+  "version": "0.4.3",
+  "author": {
+    "name": "Ioan Dinu",
+    "email": "dinu.ioan.94@gmail.com"
+  },
+  "mcpServers": {
+    "mail": {
+      "command": "/bin/bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/start.sh"]
+    }
+  }
+}

@@ -427,11 +427,14 @@ A single tag push triggers the full pipeline: **build → PyPI publish → GitHu
 **Pre-release checklist** (all version strings must match):
 1. `pyproject.toml` → `version = "0.X.Y"`
 2. `server.json` → `"version"` and `packages[0].version`
-3. Run lint + format + tests (see Pre-push Checklist)
-4. Commit, tag, and push:
+3. `plugin/.claude-plugin/plugin.json` → `"version"`
+4. `.claude-plugin/marketplace.json` → `plugins[0].version`
+5. `mcpb/manifest.json` → `"version"` (names the release's `.mcpb` asset)
+6. Run lint + format + tests (see Pre-push Checklist)
+7. Commit, tag, and push:
 
 ```bash
-git add pyproject.toml server.json
+git add pyproject.toml server.json plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json mcpb/manifest.json
 git commit -m "Bump version to 0.X.Y"
 git tag v0.X.Y
 git push origin main v0.X.Y
@@ -440,7 +443,19 @@ git push origin main v0.X.Y
 **What happens automatically:**
 1. `build` job — `uv build` creates sdist + wheel
 2. `publish` job — uploads to PyPI via OIDC trusted publisher (no tokens)
-3. `github-release` job — creates a GitHub Release with auto-generated notes
+3. `github-release` job — builds the `.mcpb` bundle (`mcpb/build.sh`) and creates a GitHub Release with auto-generated notes and the bundle attached
+
+## Distribution Packaging
+
+Three install surfaces, all serving the released PyPI package — nothing is vendored:
+
+| Surface | Files | Install command |
+|---------|-------|-----------------|
+| **Claude Code plugin** | `.claude-plugin/marketplace.json` (marketplace `imdinu`), `plugin/.claude-plugin/plugin.json`, `plugin/start.sh` | `claude plugin marketplace add imdinu/apple-mail-mcp` then `claude plugin install apple-mail@imdinu` |
+| **Claude Desktop bundle** | `mcpb/manifest.json`, `mcpb/build.sh` (zips manifest + `plugin/start.sh` → `dist/apple-mail-mcp-<version>.mcpb`) | Download from GitHub Release, double-click |
+| **PyPI** | `pyproject.toml` | `pipx install apple-mail-mcp` |
+
+`plugin/start.sh` is the single canonical launcher (uvx → pipx → private-venv fallback, `serve --watch`); the `.mcpb` build copies it into the bundle. It prepends `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` to PATH because MCP hosts launch servers with a minimal environment.
 
 Both PyPI and GitHub Releases stay in sync from a single `git push`.
 

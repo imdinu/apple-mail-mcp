@@ -1,0 +1,57 @@
+{
+  "dxt_version": "0.1",
+  "name": "Apple Mail MCP",
+  "version": "0.4.3",
+  "description": "Apple Mail for Claude — full-coverage FTS5 body search with no recency cap, ~3ms disk-first reads, reliable on large mailboxes where AppleScript-based servers time out. To enable full-text search, run `apple-mail-mcp index` once in a terminal with Full Disk Access.",
+  "author": {
+    "name": "Ioan Dinu"
+  },
+  "license": "GPL-3.0",
+  "homepage": "https://github.com/imdinu/apple-mail-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/imdinu/apple-mail-mcp.git"
+  },
+  "documentation": "https://imdinu.github.io/apple-mail-mcp/",
+  "compatibility": {
+    "platforms": ["darwin"]
+  },
+  "server": {
+    "type": "python",
+    "entry_point": "start.sh",
+    "mcp_config": {
+      "command": "/bin/bash",
+      "args": ["${__dirname}/start.sh"]
+    }
+  },
+  "tools": [
+    {
+      "name": "list_accounts",
+      "description": "List all email accounts configured in Apple Mail."
+    },
+    {
+      "name": "list_mailboxes",
+      "description": "List mailboxes, optionally scoped to one account."
+    },
+    {
+      "name": "get_emails",
+      "description": "List emails with filters: all, unread, flagged, today, last_7_days."
+    },
+    {
+      "name": "get_email",
+      "description": "Get a single email with full content and attachment metadata (~3ms disk-first read)."
+    },
+    {
+      "name": "search",
+      "description": "Full-text search across subject, sender, body, and attachment filenames — FTS5-backed, covers the entire mailbox history with date-range filtering and highlighting."
+    },
+    {
+      "name": "get_email_links",
+      "description": "Extract all links from an email."
+    },
+    {
+      "name": "get_email_attachment",
+      "description": "Extract the content of an email attachment."
+    }
+  ]
+}
