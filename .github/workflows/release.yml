@@ -69,8 +69,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install mcp-publisher
+        # --fail turns an HTTP error page into a curl failure instead of
+        # piping HTML into tar; --retry-all-errors covers GitHub's
+        # intermittent 5xx on the release-download endpoint.
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
       - name: Authenticate to MCP Registry via GitHub OIDC
         run: ./mcp-publisher login github-oidc
       - name: Publish to MCP Registry
