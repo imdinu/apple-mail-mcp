@@ -1,6 +1,6 @@
 # Tools
 
-Apple Mail MCP provides **8 MCP tools** — a consolidated API designed for AI assistants.
+Apple Mail MCP provides **11 MCP tools** — a consolidated API designed for AI assistants.
 
 ## Overview
 
@@ -14,6 +14,9 @@ Apple Mail MCP provides **8 MCP tools** — a consolidated API designed for AI a
 | `get_email_links()` | Extract links from an email | `message_id`, `account?`, `mailbox?` |
 | `get_email_attachment()` | Extract attachment content | `message_id`, `filename`, `account?`, `mailbox?` |
 | `get_attachment()` | *Deprecated* — use `get_email_attachment()` | `message_id`, `filename`, `account?`, `mailbox?` |
+| `update_email_status()` | **Write.** Mark read/unread, flag/unflag | `message_ids`, `read?`, `flagged?`, `account?`, `mailbox?` |
+| `move_email()` | **Write.** Move / archive / trash | `message_ids`, `target_mailbox`, `account?`, `mailbox?` |
+| `send_email()` | **Write.** Draft by default; send with `confirm` | `to`, `subject`, `body`, `cc?`, `bcc?`, `account?`, `confirm?` |
 
 ---
 
@@ -250,6 +253,96 @@ A denied read of the email file (no Full Disk Access on the process running the 
     `get_attachment()` is deprecated since v0.2.0. Use `get_email_attachment()` instead. The old name still works but may be removed in a future release.
 
 Identical to `get_email_attachment()`. See above for parameters and return value.
+
+---
+
+## Write tools
+
+The three tools below mutate Mail.app state. They share one contract:
+
+- **Off in read-only mode** — `APPLE_MAIL_READ_ONLY=true`, `[server] read_only = true`, or `apple-mail-mcp serve -r` makes every write tool raise `PermissionError` before touching Mail.app.
+- **Hidden accounts stay hidden** — an account listed in `exclude_accounts` is reported as not found; the default account is never silently substituted with a hidden one.
+- **Bounded batches** — `message_ids` is deduplicated and clamped to 10 ids per call; extra ids are dropped, an empty list is an error.
+- **The result is the new state**, not `{"success": true}`, so the caller can verify what Mail.app reports after the change.
+
+---
+
+## `update_email_status()`
+
+Mark messages read/unread and/or flagged/unflagged. Pass only the flags you want to change.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `message_ids` | `list[int]` | *required* | Message IDs (≤ 10) |
+| `read` | `bool?` | `None` | `True` marks read, `False` unread, `None` unchanged |
+| `flagged` | `bool?` | `None` | `True` flags, `False` unflags, `None` unchanged |
+| `account` | `string?` | env default | Account name |
+| `mailbox` | `string?` | `INBOX` | Mailbox holding the messages |
+
+**Returns:** One `{"id", "read", "flagged"}` per message, as reported by Mail.app after the update. Read/flagged flags live in the Envelope Index and the `.emlx` plist footer, not in the FTS5 index, so no index write happens.
+
+```python
+update_email_status([12345, 12346], read=True)
+# → [{"id": 12345, "read": true, "flagged": false}, ...]
+update_email_status([12345], flagged=True, read=False)
+```
+
+---
+
+## `move_email()`
+
+Move messages to another mailbox. Archiving and trashing are just moves to `Archive` / `Trash`.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `message_ids` | `list[int]` | *required* | Message IDs (≤ 10) |
+| `target_mailbox` | `string` | *required* | Destination — `Archive`, `Trash`, `Work/Projects`, … (alias-aware) |
+| `account` | `string?` | env default | Account name |
+| `mailbox` | `string?` | `INBOX` | Source mailbox holding the messages |
+
+**Returns:** One `{"id", "account", "mailbox"}` per message with its new location. The target is resolved before any message moves; an unknown target raises `ValueError` and nothing changes.
+
+**Index coherence:** once Mail.app confirms the move, the stale FTS5 row for the source mailbox is evicted immediately so a follow-up `search()` cannot return a ghost result. The file watcher (or the next sync) indexes the message under its new mailbox.
+
+```python
+move_email([12345], "Archive")
+# → [{"id": 12345, "account": "iCloud", "mailbox": "Archive"}]
+move_email([12345, 12346], "Trash")
+```
+
+---
+
+## `send_email()`
+
+Compose an email. **Saves a draft by default**; only `confirm=True` transmits.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `to` | `list[string]` | *required* | Recipient addresses (≥ 1) |
+| `subject` | `string` | *required* | Subject line |
+| `body` | `string` | *required* | Plain-text body |
+| `cc` | `list[string]?` | `None` | CC addresses |
+| `bcc` | `list[string]?` | `None` | BCC addresses |
+| `account` | `string?` | env default | Account to send from (its primary address is the sender) |
+| `confirm` | `bool` | `False` | `False` saves a draft in Mail.app; `True` sends now |
+
+**Returns:** `{"status": "draft" | "sent", "account", "to", "cc", "bcc", "subject"}`.
+
+```python
+send_email(["a@example.com"], "Lunch?", "Thursday works for me.")
+# → {"status": "draft", ...}   # review it in Mail.app's Drafts
+send_email(["a@example.com"], "Lunch?", "Thursday works for me.", confirm=True)
+# → {"status": "sent", ...}
+```
+
+!!! warning
+    `confirm=True` sends immediately with no further prompt. Agents should surface the draft to the user and only confirm on explicit approval.
 
 ---
 

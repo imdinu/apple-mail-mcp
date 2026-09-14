@@ -751,6 +751,19 @@ Filters: all, unread, flagged, today, last_7_days
 !apple-mail-mcp extract <message_id>  # links mode
 ```
 
+## Write operations (ask the user before each)
+
+```
+!apple-mail-mcp mark <message_id> --read     # --unread, --flag, --unflag
+!apple-mail-mcp move <message_id> --to Trash # or Archive, Work/Projects
+!apple-mail-mcp send --to a@b.com -s "Subj" -b "Body"   # saves a DRAFT
+!apple-mail-mcp send ... --confirm           # sends — only on approval
+```
+
+Write commands fail with "read-only mode" if the server is configured
+read-only; pass `-a <account>` / `-m <mailbox>` when the message is not
+in the default account's INBOX.
+
 ## Output format
 
 All commands return JSON. Use jq for filtering:
@@ -948,6 +961,157 @@ def cli_mailboxes(
 
     try:
         result = _run_async(list_mailboxes(account))
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---- write commands (mirror the write tools in server.py) ----------
+
+
+@app.command(name="mark")
+def cli_mark(
+    message_ids: list[int],
+    read: Annotated[
+        bool | None,
+        cyclopts.Parameter(
+            name=["--read", "-r"],
+            negative=["--unread", "-u"],
+            help="--read marks read, --unread marks unread",
+        ),
+    ] = None,
+    flagged: Annotated[
+        bool | None,
+        cyclopts.Parameter(
+            name=["--flag", "-f"],
+            negative=["--unflag", "-F"],
+            help="--flag flags, --unflag unflags",
+        ),
+    ] = None,
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--account", "-a"], help="Account name"),
+    ] = None,
+    mailbox: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--mailbox", "-m"], help="Mailbox name"),
+    ] = None,
+) -> None:
+    """Mark messages read/unread and/or flagged/unflagged (JSON output)."""
+    from .server import update_email_status
+
+    try:
+        result = _run_async(
+            update_email_status(
+                message_ids,
+                read=read,
+                flagged=flagged,
+                account=account,
+                mailbox=mailbox,
+            )
+        )
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="move")
+def cli_move(
+    message_ids: list[int],
+    target_mailbox: Annotated[
+        str,
+        cyclopts.Parameter(
+            name=["--to", "-t"],
+            help="Destination mailbox (e.g. Archive, Trash, Work/Projects)",
+        ),
+    ],
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(name=["--account", "-a"], help="Account name"),
+    ] = None,
+    mailbox: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--mailbox", "-m"], help="Source mailbox name"
+        ),
+    ] = None,
+) -> None:
+    """Move messages to another mailbox (JSON output)."""
+    from .server import move_email
+
+    try:
+        result = _run_async(
+            move_email(
+                message_ids,
+                target_mailbox,
+                account=account,
+                mailbox=mailbox,
+            )
+        )
+        _print_json(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+@app.command(name="send")
+def cli_send(
+    to: Annotated[
+        list[str],
+        cyclopts.Parameter(name=["--to"], help="Recipient (repeatable)"),
+    ],
+    subject: Annotated[
+        str,
+        cyclopts.Parameter(name=["--subject", "-s"], help="Subject line"),
+    ],
+    body: Annotated[
+        str,
+        cyclopts.Parameter(
+            name=["--body", "-b"], help="Plain-text body ('-' reads stdin)"
+        ),
+    ],
+    cc: Annotated[
+        list[str] | None,
+        cyclopts.Parameter(name=["--cc"], help="CC (repeatable)"),
+    ] = None,
+    bcc: Annotated[
+        list[str] | None,
+        cyclopts.Parameter(name=["--bcc"], help="BCC (repeatable)"),
+    ] = None,
+    account: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--account", "-a"], help="Account to send from"
+        ),
+    ] = None,
+    confirm: Annotated[
+        bool,
+        cyclopts.Parameter(
+            name=["--confirm"],
+            help="Actually send. Without it a draft is saved.",
+        ),
+    ] = False,
+) -> None:
+    """Compose an email: draft by default, send with --confirm (JSON)."""
+    from .server import send_email
+
+    if body == "-":
+        body = sys.stdin.read()
+
+    try:
+        result = _run_async(
+            send_email(
+                to,
+                subject,
+                body,
+                cc=cc,
+                bcc=bcc,
+                account=account,
+                confirm=confirm,
+            )
+        )
         _print_json(result)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

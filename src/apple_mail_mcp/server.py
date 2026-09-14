@@ -6,7 +6,7 @@ Apple Mail MCP Server
 2. FTS5 search — full-text body search in ~2ms with BM25 ranking
 3. JXA fallback — batch property fetching for multi-email listing
 
-TOOLS (8 total):
+TOOLS (11 total):
 - list_accounts() - List email accounts
 - list_mailboxes(account?) - List mailboxes
 - get_emails(..., filter?) - Unified email listing with filters
@@ -15,6 +15,12 @@ TOOLS (8 total):
 - get_email_links(id) - Extract hyperlinks from an email
 - get_email_attachment(id, filename) - Extract a file attachment
 - get_attachment(id, filename?) - Deprecated alias
+- update_email_status(ids, read?, flagged?) - Mark read/unread, flag/unflag
+- move_email(ids, target_mailbox) - Move / archive / trash
+- send_email(to, subject, body, ..., confirm?) - Draft; send on confirm
+
+Write tools (the last three) refuse in read-only mode (#80), never
+target a hidden account (#90), and return the resulting state.
 
 RESOURCES (1 total):
 - index://status - JSON snapshot of search-index health
@@ -33,7 +39,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal
+from typing import Literal, cast
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -110,6 +116,23 @@ STRATEGY3_MAX_MAILBOXES = _clamped_env_int(
 # limits push entire result sets into the model's context; negative
 # LIMIT means "unlimited" in SQLite.
 MAX_RESULT_LIMIT = 200
+
+# Write tools take a list of message ids; anything longer is clamped to
+# this many (clamp-don't-raise, like _validate_pagination) so one call
+# can never fan out into an unbounded number of JXA mutations.
+MAX_WRITE_BATCH = 10
+
+
+def _validate_write_batch(message_ids: list[int]) -> list[int]:
+    """Dedupe (order-preserving) and clamp a write tool's id list.
+
+    Raises ``ValueError`` on an empty list — an empty write is always a
+    caller mistake, and silently doing nothing would read as success.
+    """
+    unique = list(dict.fromkeys(int(i) for i in message_ids))
+    if not unique:
+        raise ValueError("message_ids must contain at least one id.")
+    return unique[:MAX_WRITE_BATCH]
 
 
 def _validate_pagination(limit: int, offset: int = 0) -> tuple[int, int]:
@@ -433,7 +456,7 @@ def _detect_matched_columns(query: str, result) -> str:
     return detect_matched_columns(query, result)
 
 
-# ========== MCP Tools (8 total) ==========
+# ========== MCP Tools (11 total; write tools further down) ==========
 
 
 @mcp.tool
@@ -1488,6 +1511,481 @@ async def search(
 
 
 # ========== MCP Resources ==========
+
+
+# ========== Write Tools ==========
+#
+# Contract for every mutating tool: `_ensure_writable()` first,
+# hidden-account gate before any JXA, every string into the script
+# through json.dumps(), bounded batches, return the new state.
+
+
+class EmailStatus(TypedDict):
+    """Resulting state of one message after update_email_status."""
+
+    id: int
+    read: bool
+    flagged: bool
+
+
+class MoveResult(TypedDict):
+    """Resulting location of one message after move_email."""
+
+    id: int
+    account: str
+    mailbox: str
+
+
+class SendResult(TypedDict):
+    """Outcome of send_email: a saved draft, or a sent message."""
+
+    status: Literal["draft", "sent"]
+    account: str
+    to: list[str]
+    cc: list[str]
+    bcc: list[str]
+    subject: str
+
+
+@mcp.tool
+async def update_email_status(
+    message_ids: list[int],
+    read: bool | None = None,
+    flagged: bool | None = None,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> list[EmailStatus]:
+    """
+    Mark messages read/unread and/or flagged/unflagged.
+
+    Pass only the flags you want to change; ``None`` leaves that flag
+    untouched. At least one of ``read``/``flagged`` must be given.
+    Bounded to MAX_WRITE_BATCH ids per call (extra ids are dropped).
+
+    Index coherence: read/flagged live in the .emlx plist footer and the
+    Envelope Index, not in the FTS5 index, so no index write is needed.
+
+    Args:
+        message_ids: Mail.app message ids (see get_emails / search).
+        read: True = mark read, False = mark unread, None = unchanged.
+        flagged: True = flag, False = unflag, None = unchanged.
+        account: Account name (default: configured default account).
+        mailbox: Mailbox holding the messages (default: INBOX).
+
+    Returns:
+        One ``{"id", "read", "flagged"}`` per message, reflecting the
+        state Mail.app reports after the update.
+
+    Example:
+        >>> update_email_status([12345], read=True)
+        [{"id": 12345, "read": True, "flagged": False}]
+    """
+    _ensure_writable()
+    if read is None and flagged is None:
+        raise ValueError("Specify read and/or flagged.")
+    ids = _validate_write_batch(message_ids)
+    if _hidden_account(account):
+        raise ValueError(f"Account {account!r} not found.")
+    resolved_account = await _resolve_visible_account(account)
+    resolved_mailbox = _resolve_mailbox(mailbox)
+
+    # Only emit an assignment for the flags the caller asked to change;
+    # an untouched flag is read back as-is. Every value enters the
+    # script through json.dumps() (Python bools → JS true/false).
+    mutations = ""
+    if read is not None:
+        mutations += f"    msg.readStatus = {json.dumps(read)};\n"
+    if flagged is not None:
+        mutations += f"    msg.flaggedStatus = {json.dumps(flagged)};\n"
+
+    setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)
+    script = f"""{setup}
+const targetIds = {json.dumps(ids)};
+const ids = mailbox.messages.id();
+const found = [];
+for (const targetId of targetIds) {{
+    const idx = ids.indexOf(targetId);
+    if (idx === -1) {{
+        throw new Error('Message not found with ID: ' + targetId);
+    }}
+    found.push(mailbox.messages[idx]);
+}}
+const results = [];
+for (let i = 0; i < found.length; i++) {{
+    const msg = found[i];
+{mutations}    results.push({{
+        id: targetIds[i],
+        read: msg.readStatus(),
+        flagged: msg.flaggedStatus()
+    }});
+}}
+JSON.stringify(results);
+"""
+    try:
+        return cast(list[EmailStatus], await execute_with_core_async(script))
+    except Exception as exc:
+        # Surface clean, model-friendly errors for the two expected
+        # failure shapes; re-raise anything else intact.
+        raw = str(exc)
+        marker = "Message not found with ID: "
+        if marker in raw:
+            tail = raw.split(marker, 1)[1].lstrip()
+            missing = ""
+            for ch in tail:
+                if not ch.isdigit():
+                    break
+                missing += ch
+            raise ValueError(f"Message {missing or '?'} not found.") from None
+        lowered = raw.lower()
+        if "-1728" in lowered or "can't get object" in lowered:
+            raise ValueError(
+                f"Mailbox {resolved_mailbox!r} not found"
+                f" in account {resolved_account!r}."
+            ) from None
+        raise
+
+
+async def _evict_index_rows(
+    ids: list[int], account_name: str, mailbox: str
+) -> None:
+    """Best-effort removal of index rows for messages that just moved.
+
+    The index keys accounts by UUID, so the display name is translated
+    via the AccountMap first. Skips (with a warning) rather than
+    deleting by message id alone when the name can't be resolved —
+    ids are only unique per mailbox, so an account-less delete could
+    hit another account's rows. ``delete_email`` itself no-ops when
+    this process is not the index writer (#106).
+    """
+    try:
+        mgr = _get_index_manager()
+        if not mgr.has_index():
+            return
+        acct_map = _get_account_map()
+        await acct_map.ensure_loaded()
+        uuid = acct_map.name_to_uuid(account_name)
+        if not uuid:
+            logger.warning(
+                "Skipping index eviction for %s: no UUID for account %r",
+                ids,
+                account_name,
+            )
+            return
+        for message_id in ids:
+            await asyncio.to_thread(
+                mgr.delete_email, message_id, account=uuid, mailbox=mailbox
+            )
+    except Exception:
+        logger.warning(
+            "Failed to evict stale index rows for %s in %r/%r",
+            ids,
+            account_name,
+            mailbox,
+            exc_info=True,
+        )
+
+
+@mcp.tool
+async def move_email(
+    message_ids: list[int],
+    target_mailbox: str,
+    account: str | None = None,
+    mailbox: str | None = None,
+) -> list[MoveResult]:
+    """
+    Move messages to another mailbox (archive and trash are just targets).
+
+    The target mailbox is resolved (alias-aware: "Archive", "Trash",
+    "Sent", nested "Work/Projects") before any message is touched; an
+    unknown target raises ``ValueError`` and nothing moves. Bounded to
+    MAX_WRITE_BATCH ids per call (extra ids are dropped).
+
+    Index coherence (#66): after Mail.app confirms the move, the stale
+    FTS5 row for the source mailbox is removed immediately so a
+    follow-up search() cannot return a ghost; the watcher / next sync
+    indexes the message under its new mailbox.
+
+    Args:
+        message_ids: Mail.app message ids (see get_emails / search).
+        target_mailbox: Destination mailbox name, e.g. "Archive",
+            "Trash", or "Work/Projects".
+        account: Account name (default: configured default account).
+        mailbox: Source mailbox holding the messages (default: INBOX).
+
+    Returns:
+        One ``{"id", "account", "mailbox"}`` per message with its new
+        location.
+
+    Example:
+        >>> move_email([12345], "Archive")
+        [{"id": 12345, "account": "iCloud", "mailbox": "Archive"}]
+    """
+    _ensure_writable()
+    ids = _validate_write_batch(message_ids)
+    target = target_mailbox.strip() if target_mailbox else ""
+    if not target:
+        raise ValueError("target_mailbox must be a non-empty mailbox name.")
+    if _hidden_account(account):
+        raise ValueError(f"Account {account!r} not found.")
+    resolved_account = await _resolve_visible_account(account)
+    resolved_mailbox = _resolve_mailbox(mailbox)
+
+    # Resolve the target before touching any message, and validate every
+    # id before moving any, so a bad input moves nothing. Messages are
+    # addressed by id (not index) for the move itself: after the first
+    # move the remaining by-index specifiers would shift under us.
+    setup = build_mailbox_setup_js(resolved_account, resolved_mailbox)
+    target_json = json.dumps(target)
+    source_json = json.dumps(resolved_mailbox)
+    script = f"""{setup}
+let target;
+try {{
+    target = MailCore.getMailbox(account, {target_json});
+    target.name();
+}} catch (e) {{
+    throw new Error('Target mailbox not found: ' + {target_json});
+}}
+const wanted = {json.dumps(ids)};
+let ids;
+try {{
+    ids = mailbox.messages.id();
+}} catch (e) {{
+    throw new Error('Source mailbox not found: ' + {source_json});
+}}
+for (const id of wanted) {{
+    if (ids.indexOf(id) === -1) {{
+        throw new Error('Message not found with ID: ' + id);
+    }}
+}}
+for (const id of wanted) {{
+    Mail.move(mailbox.messages.byId(id), {{to: target}});
+}}
+JSON.stringify({{
+    account: account.name(),
+    mailbox: target.name(),
+    ids: wanted
+}});
+"""
+    try:
+        result = await execute_with_core_async(script)
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "target mailbox not found" in msg:
+            raise ValueError(
+                f"Mailbox {target!r} not found in account {resolved_account!r}."
+            ) from None
+        if "source mailbox not found" in msg:
+            raise ValueError(
+                f"Mailbox {resolved_mailbox!r} not found"
+                f" in account {resolved_account!r}."
+            ) from None
+        if "message not found with id:" in msg:
+            # osascript wraps it: "...Error: Message not found with ID:
+            # 42 (-2700)" — pull the id back out for a clean message.
+            tail = msg.split("message not found with id:", 1)[1].split()
+            missing = tail[0] if tail else "?"
+            raise ValueError(f"Message {missing} not found.") from None
+        if "-1728" in msg or "can't get object" in msg:
+            raise ValueError(
+                f"Mailbox {target!r} not found in account {resolved_account!r}."
+            ) from None
+        raise
+
+    account_name = result.get("account") or resolved_account or ""
+    new_mailbox = result.get("mailbox") or target
+
+    # Optimistic index update (#66): Mail.app has confirmed the move, so
+    # the rows indexed under the source mailbox are now ghosts. Evict
+    # them immediately; the watcher / next sync indexes the messages
+    # under their new mailbox. Never let this fail the move itself.
+    await _evict_index_rows(ids, account_name, resolved_mailbox)
+
+    return [
+        {"id": i, "account": account_name, "mailbox": new_mailbox} for i in ids
+    ]
+
+
+# Characters that can never appear in a bare address. Whitespace and
+# angle brackets reject display-name forms ("Name <a@b>"); the rest
+# are header/list separators. Control characters are rejected below.
+_ADDRESS_FORBIDDEN = frozenset(' \t\r\n<>,;:"()[]\\')
+
+
+def _validate_addresses(field: str, addresses: list[str] | None) -> list[str]:
+    """Strictly validate one recipient list for send_email.
+
+    This is an injection boundary: every address is passed to Mail.app
+    and ends up in a header, so only bare ``local@domain`` strings are
+    accepted — no display names, no whitespace, no separators. Blank
+    entries are dropped; anything else malformed raises ``ValueError``
+    naming ``field``. ``None`` is treated as an empty list.
+    """
+    if addresses is None:
+        return []
+    if isinstance(addresses, str) or not isinstance(addresses, list):
+        raise ValueError(f"{field} must be a list of addresses.")
+    clean: list[str] = []
+    for raw in addresses:
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"{field}: addresses must be strings, got {type(raw).__name__}."
+            )
+        addr = raw.strip()
+        if not addr:
+            continue
+        bad = (
+            addr.count("@") != 1
+            or any(c in _ADDRESS_FORBIDDEN for c in addr)
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in addr)
+        )
+        if not bad:
+            local, domain = addr.split("@")
+            bad = not local or not domain
+        if bad:
+            raise ValueError(
+                f"{field}: invalid address {addr!r} "
+                "(expected a bare local@domain, no display name)."
+            )
+        clean.append(addr)
+    return clean
+
+
+@mcp.tool
+async def send_email(
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    account: str | None = None,
+    confirm: bool = False,
+) -> SendResult:
+    """
+    Compose an email. Saves a draft by default; sends only with confirm=True.
+
+    Safety (#22): without ``confirm=True`` the message is saved to the
+    account's Drafts mailbox (never transmitted, no compose window) and
+    the result says ``"status": "draft"``. Call again with
+    ``confirm=True`` after the user has approved the content to
+    actually send it. A server-stored Drafts folder (iCloud, Gmail)
+    can take a few seconds to list the new draft.
+
+    Args:
+        to: Recipient addresses (at least one).
+        subject: Subject line.
+        body: Plain-text body.
+        cc: CC addresses (optional).
+        bcc: BCC addresses (optional).
+        account: Account to send from (default: configured default
+            account). The account's primary address is the sender.
+        confirm: False = save as draft (default). True = send now.
+
+    Returns:
+        ``{"status": "draft" | "sent", "account", "to", "cc", "bcc",
+        "subject"}``.
+
+    Example:
+        >>> send_email(["a@example.com"], "Hi", "Body")  # draft
+        >>> send_email(["a@example.com"], "Hi", "Body", confirm=True)
+    """
+    _ensure_writable()
+
+    # Validation first: nothing below may run on malformed input.
+    if not isinstance(subject, str):
+        raise ValueError("subject must be a string.")
+    if not isinstance(body, str):
+        raise ValueError("body must be a string.")
+    to_clean = _validate_addresses("to", to)
+    cc_clean = _validate_addresses("cc", cc)
+    bcc_clean = _validate_addresses("bcc", bcc)
+    if not to_clean:
+        raise ValueError("to must contain at least one recipient address.")
+    total = len(to_clean) + len(cc_clean) + len(bcc_clean)
+    if total > MAX_WRITE_BATCH:
+        # Unlike the id-list tools this does NOT clamp: silently
+        # dropping recipients from an email would change its meaning.
+        raise ValueError(
+            f"Too many recipients ({total}); at most {MAX_WRITE_BATCH} "
+            "across to/cc/bcc per call."
+        )
+
+    if _hidden_account(account):
+        raise ValueError(f"Account {account!r} not found.")
+    resolved_account = await _resolve_visible_account(account)
+
+    # The draft/send decision is made HERE, in Python: the draft script
+    # contains no send() call at all, so no content or runtime state
+    # can flip a draft into a transmission. Every value enters the
+    # script through json.dumps().
+    #
+    # Draft mode: an invisible OutgoingMessage + save() lands in the
+    # account's Drafts mailbox without a compose window popping up
+    # (verified live on Mail 16.0 / macOS 26.6; for a server-stored
+    # Drafts folder it can take a few seconds to show in the mailbox).
+    status: Literal["draft", "sent"]
+    if confirm:
+        status = "sent"
+        action = (
+            "const ok = msg.send();\n"
+            'if (!ok) throw new Error("Mail.app refused to send the message");'
+        )
+    else:
+        status = "draft"
+        action = "msg.save();"
+    script = f"""
+const acct = MailCore.getAccount({json.dumps(resolved_account)});
+const addr = acct.emailAddresses()[0];
+const fullName = acct.fullName();
+const sender = fullName ? fullName + " <" + addr + ">" : addr;
+const msg = Mail.OutgoingMessage({{
+    subject: {json.dumps(subject)},
+    content: {json.dumps(body)},
+    visible: false,
+    sender: sender,
+}});
+Mail.outgoingMessages.push(msg);
+for (const a of {json.dumps(to_clean)}) {{
+    msg.toRecipients.push(Mail.ToRecipient({{address: a}}));
+}}
+for (const a of {json.dumps(cc_clean)}) {{
+    msg.ccRecipients.push(Mail.CcRecipient({{address: a}}));
+}}
+for (const a of {json.dumps(bcc_clean)}) {{
+    msg.bccRecipients.push(Mail.BccRecipient({{address: a}}));
+}}
+{action}
+JSON.stringify({{
+    status: {json.dumps(status)},
+    account: acct.name(),
+    to: {json.dumps(to_clean)},
+    cc: {json.dumps(cc_clean)},
+    bcc: {json.dumps(bcc_clean)},
+    subject: {json.dumps(subject)},
+}});
+"""
+    try:
+        result = await execute_with_core_async(script)
+    except TimeoutError:
+        # Seen live: Mail.app stops answering Apple Events while it is
+        # busy syncing, and TimeoutError stringifies to "". For a send
+        # that is an ambiguous state, so say exactly what to check.
+        verb = "sending" if confirm else "saving"
+        raise RuntimeError(
+            f"Mail.app did not respond while {verb} {subject!r}. It may"
+            " still be queued in Mail.app (outgoing messages / Outbox);"
+            " check Sent and Drafts before retrying."
+        ) from None
+    except Exception as exc:
+        # An unknown account makes JXA fail with a raw "...Error:
+        # Error: Can't get object. (-1728)". Surface a clean message;
+        # re-raise other failures (e.g. SMTP refusal) intact.
+        msg = str(exc).lower()
+        if "-1728" in msg or "can't get object" in msg:
+            raise ValueError(
+                f"Account {resolved_account!r} not found."
+            ) from None
+        raise
+    return cast(SendResult, result)
 
 
 @mcp.resource(

@@ -10,7 +10,7 @@ The only Apple Mail MCP server with full-coverage FTS5 body search. Reliable on 
 src/apple_mail_mcp/
 ├── __init__.py         # CLI entry point, exports main()
 ├── cli.py              # CLI commands (index, status, rebuild, serve)
-├── server.py           # FastMCP server with 8 MCP tools
+├── server.py           # FastMCP server with 11 MCP tools
 ├── config.py           # Environment variable configuration
 ├── builders.py         # QueryBuilder, AccountsQueryBuilder
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
@@ -30,7 +30,7 @@ src/apple_mail_mcp/
     └── mail_core.js    # Shared JXA utilities (MailCore object)
 ```
 
-## MCP Tools (8 total)
+## MCP Tools (11 total)
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
@@ -42,6 +42,9 @@ src/apple_mail_mcp/
 | `get_email_links(id)` | Extract links from an email | message_id |
 | `get_email_attachment(id, filename)` | Extract attachment content | message_id, filename |
 | `get_attachment(id, filename)` | *Deprecated* — use `get_email_attachment()` | message_id, filename |
+| `update_email_status(ids, read?, flagged?)` | **Write.** Mark read/unread, flag/unflag | message_ids (≤10), read, flagged, account, mailbox |
+| `move_email(ids, target_mailbox)` | **Write.** Move / archive / trash; evicts stale index row (#66) | message_ids (≤10), target_mailbox, account, mailbox |
+| `send_email(to, subject, body, ...)` | **Write.** Draft by default; `confirm=True` sends | to, subject, body, cc, bcc, account, confirm |
 
 ## MCP Resources (1 total)
 
@@ -101,7 +104,7 @@ Startup Sync Flow:
 ### Layer Separation
 
 1. **cli.py** - CLI entry point, commands for indexing
-2. **server.py** - 8 MCP tools, uses builders and index
+2. **server.py** - 11 MCP tools, uses builders and index
 3. **builders.py** - Constructs JXA scripts from Python, type-safe
 4. **executor.py** - Runs scripts via osascript, handles JSON parsing
 5. **index/** - FTS5 search index with disk-based sync
@@ -372,6 +375,9 @@ apple-mail-mcp emails       # List emails (JSON output)
 apple-mail-mcp accounts     # List accounts (JSON output)
 apple-mail-mcp mailboxes    # List mailboxes (JSON output)
 apple-mail-mcp extract      # Extract attachment (JSON output)
+apple-mail-mcp mark         # Mark read/unread, flag/unflag (write)
+apple-mail-mcp move         # Move / archive / trash (write)
+apple-mail-mcp send         # Draft by default; --confirm sends (write)
 apple-mail-mcp integrate claude  # Generate a Claude Code skill file
 ```
 
