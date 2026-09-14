@@ -21,7 +21,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, TypeVar
+from typing import TYPE_CHECKING, Annotated, Literal, TypeVar
 
 import cyclopts
 
@@ -793,7 +793,7 @@ def _print_json(data):
 def cli_search(
     query: str,
     scope: Annotated[
-        str,
+        Literal["all", "subject", "sender", "body", "attachments"],
         cyclopts.Parameter(
             name=["--scope", "-s"],
             help="all, subject, sender, body, attachments",
@@ -899,7 +899,7 @@ def cli_emails(
         cyclopts.Parameter(name=["--mailbox", "-m"], help="Mailbox name"),
     ] = None,
     filter: Annotated[
-        str,
+        Literal["all", "unread", "flagged", "today", "last_7_days"],
         cyclopts.Parameter(
             name=["--filter", "-f"],
             help="all, unread, flagged, today, last_7_days",

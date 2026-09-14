@@ -45,8 +45,7 @@ class ConfigError(RuntimeError):
 
 
 # Cache state. The sentinel distinguishes "not yet loaded" from "loaded as {}".
-_NOT_LOADED = object()
-_cached_config: object = _NOT_LOADED
+_cached_config: dict | None = None  # None == not loaded yet
 
 
 def _load_config_file() -> dict:
@@ -60,8 +59,8 @@ def _load_config_file() -> dict:
     :func:`_invalidate_config_cache` to force a re-read.
     """
     global _cached_config
-    if _cached_config is not _NOT_LOADED:
-        return _cached_config  # type: ignore[return-value]
+    if _cached_config is not None:
+        return _cached_config
 
     path = CONFIG_FILE_PATH
     if not path.exists():
@@ -168,7 +167,7 @@ def _validate(data: dict, path: Path) -> None:
 def _invalidate_config_cache() -> None:
     """Reset the in-memory config cache. Used by tests and after `init`."""
     global _cached_config
-    _cached_config = _NOT_LOADED
+    _cached_config = None
 
 
 def _from_toml(*path: str):
