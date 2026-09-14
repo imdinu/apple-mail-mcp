@@ -355,7 +355,11 @@ def serve(
 
     At startup, the index is automatically synced with disk (fast, <5s).
     Use --watch to enable real-time index updates when emails arrive.
-    Requires Full Disk Access for the terminal.
+
+    Serving an existing index needs no Full Disk Access. Keeping it
+    fresh does: grant FDA to the app that launches this server (your
+    MCP client), otherwise the startup sync reads nothing and a
+    warning is printed.
     """
     _run_serve(watch=watch, read_only=read_only)
 

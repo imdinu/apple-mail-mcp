@@ -1,6 +1,6 @@
 # Architecture
 
-Apple Mail MCP uses a **3-layer hybrid access pattern** — disk-first reads for single emails (~1-5ms), FTS5 for search, and JXA as a fallback for real-time operations.
+Apple Mail MCP uses a **4-layer hybrid access pattern** — disk-first reads for single emails (~1-5ms), direct Envelope Index SQLite reads for listings, FTS5 for search, and JXA as a fallback for real-time operations.
 
 ## Project Structure
 
@@ -15,6 +15,9 @@ src/apple_mail_mcp/
 ├── index/              # FTS5 search index module
 │   ├── __init__.py     # Exports IndexManager
 │   ├── schema.py       # SQLite schema v5 (DLQ + attachments)
+│   ├── lock.py         # IndexLock — cross-process single-writer flock
+│   ├── accounts.py     # AccountMap — account name↔UUID cache
+│   ├── envelope_direct.py  # Direct Envelope Index SQLite reads
 │   ├── manager.py      # IndexManager class (singleton)
 │   ├── disk.py         # .emlx reading + get_disk_inventory()
 │   ├── sync.py         # Disk-based state reconciliation
@@ -30,7 +33,8 @@ src/apple_mail_mcp/
 | Access Method | Use Case | Latency | When Used |
 |---------------|----------|---------|-----------|
 | **Disk (Single)** | Read single email by ID | ~1–5ms | `get_email()` Strategy 0 |
-| **JXA (Live)** | Real-time ops, small queries | ~100–300ms | `get_email()` Strategies 1-3, `list_mailboxes()` |
+| **Envelope Index SQL** | List accounts, list emails by metadata | ~1–5ms | `list_accounts()` (warm cache), `get_emails()` Strategy 0 |
+| **JXA (Live)** | Real-time ops, fallback path | ~100–300ms | `get_email()` Strategies 1-3, `list_mailboxes()`, fallback for `get_emails()` and no-index `search()` |
 | **FTS5 (Cached)** | Body search, complex filtering | ~2–10ms | `search()` |
 | **Disk (Batch)** | Initial indexing, sync | ~15ms/100 emails | `index` command, startup |
 

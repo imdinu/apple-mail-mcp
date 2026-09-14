@@ -1,6 +1,6 @@
 # Search & Indexing
 
-Apple Mail MCP includes an optional **FTS5 search index** that makes body search **700–3500x faster** — ~2ms instead of ~7s.
+Apple Mail MCP includes an **FTS5 search index** that makes full-text body search possible — ~2ms per query across the entire mailbox. Without it, only subject and sender can be searched (via a live Mail.app query), and `scope="body"` raises with instructions to build the index.
 
 ## How It Works
 
@@ -241,7 +241,8 @@ Pagination works with all scopes, date filters, and highlighting.
 
 | Operation | Without Index | With Index | Speedup |
 |-----------|---------------|------------|---------|
-| Body search | ~7,000ms | ~2–10ms | **700–3500x** |
+| Body search | *unavailable* (raises — no live fallback) | ~2–10ms | — |
+| Subject/sender search | ~100–300ms (live, one mailbox) | ~2–10ms (whole mailbox) | **~30x** |
 | Startup sync | 60s timeout | <5s | **12x** |
 | Initial build | — | ~1–2 min | One-time |
 | Disk usage | — | ~6 KB/email | — |

@@ -54,10 +54,11 @@ as nonexistent. They are never written to the index, filtered out of
 default — an account is hidden only when explicitly named, and a name
 that matches no account is logged as a warning rather than silently
 ignored. Use it to keep a regulated-data account (e.g. PHI) out of LLM
-reach. One residual: `get_email(message_id)` with no account specified
-can still reach a hidden account's message via the live fallback if the
-id is already known — but ids for hidden accounts are not discoverable
-through the (filtered) listing and search tools.
+reach. A hidden account behaves exactly like an account that does not
+exist: `get_email()` raises the same `Email <id> not found.` whether or
+not the id is known, `search()` returns the same hints and errors a
+name that matches nothing would get, and no strategy — disk, index, or
+live JXA — is allowed to target it.
 
 **Validation**: malformed TOML, unknown keys, type mismatches, and
 `config_version` mismatches all raise a clear error with the file path

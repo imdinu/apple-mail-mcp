@@ -756,8 +756,9 @@ async def get_email(
         The attachments list comes from JXA's mailAttachments(),
         which only reports file attachments visible in Mail.app's
         UI. Inline images, S/MIME signatures, and attachments in
-        sent/bounce-back emails may not appear. Use get_attachment
-        with a known filename for reliable extraction from disk.
+        sent/bounce-back emails may not appear. Use
+        get_email_attachment() with a known filename for reliable
+        extraction from disk.
 
     Example:
         >>> get_email(12345)

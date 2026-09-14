@@ -26,15 +26,20 @@ Tested against [6 other Apple Mail MCP servers](benchmarks.md) on a real ~73K-me
 
 ## Quick Install
 
-```bash
-# No install required — run directly
-pipx run apple-mail-mcp
+**Claude Code** — one plugin install:
 
-# Or install globally
-pipx install apple-mail-mcp
+```bash
+claude plugin marketplace add imdinu/apple-mail-mcp
+claude plugin install apple-mail@imdinu
 ```
 
-## Claude Desktop Setup
+**Claude Desktop** — download `apple-mail-mcp-<version>.mcpb` from the [latest release](https://github.com/imdinu/apple-mail-mcp/releases/latest) and double-click it.
+
+**Any MCP client** — install the package and register the command:
+
+```bash
+pipx install apple-mail-mcp
+```
 
 ```json
 {
@@ -46,7 +51,7 @@ pipx install apple-mail-mcp
 }
 ```
 
-That's it. Ask Claude to search your emails, get today's messages, or find unread mail.
+That's it. Ask Claude to search your emails, get today's messages, or find unread mail. See [Installation](installation.md) for all options and [Getting Started](getting-started.md) for building the search index.
 
 ## CLI Usage (No MCP Required)
 

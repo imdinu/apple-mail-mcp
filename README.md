@@ -34,7 +34,9 @@ and double-click it.
 
 Both the plugin and the bundle run the released PyPI package via a thin
 launcher (uvx → pipx → private venv, whichever is available) — no
-vendored code, identical behavior to a manual install.
+vendored code, identical behavior to a manual install. They start the
+server with `--watch`; grant Full Disk Access to the launching app
+(Claude Code / Claude Desktop) so the index stays fresh.
 
 ### Any MCP client
 

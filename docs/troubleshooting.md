@@ -54,9 +54,17 @@ Common issues and their solutions.
 pipx upgrade apple-mail-mcp
 ```
 
+## Attachment or Link Extraction Reports a Permission Problem
+
+**Symptom:** `get_email()` lists an attachment, but `get_email_attachment()` (or `get_email_links()`) fails with a message about Full Disk Access.
+
+**Cause:** Attachment content and links are read from the raw `.emlx` file on disk, which is protected by macOS. Attachment *metadata* comes from the index, so listing works without Full Disk Access while reading the file does not. On macOS the file's `stat()` succeeds and only the read is refused, which is why the server reports it explicitly as a permission problem rather than a missing file.
+
+**Fix:** Grant Full Disk Access to the process that runs the server — the app that launches it (Claude Desktop, Claude Code), not your terminal — then restart the client. A plain "not found" message with no permission wording means the attachment genuinely isn't in that message.
+
 ## Index Rebuild After Upgrade
 
-**Symptom:** After upgrading, search returns unexpected results or `get_attachment()` doesn't work.
+**Symptom:** After upgrading, search returns unexpected results or `get_email_attachment()` doesn't work.
 
 **Cause:** Schema changes between versions (e.g., v0.1.3 added attachment metadata in schema v4; v0.3.0 added the failed-parse DLQ in schema v5). Migrations are forward-only and run automatically; a manual rebuild is only needed if existing rows lack new columns (attachments, paths).
 

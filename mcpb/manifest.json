@@ -43,7 +43,7 @@
     },
     {
       "name": "search",
-      "description": "Full-text search across subject, sender, body, and attachment filenames — FTS5-backed, covers the entire mailbox history with date-range filtering and highlighting."
+      "description": "Full-text search across subject, sender, body, and attachment filenames — FTS5-backed, covers the entire mailbox history with date-range filtering and highlighting. Body, attachment-filename, and date-filtered search require the local index (run `apple-mail-mcp index` once); subject and sender work without it."
     },
     {
       "name": "get_email_links",

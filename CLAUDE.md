@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-The only Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes (tested at ~73K messages) where AppleScript-based servers timeout, and the only one whose body search has no recency cap. Disk-first email reads (~3ms via .emlx parsing), batch JXA property fetching, and an FTS5 search index for full-text body search (~28ms).
+The only Apple Mail MCP server with full-coverage FTS5 body search. Reliable on large mailboxes (tested at ~73K messages) where AppleScript-based servers timeout, and the only one whose body search has no recency cap. Disk-first email reads (~3ms via .emlx parsing), batch JXA property fetching, and an FTS5 search index for full-text body search (~2ms, BM25-ranked).
 
 ## Project Structure
 
@@ -18,6 +18,8 @@ src/apple_mail_mcp/
 │   ├── __init__.py     # Exports IndexManager
 │   ├── schema.py       # SQLite schema v5 (DLQ + attachments)
 │   ├── lock.py         # IndexLock — cross-process single-writer flock (#106)
+│   ├── accounts.py     # AccountMap — account name↔UUID cache
+│   ├── envelope_direct.py  # Direct Envelope Index SQLite reads (get_emails fast path)
 │   ├── manager.py      # IndexManager class (disk-based sync)
 │   ├── disk.py         # .emlx reading + get_disk_inventory()
 │   ├── sync.py         # Disk-based state reconciliation
@@ -61,8 +63,8 @@ get_emails(filter="last_7_days")  # Last 7 days
 
 ```python
 search("invoice")                          # Search everywhere (FTS5)
-search("john@", scope="sender")            # Sender only (JXA)
-search("meeting", scope="subject")         # Subject only (JXA)
+search("john@", scope="sender")            # Sender only (FTS5 column; JXA fallback without index)
+search("meeting", scope="subject")         # Subject only (FTS5 column; JXA fallback without index)
 search("deadline", scope="body")           # Body only (FTS5)
 search("pdf", scope="attachments")         # By attachment filename (SQL)
 search("invoice", after="2025-01-01")      # Date-range filtering

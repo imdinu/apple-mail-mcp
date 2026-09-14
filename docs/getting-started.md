@@ -11,24 +11,26 @@ Get Apple Mail MCP running with Claude in under 2 minutes.
 
 ## Step 1: Add to Your MCP Client
 
-=== "Claude Desktop"
-
-    Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-    ```json
-    {
-      "mcpServers": {
-        "mail": {
-          "command": "pipx",
-          "args": ["run", "apple-mail-mcp"]
-        }
-      }
-    }
-    ```
-
 === "Claude Code"
 
-    Edit `.mcp.json` in your project or `~/.claude/mcp.json` globally:
+    Install the plugin — it registers the server for you:
+
+    ```bash
+    claude plugin marketplace add imdinu/apple-mail-mcp
+    claude plugin install apple-mail@imdinu
+    ```
+
+=== "Claude Desktop"
+
+    Download `apple-mail-mcp-<version>.mcpb` from the [latest release](https://github.com/imdinu/apple-mail-mcp/releases/latest) and double-click it. Claude Desktop installs and registers the server.
+
+=== "Any MCP client"
+
+    Install the package, then register the command in your client's MCP config:
+
+    ```bash
+    pipx install apple-mail-mcp
+    ```
 
     ```json
     {
@@ -40,9 +42,11 @@ Get Apple Mail MCP running with Claude in under 2 minutes.
     }
     ```
 
+The plugin and the bundle launch the server with `--watch`, so the index stays current as mail arrives. That background sync reads `~/Library/Mail/`, which needs Full Disk Access on the app that launches the server (Claude Code or Claude Desktop) — grant it in **System Settings → Privacy & Security → Full Disk Access**. Without it the server still works and warns at startup that the index is not being kept fresh.
+
 ## Step 2: Build the Search Index (Recommended)
 
-The FTS5 index enables **full-text body search** (~20ms) — without it, only subject and sender search is available. It's optional but highly recommended.
+The FTS5 index enables **full-text body search** (~2ms) — without it, only subject and sender search is available. It's optional but highly recommended.
 
 ### Grant Full Disk Access
 
