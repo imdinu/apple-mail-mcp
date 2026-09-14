@@ -39,6 +39,7 @@ class AccountMap:
         self._name_to_uuid: dict[str, str] = {}
         self._uuid_to_name: dict[str, str] = {}
         self._loaded_at: float = 0
+        self._load_failed = False
         self._lock = threading.Lock()
         self._async_lock = asyncio.Lock()
 
@@ -90,6 +91,7 @@ class AccountMap:
             self._name_to_uuid.clear()
             self._uuid_to_name.clear()
             self._loaded_at = 0
+            self._load_failed = False
 
     def get_cached_accounts(self) -> list[dict[str, str]] | None:
         """Return the cached account list, or None if cold/stale.
@@ -98,9 +100,13 @@ class AccountMap:
         round-trip. Returns `[{"name": ..., "id": ...}, ...]`
         when the cache is fresh, else None — caller falls back
         to JXA to populate.
+
+        Also None after a failed load: the map is marked loaded so
+        index reads proceed on UUIDs (see `ensure_loaded`), but an
+        empty list here would read as "this Mac has no accounts".
         """
         with self._lock:
-            if self._loaded_at == 0:
+            if self._loaded_at == 0 or self._load_failed:
                 return None
             if (time.monotonic() - self._loaded_at) > _CACHE_TTL:
                 return None
@@ -137,6 +143,7 @@ class AccountMap:
                     self._name_to_uuid[name] = uid
                     self._uuid_to_name[uid] = name
             self._loaded_at = time.monotonic()
+            self._load_failed = False
             logger.debug(
                 "AccountMap loaded: %d accounts", len(self._name_to_uuid)
             )
@@ -155,6 +162,15 @@ class AccountMap:
 
         Double-checked locking prevents concurrent callers from
         firing duplicate JXA fetches.
+
+        A failed fetch is not fatal. JXA is the only name↔UUID
+        bridge, but every index and disk read degrades cleanly
+        without it — unresolved names pass through as UUIDs. So on
+        failure we log once and mark the map loaded anyway: callers
+        proceed on UUIDs instead of aborting the read, and the TTL
+        keeps us from re-spawning osascript on every tool call. This
+        is what keeps the server usable when Apple Events to Mail
+        are blocked (TCC) or Mail.app is not running.
         """
         if not self._is_stale():
             return
@@ -169,7 +185,20 @@ class AccountMap:
             from ..executor import execute_with_core_async
 
             script = AccountsQueryBuilder().list_accounts()
-            accounts = await execute_with_core_async(script)
+            try:
+                accounts = await execute_with_core_async(script)
+            except Exception as exc:
+                with self._lock:
+                    self._loaded_at = time.monotonic()
+                    self._load_failed = True
+                logger.warning(
+                    "Account name lookup via JXA failed (%s); using "
+                    "account UUIDs for the next %ds. Index and disk "
+                    "reads are unaffected.",
+                    exc,
+                    _CACHE_TTL,
+                )
+                return
             self.load_from_jxa(accounts)
 
 
