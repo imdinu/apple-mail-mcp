@@ -418,6 +418,142 @@ class TestGetEmail:
         assert result["subject"] == "From JXA"
         mock_exec.assert_called()
 
+    @staticmethod
+    def _disk_hit(mock_mgr):
+        """Wire the index mocks so Strategy 0 finds the message on disk."""
+        from pathlib import Path
+
+        from apple_mail_mcp.index.disk import EmlxEmail
+
+        parsed = EmlxEmail(
+            id=42,
+            subject="Disk email",
+            sender="alice@example.com",
+            content="Read from disk",
+            date_received="2025-01-01T00:00:00",
+            emlx_path=Path("/tmp/fake.emlx"),
+        )
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.find_email_path.return_value = Path(
+            "/tmp/fake.emlx"
+        )
+        mock_mgr.return_value.get_email_attachments.return_value = []
+        return parsed
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_skips_jxa_account_map_when_unneeded(
+        self, mock_exec, mock_mgr, mock_acct_map, monkeypatch
+    ):
+        """No account hint + no exclusions: the disk read is JXA-free.
+
+        `AccountMap.ensure_loaded()` is an osascript round-trip
+        (~250ms cold). Strategy 0 only needs the map to translate a
+        caller-supplied account name or configured exclusions to
+        UUIDs, so with neither it must not be loaded at all.
+        """
+        from unittest.mock import AsyncMock
+
+        monkeypatch.delenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", raising=False)
+        parsed = self._disk_hit(mock_mgr)
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.names_to_uuids.return_value = set()
+
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+
+        assert result["subject"] == "Disk email"
+        acct_map.ensure_loaded.assert_not_awaited()
+        acct_map.name_to_uuid.assert_not_called()
+        mock_mgr.return_value.find_email_path.assert_called_once_with(
+            42, account=None, mailbox=None
+        )
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_loads_account_map_for_account_hint(
+        self, mock_exec, mock_mgr, mock_acct_map, monkeypatch
+    ):
+        """An explicit account hint still resolves name -> UUID via the map."""
+        from unittest.mock import AsyncMock
+
+        monkeypatch.delenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", raising=False)
+        parsed = self._disk_hit(mock_mgr)
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.name_to_uuid.return_value = "UUID-WORK"
+        acct_map.names_to_uuids.return_value = set()
+
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            from apple_mail_mcp.server import get_email
+
+            await get_email(42, account="Work")
+
+        acct_map.ensure_loaded.assert_awaited_once()
+        mock_mgr.return_value.find_email_path.assert_called_once_with(
+            42, account="UUID-WORK", mailbox=None
+        )
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_loads_account_map_when_exclusions_set(
+        self, mock_exec, mock_mgr, mock_acct_map, monkeypatch
+    ):
+        """Configured exclusions keep the UUID gate: the map must load."""
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "Hidden")
+        parsed = self._disk_hit(mock_mgr)
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.names_to_uuids.return_value = {"UUID-HIDDEN"}
+        # No default account is configured (conftest strips host
+        # config), so _resolve_visible_account() must find a visible
+        # account in the cache or get_email() refuses to run at all.
+        acct_map.get_cached_accounts.return_value = [
+            {"name": "Hidden"},
+            {"name": "Visible"},
+        ]
+
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+
+        assert result["id"] == 42
+        # Loaded once by _resolve_visible_account (no visible default)
+        # and once by the Strategy 0 UUID gate.
+        assert acct_map.ensure_loaded.await_count == 2
+        acct_map.names_to_uuids.assert_called_with({"Hidden"})
+
     @pytest.mark.asyncio
     @patch("apple_mail_mcp.server._get_account_map")
     @patch("apple_mail_mcp.server._get_index_manager")

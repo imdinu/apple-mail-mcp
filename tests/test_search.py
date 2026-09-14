@@ -551,3 +551,48 @@ class TestSearchFtsHighlight:
         # but search_fts handles via retry
         results = search_fts_highlight(fts_db, "budget")
         assert isinstance(results, list)
+
+    def test_highlight_matches_plain_search_rows_and_scores(self, fts_db):
+        """Two-phase highlight query returns the same page as search_fts.
+
+        The highlight path ranks in a rowid-only subquery and only then
+        runs highlight()/snippet() on the survivors. Ids, order, and
+        BM25 scores must be indistinguishable from the plain path,
+        including with limit/offset pagination and filters.
+        """
+        cases = [
+            dict(),
+            dict(limit=2),
+            dict(limit=1, offset=1),
+            dict(limit=2, offset=2),
+            dict(exclude_mailboxes=["Sent"]),
+            dict(account="acct-1", mailbox="Inbox"),
+            dict(after="2026-02-01", before="2026-03-10"),
+        ]
+        for query in ("the", "budget", "budget meeting", "proj*"):
+            for kw in cases:
+                plain = search_fts(fts_db, query, **kw)
+                hl = search_fts_highlight(fts_db, query, **kw)
+                assert [r.id for r in hl] == [r.id for r in plain], (
+                    query,
+                    kw,
+                )
+                assert [r.score for r in hl] == [r.score for r in plain]
+                assert [r.mailbox for r in hl] == [r.mailbox for r in plain]
+
+    def test_highlight_limit_offset_pages_do_not_overlap(self, fts_db):
+        """'the' matches every row; page 1 + page 2 must tile the set."""
+        page1 = search_fts_highlight(fts_db, "the", limit=2, offset=0)
+        page2 = search_fts_highlight(fts_db, "the", limit=2, offset=2)
+        assert len(page1) == 2 and len(page2) == 2
+        ids = [r.id for r in page1] + [r.id for r in page2]
+        assert len(set(ids)) == 4
+        # Still best-first within and across pages
+        scores = [r.score for r in page1] + [r.score for r in page2]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_highlight_markers_only_on_returned_page(self, fts_db):
+        """Aux functions run on the page rows — markers are present."""
+        page = search_fts_highlight(fts_db, "budget", limit=1, offset=1)
+        assert len(page) == 1
+        assert "**" in page[0].subject or "**" in page[0].content_snippet

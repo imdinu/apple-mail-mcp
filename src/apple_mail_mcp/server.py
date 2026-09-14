@@ -31,9 +31,10 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -41,8 +42,6 @@ if sys.version_info >= (3, 12):
     from typing import TypedDict
 else:
     from typing_extensions import TypedDict
-
-from fastmcp import FastMCP
 
 from .builders import AccountsQueryBuilder, QueryBuilder
 from .config import (
@@ -56,9 +55,63 @@ from .executor import (
     execute_with_core_async,
 )
 
-mcp = FastMCP("Apple Mail")
-
 logger = logging.getLogger(__name__)
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+class _LazyFastMCP:
+    """Collects tool/resource registrations; builds the real server on demand.
+
+    ``import fastmcp`` costs ~1s (it pulls in the HTTP stack, sampling,
+    event stores, ...). Every CLI command imports this module for the
+    tool functions but only ``serve`` needs the MCP server, so the
+    import is deferred to the first ``run()``. The decorators return
+    the function unchanged, exactly like fastmcp 3.x's do, so direct
+    calls (CLI, the deprecated ``get_attachment`` alias, tests) behave
+    identically. Keep ``@mcp.tool`` / ``@mcp.resource(...)`` as the
+    spelling — the roster drift test scans for it.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._tools: list[Callable[..., Any]] = []
+        self._resources: list[tuple[dict[str, Any], Callable[..., Any]]] = []
+        self._server: Any = None
+
+    def tool(self, fn: F) -> F:
+        self._tools.append(fn)
+        return fn
+
+    def resource(self, uri: str, **kwargs: Any) -> Callable[[F], F]:
+        def register(fn: F) -> F:
+            self._resources.append(({"uri": uri, **kwargs}, fn))
+            return fn
+
+        return register
+
+    @property
+    def server(self) -> Any:
+        """The fastmcp ``FastMCP`` instance, built (and cached) on first use."""
+        if self._server is None:
+            from fastmcp import FastMCP
+
+            server = FastMCP(self._name)
+            for fn in self._tools:
+                server.tool(fn)
+            for kwargs, fn in self._resources:
+                server.resource(**kwargs)(fn)
+            self._server = server
+        return self._server
+
+    def run(self, *args: Any, **kwargs: Any) -> None:
+        self.server.run(*args, **kwargs)
+
+    async def run_async(self, *args: Any, **kwargs: Any) -> None:
+        await self.server.run_async(*args, **kwargs)
+
+
+mcp = _LazyFastMCP("Apple Mail")
 
 # Attachment cache directory
 ATTACHMENT_CACHE_DIR = _Path.home() / ".apple-mail-mcp" / "attachments"
@@ -804,13 +857,19 @@ async def get_email(
             from .index.disk import parse_emlx
 
             acct_map = _get_account_map()
-            await acct_map.ensure_loaded()
+            excluded_names = _excluded_account_names()
+            # The map is only needed to translate a caller-supplied
+            # account name and/or the configured exclusions to UUIDs.
+            # With neither, skip the JXA round-trip (~250ms cold) —
+            # the disk path below is pure index + .emlx.
+            if account is not None or excluded_names:
+                await acct_map.ensure_loaded()
 
             idx_acct = None
             if account is not None:
                 idx_acct = acct_map.name_to_uuid(account)
 
-            excluded_uuids = acct_map.names_to_uuids(_excluded_account_names())
+            excluded_uuids = acct_map.names_to_uuids(excluded_names)
 
             emlx_path = manager.find_email_path(
                 message_id, account=idx_acct, mailbox=mailbox

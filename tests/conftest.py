@@ -15,6 +15,64 @@ from apple_mail_mcp.index.schema import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_mail_directory(request, monkeypatch):
+    """Keep the suite off the developer's real ``~/Library/Mail``.
+
+    ``IndexManager.get_stats()`` (and everything that calls it, e.g.
+    ``is_stale()``) counts ``.emlx`` files on disk. Unpatched, that is
+    a full walk of the real mailbox — ~20s per call on a 73K-message
+    Mail.app, which made 9 tests account for ~98% of suite wall time.
+    Raising ``FileNotFoundError`` exercises the documented "no Full
+    Disk Access" branch instead. Tests that patch
+    ``apple_mail_mcp.index.disk.find_mail_directory`` themselves still
+    win (their patch is applied later). Opt out with
+    ``@pytest.mark.real_mail_dir`` for tests that exercise the real
+    lookup against a sandboxed ``Path.home``.
+    """
+    import apple_mail_mcp.index.disk as disk_mod
+
+    monkeypatch.setattr(disk_mod, "_cached_mail_dir", None)
+    if request.node.get_closest_marker("real_mail_dir"):
+        return
+
+    def _blocked() -> Path:
+        raise FileNotFoundError(
+            "tests must not touch the real Mail directory — patch "
+            "apple_mail_mcp.index.disk.find_mail_directory or mark the "
+            "test @pytest.mark.real_mail_dir"
+        )
+
+    monkeypatch.setattr(disk_mod, "find_mail_directory", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_config(monkeypatch, tmp_path):
+    """Keep the suite off the developer's ``~/.apple-mail-mcp/config.toml``
+    and ``APPLE_MAIL_*`` environment.
+
+    A real ``[defaults] account`` on the host changes which branch
+    ``_resolve_visible_account()`` takes, so a test can pass locally
+    and fail on a clean CI runner (or vice versa). Every test starts
+    from "no config file, no env"; tests that need a value set it with
+    ``monkeypatch`` (applied after this fixture, so it wins).
+    """
+    import os
+
+    from apple_mail_mcp import config
+
+    monkeypatch.setattr(config, "CONFIG_FILE_PATH", tmp_path / "no.toml")
+    for key in [k for k in os.environ if k.startswith("APPLE_MAIL_")]:
+        monkeypatch.delenv(key)
+    config._invalidate_config_cache()
+    # Warm the cache as "empty config" now, so tests that patch
+    # ``pathlib.Path.exists`` globally never trigger a lazy load that
+    # tries to open the non-existent file.
+    config._load_config_file()
+    yield
+    config._invalidate_config_cache()
+
+
 @pytest.fixture
 def temp_db():
     """Create an in-memory database with the schema and standard PRAGMAs."""

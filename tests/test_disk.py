@@ -1184,34 +1184,34 @@ class TestNestedExternalAttachments:
                 application/pdf (part 2.2 - the invoice)
         """
         return (
-            'Content-Type: multipart/mixed; boundary="outer"\r\n'
-            "\r\n"
-            "--outer\r\n"
-            'Content-Type: multipart/alternative; boundary="alt"\r\n'
-            "\r\n"
-            "--alt\r\n"
-            "Content-Type: text/plain\r\n"
-            "\r\n"
-            "Body text\r\n"
-            "--alt\r\n"
-            "Content-Type: text/html\r\n"
-            "\r\n"
-            "<p>Body</p>\r\n"
-            "--alt--\r\n"
-            "--outer\r\n"
-            'Content-Type: multipart/mixed; boundary="fwd"\r\n'
-            "\r\n"
-            "--fwd\r\n"
-            "Content-Type: text/html\r\n"
-            "\r\n"
-            "<p>Forwarded body</p>\r\n"
-            "--fwd\r\n"
-            "Content-Type: application/pdf\r\n"
-            'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
-            "\r\n"
-            "--fwd--\r\n"
-            "--outer--\r\n"
-        ).encode()
+            b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+            b"\r\n"
+            b"--outer\r\n"
+            b'Content-Type: multipart/alternative; boundary="alt"\r\n'
+            b"\r\n"
+            b"--alt\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Body text\r\n"
+            b"--alt\r\n"
+            b"Content-Type: text/html\r\n"
+            b"\r\n"
+            b"<p>Body</p>\r\n"
+            b"--alt--\r\n"
+            b"--outer\r\n"
+            b'Content-Type: multipart/mixed; boundary="fwd"\r\n'
+            b"\r\n"
+            b"--fwd\r\n"
+            b"Content-Type: text/html\r\n"
+            b"\r\n"
+            b"<p>Forwarded body</p>\r\n"
+            b"--fwd\r\n"
+            b"Content-Type: application/pdf\r\n"
+            b'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
+            b"\r\n"
+            b"--fwd--\r\n"
+            b"--outer--\r\n"
+        )
 
     def test_get_attachment_content_nested(self, tmp_path: Path):
         """get_attachment_content finds file in dotted subdir."""
@@ -1263,26 +1263,26 @@ class TestNestedExternalAttachments:
     def test_deeply_nested(self, tmp_path: Path):
         """Three levels deep: subdir 1.2.1 works."""
         mime_raw = (
-            'Content-Type: multipart/mixed; boundary="L1"\r\n'
-            "\r\n"
-            "--L1\r\n"
-            'Content-Type: multipart/mixed; boundary="L2"\r\n'
-            "\r\n"
-            "--L2\r\n"
-            "Content-Type: text/plain\r\n"
-            "\r\n"
-            "Body\r\n"
-            "--L2\r\n"
-            'Content-Type: multipart/mixed; boundary="L3"\r\n'
-            "\r\n"
-            "--L3\r\n"
-            "Content-Type: application/pdf\r\n"
-            'Content-Disposition: attachment; filename="deep.pdf"\r\n'
-            "\r\n"
-            "--L3--\r\n"
-            "--L2--\r\n"
-            "--L1--\r\n"
-        ).encode()
+            b'Content-Type: multipart/mixed; boundary="L1"\r\n'
+            b"\r\n"
+            b"--L1\r\n"
+            b'Content-Type: multipart/mixed; boundary="L2"\r\n'
+            b"\r\n"
+            b"--L2\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Body\r\n"
+            b"--L2\r\n"
+            b'Content-Type: multipart/mixed; boundary="L3"\r\n'
+            b"\r\n"
+            b"--L3\r\n"
+            b"Content-Type: application/pdf\r\n"
+            b'Content-Disposition: attachment; filename="deep.pdf"\r\n'
+            b"\r\n"
+            b"--L3--\r\n"
+            b"--L2--\r\n"
+            b"--L1--\r\n"
+        )
 
         pdf_bytes = b"%PDF deeply nested"
         emlx = _build_partial_tree(
@@ -1294,7 +1294,7 @@ class TestNestedExternalAttachments:
 
         result = get_attachment_content(emlx, "deep.pdf")
         assert result is not None
-        data, mime_type = result
+        data, _mime_type = result
         assert data == pdf_bytes
 
 
@@ -1395,6 +1395,7 @@ class TestDetectMailVersion:
 
         assert _detect_mail_version() == "V10"
 
+    @pytest.mark.real_mail_dir
     def test_find_mail_directory_caches(self, tmp_path: Path, monkeypatch):
         """find_mail_directory() caches its result."""
         import apple_mail_mcp.index.disk as disk_mod
@@ -1404,15 +1405,11 @@ class TestDetectMailVersion:
         (mail_dir / "account-uuid").mkdir()
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        # Clear cache
-        disk_mod._cached_mail_dir = None
+        # Cache is reset by the autouse _no_real_mail_directory fixture.
 
         result1 = disk_mod.find_mail_directory()
         result2 = disk_mod.find_mail_directory()
         assert result1 == result2 == mail_dir
-
-        # Clean up cache for other tests
-        disk_mod._cached_mail_dir = None
 
 
 class TestInlineImagesWithoutFilename:
