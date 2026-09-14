@@ -39,8 +39,13 @@ logger = logging.getLogger(__name__)
 
 # Regex to extract account/mailbox from path
 # ~/Library/Mail/V10/[AccountUUID]/[Mailbox].mbox/.../*.emlx
+# The mailbox group is greedy so it runs to the LAST .mbox: a nested mailbox
+# is one .mbox per level (Ablage.mbox/Nebenkosten.mbox), and a non-greedy
+# group would stop at the first level and collapse every child onto its
+# outermost parent. Anchoring the tail on Data/ keeps the optional
+# per-mailbox store UUID out of the captured name.
 PATH_PATTERN = re.compile(
-    r"/V\d+/([^/]+)/(.+?)\.mbox/.*?/(\d+)(?:\.partial)?\.emlx$"
+    r"/V\d+/([^/]+)/(.+)\.mbox/(?:[^/]+/)?Data/.*?/(\d+)(?:\.partial)?\.emlx$"
 )
 
 # Constants for safety limits
@@ -244,7 +249,12 @@ class IndexWatcher:
 
         # Use UUID as account name (more reliable than trying to map)
         account_name = account_uuid
-        mailbox_name = mailbox_dir
+        # The regex strips only the trailing .mbox; nested levels keep theirs.
+        # "Ablage.mbox/Nebenkosten" -> "Ablage/Nebenkosten"
+        mailbox_name = "/".join(
+            part[:-5] if part.endswith(".mbox") else part
+            for part in mailbox_dir.split("/")
+        )
 
         return account_name, mailbox_name, message_id
 
