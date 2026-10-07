@@ -34,7 +34,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, overload
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -75,13 +75,27 @@ class _LazyFastMCP:
 
     def __init__(self, name: str) -> None:
         self._name = name
-        self._tools: list[Callable[..., Any]] = []
+        self._tools: list[tuple[dict[str, Any], Callable[..., Any]]] = []
         self._resources: list[tuple[dict[str, Any], Callable[..., Any]]] = []
         self._server: Any = None
 
-    def tool(self, fn: F) -> F:
-        self._tools.append(fn)
-        return fn
+    @overload
+    def tool(self, fn: F, /) -> F: ...
+
+    @overload
+    def tool(self, fn: None = None, /, **kwargs: Any) -> Callable[[F], F]: ...
+
+    def tool(self, fn: F | None = None, /, **kwargs: Any) -> Any:
+        """``@mcp.tool`` or ``@mcp.tool(annotations=...)``, as in fastmcp."""
+        if fn is not None:
+            self._tools.append(({}, fn))
+            return fn
+
+        def register(f: F) -> F:
+            self._tools.append((kwargs, f))
+            return f
+
+        return register
 
     def resource(self, uri: str, **kwargs: Any) -> Callable[[F], F]:
         def register(fn: F) -> F:
@@ -97,8 +111,8 @@ class _LazyFastMCP:
             from fastmcp import FastMCP
 
             server = FastMCP(self._name)
-            for fn in self._tools:
-                server.tool(fn)
+            for kwargs, fn in self._tools:
+                server.tool(fn, **kwargs)
             for kwargs, fn in self._resources:
                 server.resource(**kwargs)(fn)
             self._server = server
