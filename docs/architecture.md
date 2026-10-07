@@ -138,7 +138,7 @@ Strategy 2: Index lookup + JXA   ← finds mailbox via SQLite, then JXA
 Strategy 3: Iterate all mailboxes ← slowest, always works (with timeout)
 ```
 
-All strategies return an identical response schema. Strategy 0 extracts read/flagged status from the plist footer flags bitmask (bit 0 = read, bit 4 = flagged) and `date_sent`, `reply_to`, `message_id` from MIME headers.
+All strategies return an identical response schema. Strategy 0 extracts read/flagged status from the plist footer flags bitmask (bit 0 = read, bit 4 = flagged) and `date_sent`, `reply_to`, `message_id`, and `to`/`cc` recipients from MIME headers. The JXA strategies read recipients via `MailCore.getRecipients()`.
 
 ---
 

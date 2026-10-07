@@ -94,6 +94,55 @@ class TestParseEmlx:
 class TestParseEmlxExtendedFields:
     """Tests for extended fields from plist footer and MIME headers."""
 
+    def test_recipient_headers_decode_names_and_merge_headers(
+        self, tmp_path: Path
+    ):
+        """To/Cc parse to {name, address}; RFC 2047 names are decoded
+        after splitting, so a quoted comma stays in its display name."""
+        mime = (
+            b"From: sender@example.com\n"
+            b"To: =?utf-8?q?Jos=C3=A9?= <jose@example.com>\n"
+            b'To: "Doe, Jane" <jane@example.com>\n'
+            b"Cc: peer@example.com\n\n"
+            b"Body\n"
+        )
+        path = tmp_path / "123.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.to == [
+            {"name": "José", "address": "jose@example.com"},
+            {"name": "Doe, Jane", "address": "jane@example.com"},
+        ]
+        assert result.cc == [{"name": "", "address": "peer@example.com"}]
+
+    def test_absent_recipient_headers_are_empty_lists(self, tmp_path: Path):
+        mime = b"From: sender@example.com\n\nBody\n"
+        path = tmp_path / "124.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.to == []
+        assert result.cc == []
+
+    def test_undecodable_recipient_name_is_kept_raw(self, tmp_path: Path):
+        """A malformed encoded-word must not drop the whole message."""
+        mime = (
+            b"From: sender@example.com\n"
+            b"To: =?utf-8?b?A?= <bad@example.com>\n\n"
+            b"Body\n"
+        )
+        path = tmp_path / "125.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.to == [
+            {"name": "=?utf-8?b?A?=", "address": "bad@example.com"}
+        ]
+
     def test_plist_flags_read_and_flagged(self, tmp_path: Path):
         """Plist footer flags bitmask: bit 0 = read, bit 4 = flagged."""
         mime = (

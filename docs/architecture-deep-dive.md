@@ -56,7 +56,7 @@ The first line is an ASCII integer indicating the exact byte length of the MIME 
 
 The core email data. This is a standard MIME message identical to what you'd find in an `.eml` file. We parse it with Python's built-in [`email.message_from_bytes()`](https://docs.python.org/3/library/email.parser.html), which handles:
 
-- **Headers** — `From`, `Subject`, `Date`, `Message-ID`, `Reply-To`, `Content-Type`
+- **Headers** — `From`, `To`, `Cc`, `Subject`, `Date`, `Message-ID`, `Reply-To`, `Content-Type`
 - **Body** — `text/plain` preferred, `text/html` fallback (converted to text via [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/bs4/doc/))
 - **Attachments** — MIME parts with `Content-Disposition: attachment` or inline images with `Content-ID`
 - **Encoding** — RFC 2047 encoded headers decoded via `email.header.decode_header()`
