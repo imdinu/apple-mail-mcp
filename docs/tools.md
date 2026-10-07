@@ -303,7 +303,7 @@ Move messages to another mailbox. Archiving and trashing are just moves to `Arch
 
 **Returns:** One `{"id", "account", "mailbox"}` per message with its new location. The target is resolved before any message moves; an unknown target raises `ValueError` and nothing changes.
 
-**Index coherence:** once Mail.app confirms the move, the stale FTS5 row for the source mailbox is evicted immediately so a follow-up `search()` cannot return a ghost result. The file watcher (or the next sync) indexes the message under its new mailbox.
+**Index coherence (eventual):** the index converges through the file watcher or the next sync, which indexes the message under its new mailbox. As a shortcut, the instance that holds the index writer lock evicts the stale source-mailbox row as soon as Mail.app confirms the move. An index-passive instance (for example the second server a desktop client spawns, see #106) skips that step, so a `search()` there can briefly return the old location.
 
 ```python
 move_email([12345], "Archive")

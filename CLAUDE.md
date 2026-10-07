@@ -41,7 +41,7 @@ src/apple_mail_mcp/
 | `get_email_attachment(id, filename)` | Extract attachment content | message_id, filename |
 | `get_attachment(id, filename)` | *Deprecated* — use `get_email_attachment()` | message_id, filename |
 | `update_email_status(ids, read?, flagged?)` | **Write.** Mark read/unread, flag/unflag | message_ids (≤10), read, flagged, account, mailbox |
-| `move_email(ids, target_mailbox)` | **Write.** Move / archive / trash; evicts stale index row (#66) | message_ids (≤10), target_mailbox, account, mailbox |
+| `move_email(ids, target_mailbox)` | **Write.** Move / archive / trash; index catches up eventually (writer evicts early, #66) | message_ids (≤10), target_mailbox, account, mailbox |
 | `send_email(to, subject, body, ...)` | **Write.** Draft by default; `confirm=True` sends | to, subject, body, cc, bcc, account, confirm |
 
 ## MCP Resources (1 total)

@@ -1643,10 +1643,12 @@ async def move_email(
     unknown target raises ``ValueError`` and nothing moves. Bounded to
     MAX_WRITE_BATCH ids per call (extra ids are dropped).
 
-    Index coherence (#66): after Mail.app confirms the move, the stale
-    FTS5 row for the source mailbox is removed immediately so a
-    follow-up search() cannot return a ghost; the watcher / next sync
-    indexes the message under its new mailbox.
+    Index coherence (#66) is eventual. After Mail.app confirms the
+    move, the index writer evicts the stale FTS5 row for the source
+    mailbox and the watcher / next sync indexes the message under its
+    new mailbox. In an index-passive instance (another process holds
+    the writer lock, #106) eviction is skipped, so search() may return
+    the old location until the writer catches up.
 
     Args:
         message_ids: Mail.app message ids (see get_emails / search).
@@ -1738,9 +1740,10 @@ JSON.stringify({{
     new_mailbox = result.get("mailbox") or target
 
     # Optimistic index update (#66): Mail.app has confirmed the move, so
-    # the rows indexed under the source mailbox are now ghosts. Evict
-    # them immediately; the watcher / next sync indexes the messages
-    # under their new mailbox. Never let this fail the move itself.
+    # the rows indexed under the source mailbox are now stale. Evicting
+    # them is a latency optimisation in the writer instance only
+    # (delete_email no-ops when index-passive); consistency comes from
+    # the watcher / next sync. Never let this fail the move itself.
     await _evict_index_rows(ids, account_name, resolved_mailbox)
 
     return [
