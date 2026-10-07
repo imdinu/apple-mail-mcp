@@ -301,6 +301,8 @@ JSON.stringify({{
     flagged: msg.flaggedStatus(),
     reply_to: msg.replyTo(),
     message_id: msg.messageId(),
+    to: MailCore.getRecipients(msg, "toRecipients"),
+    cc: MailCore.getRecipients(msg, "ccRecipients"),
     attachments: attachments
 }});
 """

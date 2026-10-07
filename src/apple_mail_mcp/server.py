@@ -188,6 +188,13 @@ class AttachmentSummary(TypedDict):
     size: int
 
 
+class Recipient(TypedDict):
+    """A message recipient: display name (may be empty) and address."""
+
+    name: str
+    address: str
+
+
 class EmailFull(TypedDict, total=False):
     """Complete email with full content."""
 
@@ -201,6 +208,8 @@ class EmailFull(TypedDict, total=False):
     flagged: bool
     reply_to: str
     message_id: str
+    to: list[Recipient]
+    cc: list[Recipient]
     attachments: list[AttachmentSummary]
 
 
@@ -435,8 +444,20 @@ def _detect_matched_columns(query: str, result) -> str:
 
 # ========== MCP Tools (8 total) ==========
 
+# MCP tool annotations: advisory hints that let clients and gateways
+# classify a tool without guessing from its name. They never replace
+# the read-only (#80) or hidden-account (#90) gates. Every tool below
+# only reads mail, so all share one set; openWorldHint is true because
+# results carry content from external senders.
+READ_ONLY_TOOL_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
 
-@mcp.tool
+
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def list_accounts() -> list[Account]:
     """
     List all configured email accounts in Apple Mail.
@@ -468,7 +489,7 @@ async def list_accounts() -> list[Account]:
     return [a for a in accounts if a.get("name") not in excluded]
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
     """
     List all mailboxes for an email account.
@@ -496,7 +517,7 @@ async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
     return await execute_with_core_async(script)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_emails(
     account: str | None = None,
     mailbox: str | None = None,
@@ -721,12 +742,14 @@ JSON.stringify({{
     flagged: msg.flaggedStatus(),
     reply_to: msg.replyTo(),
     message_id: msg.messageId(),
+    to: MailCore.getRecipients(msg, "toRecipients"),
+    cc: MailCore.getRecipients(msg, "ccRecipients"),
     attachments: attachments
 }});
 """
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_email(
     message_id: int,
     account: str | None = None,
@@ -750,6 +773,7 @@ async def get_email(
         - content: Full plain text body
         - read, flagged status
         - reply_to, message_id (email Message-ID header)
+        - to, cc: Lists of {name, address} recipients
         - attachments: List of {filename, mime_type, size}
 
     Note:
@@ -838,6 +862,8 @@ async def get_email(
                             else False,
                             "reply_to": parsed.reply_to,
                             "message_id": parsed.message_id_header,
+                            "to": parsed.to,
+                            "cc": parsed.cc,
                             "attachments": [
                                 {
                                     "filename": a.filename,
@@ -1044,7 +1070,7 @@ async def _resolve_emlx_path(
     return emlx_path
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_email_links(
     message_id: int,
     account: str | None = None,
@@ -1086,7 +1112,7 @@ async def get_email_links(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_email_attachment(
     message_id: int,
     filename: str,
@@ -1164,7 +1190,7 @@ async def get_email_attachment(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_attachment(
     message_id: int,
     filename: str | None = None,
@@ -1190,7 +1216,7 @@ async def get_attachment(
     return await get_email_attachment(message_id, filename, account, mailbox)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def search(
     query: str,
     account: str | None = None,

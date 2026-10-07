@@ -347,6 +347,7 @@ class TestGetEmail:
             date_sent="2025-01-01T00:00:00",
             reply_to="",
             message_id_header="<abc@example.com>",
+            to=[{"name": "Bob", "address": "bob@example.com"}],
         )
 
         mock_mgr.return_value.has_index.return_value = True
@@ -374,6 +375,8 @@ class TestGetEmail:
         assert result["subject"] == "Disk email"
         assert result["read"] is True
         assert result["message_id"] == "<abc@example.com>"
+        assert result["to"] == [{"name": "Bob", "address": "bob@example.com"}]
+        assert result["cc"] == []
         # JXA should NOT have been called
         mock_exec.assert_not_called()
 
@@ -1387,6 +1390,77 @@ class TestWriteImplyingToolsHaveGuard:
                 if isinstance(func, ast.Name) and func.id == "_ensure_writable":
                     return True
         return False
+
+
+class TestToolAnnotations:
+    """Every tool declares MCP annotations so clients and gateways can
+    classify it without guessing from its name.
+
+    readOnlyHint must agree with the #80 guard: a tool is read-only
+    exactly when it does not call _ensure_writable().
+    """
+
+    HINTS = (
+        "readOnlyHint",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+    )
+
+    @staticmethod
+    def _tool_writes() -> dict[str, bool]:
+        """Map each @mcp.tool function to whether it is a write tool."""
+        import ast
+
+        import apple_mail_mcp.server as server_module
+
+        tree = ast.parse(Path(server_module.__file__).read_text())
+        guard = TestWriteImplyingToolsHaveGuard
+        return {
+            node.name: guard._calls_ensure_writable(node)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and guard._has_mcp_tool_decorator(node)
+        }
+
+    @pytest.mark.asyncio
+    async def test_every_tool_declares_annotations(self):
+        from fastmcp import Client
+
+        from apple_mail_mcp.server import mcp
+
+        writes = self._tool_writes()
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        assert {t.name for t in tools} == set(writes)
+        for tool in tools:
+            hints = tool.annotations
+            assert hints is not None, f"{tool.name} has no annotations"
+            for hint in self.HINTS:
+                assert getattr(hints, hint) is not None, (tool.name, hint)
+            assert hints.readOnlyHint is not writes[tool.name], tool.name
+
+    @pytest.mark.asyncio
+    async def test_read_only_tools_are_safe_to_retry(self):
+        from fastmcp import Client
+
+        from apple_mail_mcp.server import mcp
+
+        writes = self._tool_writes()
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        read_only = [t for t in tools if not writes[t.name]]
+        assert read_only
+        for tool in read_only:
+            hints = tool.annotations
+            assert hints is not None, tool.name
+            assert (
+                hints.readOnlyHint,
+                hints.destructiveHint,
+                hints.idempotentHint,
+            ) == (True, False, True), tool.name
 
 
 class TestInputValidation:

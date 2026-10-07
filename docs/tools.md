@@ -15,6 +15,10 @@ Apple Mail MCP provides **8 MCP tools** — a consolidated API designed for AI a
 | `get_email_attachment()` | Extract attachment content | `message_id`, `filename`, `account?`, `mailbox?` |
 | `get_attachment()` | *Deprecated* — use `get_email_attachment()` | `message_id`, `filename`, `account?`, `mailbox?` |
 
+### Tool annotations
+
+Every tool declares MCP tool annotations so clients and gateways can classify it without guessing from its name. All eight tools only read mail and declare `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: true` (results carry content from external senders). `get_email_attachment()` and `get_attachment()` write the extracted file to a local cache, but never change mail state. The hints are advisory: they do not replace read-only mode or account exclusion.
+
 ---
 
 ## `list_accounts()`
@@ -110,7 +114,7 @@ Get a single email with full content. Uses a 4-strategy cascade to find the mess
 | `account` | `string?` | env default | Helps find the message faster |
 | `mailbox` | `string?` | `INBOX` | Helps find the message faster |
 
-**Returns:** Full email with: `id`, `subject`, `sender`, `content` (full body text), `date_received`, `date_sent`, `read`, `flagged`, `reply_to`, `message_id` (RFC 822 Message-ID header), `attachments` (list of `{filename, mime_type, size}`).
+**Returns:** Full email with: `id`, `subject`, `sender`, `content` (full body text), `date_received`, `date_sent`, `read`, `flagged`, `reply_to`, `message_id` (RFC 822 Message-ID header), `to` and `cc` (lists of `{name, address}`; `name` is `""` when the header has no display name), `attachments` (list of `{filename, mime_type, size}`).
 
 ```python
 get_email(12345)

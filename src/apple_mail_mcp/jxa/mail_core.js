@@ -147,6 +147,28 @@ const MailCore = {
     },
 
     /**
+     * Read one message's recipients with two batched property fetches.
+     * Best-effort like attachment metadata: [] if Mail.app can't
+     * resolve them, so a recipient read never fails the whole fetch.
+     * @param {Message} message - Mail message
+     * @param {string} property - "toRecipients" or "ccRecipients"
+     * @returns {Object[]} Array of {name, address}
+     */
+    getRecipients(message, property) {
+        try {
+            const recipients = message[property];
+            const names = recipients.name();
+            const addresses = recipients.address();
+            return addresses.map((address, i) => ({
+                name: names[i] || "",
+                address: address || "",
+            }));
+        } catch (e) {
+            return [];
+        }
+    },
+
+    /**
      * Wrap an operation with error handling.
      * @param {Function} fn - Function to execute
      * @returns {Object} {ok: true, data: ...} or {ok: false, error: ...}
