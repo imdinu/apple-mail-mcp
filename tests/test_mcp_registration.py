@@ -68,3 +68,26 @@ async def test_real_server_registers_every_tool_and_resource():
     assert _decorated("resource") == {"index_status"}
     # Cached: a second access must not rebuild (would double-register).
     assert server.mcp.server is real
+
+
+@pytest.mark.asyncio
+async def test_registry_accepts_bare_and_called_tool_decorators():
+    """``@mcp.tool`` and ``@mcp.tool(**kwargs)`` both register, and the
+    keyword arguments (e.g. MCP annotations) reach fastmcp."""
+    from apple_mail_mcp.server import _LazyFastMCP
+
+    reg = _LazyFastMCP("t")
+
+    @reg.tool
+    def bare() -> str:
+        return "a"
+
+    @reg.tool(annotations={"readOnlyHint": True})
+    def hinted() -> str:
+        return "b"
+
+    assert bare() == "a" and hinted() == "b"  # functions returned unchanged
+    tools = {t.name: t for t in await reg.server.list_tools()}
+    assert set(tools) == {"bare", "hinted"}
+    assert tools["hinted"].annotations is not None
+    assert tools["hinted"].annotations.readOnlyHint is True
