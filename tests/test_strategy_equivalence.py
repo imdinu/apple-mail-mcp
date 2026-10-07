@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -130,3 +130,59 @@ async def test_strategy0_and_jxa_agree_on_ids(gmail_index, tmp_path):
         f"Fast path {s0_ids} and JXA path {s1_ids} disagree — "
         "the #103 divergence class has returned"
     )
+
+
+@pytest.mark.parametrize("jxa_strategy", [1, 2, 3])
+@pytest.mark.asyncio
+async def test_get_email_recipients_agree_across_strategies(
+    tmp_path, monkeypatch, jxa_strategy
+):
+    """get_email's To/Cc from the .emlx headers (Strategy 0) must match
+    what each JXA strategy returns, and every JXA script must ask for
+    them — all strategies share one response schema."""
+    from apple_mail_mcp import server
+
+    monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "")
+    AccountMap.get_instance().load_from_jxa([{"name": "Work", "id": "W"}])
+
+    mime = (
+        b"From: sender@example.com\n"
+        b'To: "Doe, Jane" <jane@example.com>\n'
+        b"Cc: peer@example.com\n\n"
+        b"Body\n"
+    )
+    path = tmp_path / "42.emlx"
+    path.write_bytes(f"{len(mime)}\n".encode() + mime)
+    manager = MagicMock()
+    manager.has_index.return_value = True
+    manager.find_email_path.return_value = path
+    manager.get_email_attachments.return_value = []
+
+    # --- Strategy 0: real .emlx parse ---
+    with patch.object(server, "_get_index_manager", return_value=manager):
+        disk_result = await server.get_email(42, account="Work")
+
+    # --- JXA: Strategy 0 misses; earlier JXA strategies fail ---
+    manager.find_email_path.return_value = None
+    manager.find_email_location.return_value = ("W", "Archive")
+    jxa_result = {
+        "id": 42,
+        "to": [{"name": "Doe, Jane", "address": "jane@example.com"}],
+        "cc": [{"name": "", "address": "peer@example.com"}],
+    }
+    failures = [RuntimeError("not found")] * (jxa_strategy - 1)
+    with (
+        patch.object(server, "_get_index_manager", return_value=manager),
+        patch.object(
+            server,
+            "execute_with_core_async",
+            new=AsyncMock(side_effect=[*failures, jxa_result]),
+        ) as jxa,
+    ):
+        result = await server.get_email(42, account="Work")
+
+    assert jxa.call_count == jxa_strategy
+    for field in ("to", "cc"):
+        assert result[field] == disk_result[field]
+        for call in jxa.call_args_list:
+            assert f"{field}: MailCore.getRecipients" in call.args[0]

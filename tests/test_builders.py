@@ -15,6 +15,7 @@ import pytest
 from apple_mail_mcp.builders import (
     PROPERTY_SETS,
     AccountsQueryBuilder,
+    GetEmailBuilder,
     QueryBuilder,
 )
 
@@ -260,3 +261,26 @@ class TestPropertySets:
         assert preset in PROPERTY_SETS
         for key in required_keys:
             assert key in PROPERTY_SETS[preset]
+
+
+class TestGetEmailRecipients:
+    """Every full-message JXA strategy must read To/Cc recipients, so
+    get_email returns one schema whichever strategy serves it."""
+
+    def test_every_jxa_strategy_reads_recipients(self):
+        from apple_mail_mcp.server import _build_get_email_script
+
+        scripts = [
+            # Strategies 1 and 2
+            _build_get_email_script(42, "const mailbox = fixture;"),
+            # Strategy 3
+            GetEmailBuilder(message_id=42, account="Work").build(),
+        ]
+        for script in scripts:
+            assert 'to: MailCore.getRecipients(msg, "toRecipients")' in script
+            assert 'cc: MailCore.getRecipients(msg, "ccRecipients")' in script
+
+    def test_mail_core_defines_get_recipients(self):
+        from apple_mail_mcp.jxa import MAIL_CORE_JS
+
+        assert "getRecipients(message, property) {" in MAIL_CORE_JS
