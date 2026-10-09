@@ -88,7 +88,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.14.8" },
-    { name = "ty", specifier = ">=0.0.61" },
+    { name = "ty", specifier = "==0.0.73" },
 ]
 docs = [{ name = "zensical" }]
 

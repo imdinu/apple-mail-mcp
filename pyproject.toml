@@ -81,7 +81,7 @@ dev = [
     "pytest-cov>=6.0",
     "pytest-asyncio>=0.24",
     "flameprof>=0.4",
-    "ty>=0.0.61",
+    "ty==0.0.73",
 ]
 bench = [
     "plotly[kaleido]>=6",
