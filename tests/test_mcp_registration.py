@@ -107,3 +107,62 @@ async def test_registry_accepts_bare_and_called_tool_decorators():
     assert set(tools) == {"bare", "hinted"}
     assert tools["hinted"].annotations is not None
     assert tools["hinted"].annotations.readOnlyHint is True
+
+
+def test_decorating_and_dunder_probes_stay_lazy():
+    """``__getattr__`` must not make the decorator path build the server.
+
+    ``tool``/``resource`` are real methods, so normal lookup finds them
+    and ``__getattr__`` never runs. Dunder probes (``inspect.unwrap``'s
+    ``hasattr(f, "__wrapped__")``, ``copy.copy``'s ``__setstate__``)
+    are refused rather than forwarded, so they stay lazy too.
+    """
+    code = (
+        "import copy, sys\n"
+        "from apple_mail_mcp.server import _LazyFastMCP, mcp\n"
+        "reg = _LazyFastMCP('t')\n"
+        "reg.tool(lambda: 1)\n"
+        "reg.tool(annotations={'readOnlyHint': True})(lambda: 2)\n"
+        "reg.resource('t://r')(lambda: 'r')\n"
+        "assert not hasattr(mcp, '__wrapped__')\n"
+        "copy.copy(mcp)\n"
+        "assert reg._server is None and mcp._server is None\n"
+        "print(sorted(m for m in sys.modules if m.startswith('fastmcp')))"
+    )
+    assert _run_python(code) == "[]"
+
+
+@pytest.mark.asyncio
+async def test_unknown_attributes_fall_through_to_real_server():
+    """``mcp.<anything>`` reaches the real FastMCP; ``mcp.server`` is it.
+
+    Covers what external tooling does with the exported object:
+    attribute access (``fastmcp inspect``), ``mount()``, and ``Client``,
+    which needs the real instance because transport inference is an
+    ``isinstance`` check that ``__getattr__`` can't satisfy.
+    """
+    from fastmcp import Client, FastMCP
+
+    from apple_mail_mcp.server import _LazyFastMCP
+
+    reg = _LazyFastMCP("t")
+
+    @reg.tool
+    def ping() -> str:
+        return "pong"
+
+    assert reg._server is None
+    assert reg.name == "t"  # not defined on the wrapper: falls through
+    assert isinstance(reg.server, FastMCP)
+    assert {t.name for t in await reg.list_tools()} == {"ping"}
+    with pytest.raises(AttributeError):
+        reg.no_such_attribute  # noqa: B018
+
+    parent = FastMCP("parent")
+    parent.mount(reg)
+    async with Client(parent) as client:
+        assert {t.name for t in await client.list_tools()} == {"ping"}
+
+    async with Client(reg.server) as client:
+        result = await client.call_tool("ping", {})
+        assert result.data == "pong"
