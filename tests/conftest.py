@@ -56,6 +56,12 @@ def _no_host_config(monkeypatch, tmp_path):
     and fail on a clean CI runner (or vice versa). Every test starts
     from "no config file, no env"; tests that need a value set it with
     ``monkeypatch`` (applied after this fixture, so it wins).
+
+    The one exception is ``APPLE_MAIL_INDEX_PATH``: with it unset,
+    ``get_index_path()`` falls back to the real
+    ``~/.apple-mail-mcp/index.db``, so any test reaching
+    ``IndexManager.get_instance()`` unmocked would open the developer's
+    live index. Point it at a per-test scratch file instead.
     """
     import os
 
@@ -64,6 +70,7 @@ def _no_host_config(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CONFIG_FILE_PATH", tmp_path / "no.toml")
     for key in [k for k in os.environ if k.startswith("APPLE_MAIL_")]:
         monkeypatch.delenv(key)
+    monkeypatch.setenv("APPLE_MAIL_INDEX_PATH", str(tmp_path / "index.db"))
     config._invalidate_config_cache()
     # Warm the cache as "empty config" now, so tests that patch
     # ``pathlib.Path.exists`` globally never trigger a lazy load that
