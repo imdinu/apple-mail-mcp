@@ -448,7 +448,8 @@ def _detect_matched_columns(query: str, result) -> str:
 # classify a tool without guessing from its name. They never replace
 # the read-only (#80) or hidden-account (#90) gates. Every tool below
 # only reads mail, so all share one set; openWorldHint is true because
-# results carry content from external senders.
+# the tools reach external systems: Mail.app and, through it, the
+# accounts' mail servers.
 READ_ONLY_TOOL_ANNOTATIONS = {
     "readOnlyHint": True,
     "destructiveHint": False,
