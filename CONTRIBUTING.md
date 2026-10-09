@@ -51,6 +51,7 @@ src/apple_mail_mcp/
 
 - **Formatter**: `uv run ruff format src/`
 - **Linter**: `uv run ruff check src/`
+- **Type checker**: `uv run ty check src/`
 - Line length: 80 characters
 - Type hints required (Python 3.11+ syntax)
 
@@ -61,6 +62,7 @@ All changes should include tests. Run the full suite before submitting:
 ```bash
 uv run ruff check src/          # Lint
 uv run ruff format --check src/ # Format check
+uv run ty check src/            # Type check
 uv run pytest -v                # Tests
 ```
 
@@ -75,7 +77,7 @@ Tests use `pytest` with `pytest-asyncio`. Most tests mock JXA execution so they 
 
 ## Submitting a PR
 
-1. Ensure all checks pass (`ruff check`, `ruff format`, `pytest`)
+1. Ensure all checks pass (`ruff check`, `ruff format`, `ty check`, `pytest`)
 2. Write a clear PR description explaining *what* and *why*
 3. Keep the diff focused — avoid unrelated changes in the same PR
 4. PRs are typically squash-merged into `main`
