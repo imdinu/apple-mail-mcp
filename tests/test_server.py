@@ -1423,14 +1423,23 @@ class TestToolAnnotations:
             and guard._has_mcp_tool_decorator(node)
         }
 
+    @staticmethod
+    def _server():
+        """The FastMCP instance to hand to Client().
+
+        Client() picks its transport with isinstance(..., FastMCP), so
+        #117's lazy wrapper needs its .server; before #117, mcp is it.
+        """
+        from apple_mail_mcp.server import mcp
+
+        return getattr(mcp, "server", mcp)
+
     @pytest.mark.asyncio
     async def test_every_tool_declares_annotations(self):
         from fastmcp import Client
 
-        from apple_mail_mcp.server import mcp
-
         writes = self._tool_writes()
-        async with Client(mcp) as client:
+        async with Client(self._server()) as client:
             tools = await client.list_tools()
 
         assert {t.name for t in tools} == set(writes)
@@ -1445,10 +1454,8 @@ class TestToolAnnotations:
     async def test_read_only_tools_are_safe_to_retry(self):
         from fastmcp import Client
 
-        from apple_mail_mcp.server import mcp
-
         writes = self._tool_writes()
-        async with Client(mcp) as client:
+        async with Client(self._server()) as client:
             tools = await client.list_tools()
 
         read_only = [t for t in tools if not writes[t.name]]
