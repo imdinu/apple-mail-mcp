@@ -1684,6 +1684,42 @@ class TestGetAttachmentLinksMode:
             assert "file_path" not in result
 
 
+class TestGetEmailLinksOutputSchema:
+    """get_email_links advertises only what it returns.
+
+    Annotating it with the attachment TypedDict made fastmcp publish
+    filename/mime_type/size/file_path in its output schema.
+    """
+
+    @pytest.mark.asyncio
+    async def test_schema_is_links_only(self):
+        from apple_mail_mcp.server import mcp
+
+        tool = await mcp.get_tool("get_email_links")
+        schema = tool.output_schema
+
+        assert schema is not None
+        assert set(schema["properties"]) == {"links"}
+        assert schema["required"] == ["links"]
+
+    @pytest.mark.asyncio
+    async def test_deprecated_get_attachment_schema_unchanged(self):
+        """The deprecated tool still covers both of its result shapes."""
+        from apple_mail_mcp.server import mcp
+
+        tool = await mcp.get_tool("get_attachment")
+        schema = tool.output_schema
+
+        assert schema is not None
+        assert set(schema["properties"]) == {
+            "filename",
+            "mime_type",
+            "size",
+            "file_path",
+            "links",
+        }
+
+
 class TestSearchIndexHonesty:
     """An index that cannot answer must say so (#110).
 
