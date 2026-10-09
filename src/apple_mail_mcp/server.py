@@ -71,6 +71,14 @@ class _LazyFastMCP:
     calls (CLI, the deprecated ``get_attachment`` alias, tests) behave
     identically. Keep ``@mcp.tool`` / ``@mcp.resource(...)`` as the
     spelling — the roster drift test scans for it.
+
+    Any other attribute (``name``, ``list_tools``, ``_lifespan``, ...)
+    falls through to the real server, so ``parent.mount(mcp)`` and
+    ``fastmcp inspect <file>:mcp`` work. This object is still not a
+    ``FastMCP``, though: anything that type-checks its argument needs
+    ``mcp.server``, the real instance. Notably ``fastmcp.Client(mcp)``
+    fails (transport inference uses ``isinstance``); use
+    ``Client(mcp.server)``.
     """
 
     def __init__(self, name: str) -> None:
@@ -106,7 +114,11 @@ class _LazyFastMCP:
 
     @property
     def server(self) -> Any:
-        """The fastmcp ``FastMCP`` instance, built (and cached) on first use."""
+        """The real fastmcp ``FastMCP`` instance, built and cached on first use.
+
+        Pass this, not ``mcp``, wherever a ``FastMCP`` is required, e.g.
+        ``fastmcp.Client(mcp.server)``.
+        """
         if self._server is None:
             from fastmcp import FastMCP
 
@@ -123,6 +135,20 @@ class _LazyFastMCP:
 
     async def run_async(self, *args: Any, **kwargs: Any) -> None:
         await self.server.run_async(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        """Fall through to the real server for anything not defined here.
+
+        Python only calls this when normal lookup fails, so the
+        import-time ``tool``/``resource`` decorators never reach it and
+        stay lazy. Dunder probes are refused: ``hasattr(mcp,
+        "__wrapped__")`` (``inspect.unwrap``) must not import fastmcp,
+        and ``copy.copy`` probes ``__setstate__`` on an instance with
+        no ``_server`` yet, which would otherwise recurse.
+        """
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return getattr(self.server, name)
 
 
 mcp = _LazyFastMCP("Apple Mail")
