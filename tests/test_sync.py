@@ -22,7 +22,10 @@ class TestWatcherPathPattern:
     """Tests for watcher PATH_PATTERN regex (#39)."""
 
     def test_matches_regular_emlx(self):
-        path = "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/12345.emlx"
+        path = (
+            "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/"
+            "12345.emlx"
+        )
         m = PATH_PATTERN.search(path)
         assert m is not None
         assert m.group(1) == "acc"
@@ -30,7 +33,10 @@ class TestWatcherPathPattern:
         assert m.group(3) == "12345"
 
     def test_matches_partial_emlx(self):
-        path = "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/67301.partial.emlx"
+        path = (
+            "/Users/x/Library/Mail/V10/acc/INBOX.mbox/Data/1/Messages/"
+            "67301.partial.emlx"
+        )
         m = PATH_PATTERN.search(path)
         assert m is not None
         assert m.group(1) == "acc"
