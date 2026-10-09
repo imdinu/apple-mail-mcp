@@ -33,7 +33,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal, cast
+from typing import cast
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -45,6 +45,7 @@ else:
 from fastmcp import FastMCP
 
 from .builders import AccountsQueryBuilder, QueryBuilder
+from .choices import EmailFilter, SearchScope
 from .config import (
     get_default_account,
     get_default_mailbox,
@@ -500,9 +501,7 @@ async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
 async def get_emails(
     account: str | None = None,
     mailbox: str | None = None,
-    filter: Literal[
-        "all", "unread", "flagged", "today", "last_7_days", "this_week"
-    ] = "all",
+    filter: EmailFilter = "all",
     limit: int = 50,
 ) -> list[EmailSummary]:
     """
@@ -1202,7 +1201,7 @@ async def search(
     query: str,
     account: str | None = None,
     mailbox: str | None = None,
-    scope: Literal["all", "subject", "sender", "body", "attachments"] = "all",
+    scope: SearchScope = "all",
     limit: int = 20,
     offset: int = 0,
     exclude_mailboxes: list[str] | None = None,
