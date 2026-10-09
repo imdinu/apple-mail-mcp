@@ -12,6 +12,7 @@ src/apple_mail_mcp/
 ├── cli.py              # CLI commands (index, status, rebuild, serve)
 ├── server.py           # FastMCP server with 8 MCP tools
 ├── config.py           # Environment variable configuration
+├── choices.py          # Filter/scope Literals shared by server and CLI
 ├── builders.py         # QueryBuilder, AccountsQueryBuilder
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
 ├── index/              # FTS5 search index module
