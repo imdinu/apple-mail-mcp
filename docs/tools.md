@@ -17,7 +17,7 @@ Apple Mail MCP provides **8 MCP tools** — a consolidated API designed for AI a
 
 ### Tool annotations
 
-Every tool declares MCP tool annotations so clients and gateways can classify it without guessing from its name. All eight tools only read mail and declare `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: true` (results carry content from external senders). `get_email_attachment()` and `get_attachment()` write the extracted file to a local cache, but never change mail state. The hints are advisory: they do not replace read-only mode or account exclusion.
+Every tool declares MCP tool annotations so clients and gateways can classify it without guessing from its name. All eight tools only read mail and declare `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: true` (the tools reach external systems: Mail.app and, through it, the accounts' mail servers). `get_email_attachment()` and `get_attachment()` write the extracted file to a local cache, but never change mail state. The hints are advisory: they do not replace read-only mode or account exclusion.
 
 ---
 
