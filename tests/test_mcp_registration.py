@@ -10,15 +10,34 @@ the suite and checks the roster matches the ``@mcp.tool`` decorators.
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-SERVER_PY = (
-    Path(__file__).parent.parent / "src" / "apple_mail_mcp" / "server.py"
-)
+SRC = Path(__file__).parent.parent / "src"
+SERVER_PY = SRC / "apple_mail_mcp" / "server.py"
+
+
+def _run_python(code: str) -> str:
+    """Run ``code`` in a fresh interpreter and return its stdout.
+
+    ``PYTHONPATH=src`` makes it import this checkout's package even
+    when it isn't installed into the interpreter running the suite.
+    """
+    pythonpath = os.pathsep.join(
+        p for p in (str(SRC), os.environ.get("PYTHONPATH")) if p
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "PYTHONPATH": pythonpath},
+    )
+    return out.stdout.strip()
 
 
 def _decorated(attr: str) -> set[str]:
@@ -49,10 +68,7 @@ def test_importing_server_does_not_import_fastmcp():
         "import sys, apple_mail_mcp.server; "
         "print(sorted(m for m in sys.modules if m.startswith('fastmcp')))"
     )
-    out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
-    )
-    assert out.stdout.strip() == "[]"
+    assert _run_python(code) == "[]"
 
 
 @pytest.mark.asyncio
