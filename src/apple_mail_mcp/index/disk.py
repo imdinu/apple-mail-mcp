@@ -31,8 +31,10 @@ import plistlib
 import re
 import sqlite3
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from email.errors import HeaderParseError
 from email.header import decode_header, make_header
+from email.utils import getaddresses
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -132,6 +134,29 @@ class EmlxEmail:
     date_sent: str = ""
     reply_to: str = ""
     message_id_header: str = ""
+    to: list[dict[str, str]] = field(default_factory=list)
+    cc: list[dict[str, str]] = field(default_factory=list)
+
+
+def _read_recipients(
+    msg: email.message.Message, header: str
+) -> list[dict[str, str]]:
+    """Parse an address header into ``[{name, address}]``.
+
+    Addresses are split before RFC 2047 decoding so an encoded comma
+    stays inside its display name. Repeated headers are merged; a name
+    that fails to decode is kept raw rather than dropping the message.
+    """
+    recipients = []
+    for name, address in getaddresses(msg.get_all(header, [])):
+        if not address:
+            continue
+        try:
+            name = str(make_header(decode_header(name)))
+        except (UnicodeDecodeError, LookupError, HeaderParseError):
+            pass
+        recipients.append({"name": name, "address": address})
+    return recipients
 
 
 def find_mail_directory() -> Path:
@@ -465,6 +490,8 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
             date_sent=date_sent,
             reply_to=reply_to,
             message_id_header=message_id_header,
+            to=_read_recipients(msg, "To"),
+            cc=_read_recipients(msg, "Cc"),
         )
 
     except (OSError, ValueError, UnicodeDecodeError, LookupError):
