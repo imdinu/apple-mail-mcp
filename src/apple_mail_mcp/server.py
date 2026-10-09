@@ -994,6 +994,12 @@ class LinkResult(TypedDict):
     text: str
 
 
+class EmailLinks(TypedDict):
+    """Content returned by get_email_links."""
+
+    links: list[LinkResult]
+
+
 class AttachmentContent(TypedDict, total=False):
     """Content returned by get_attachment."""
 
@@ -1049,7 +1055,7 @@ async def get_email_links(
     message_id: int,
     account: str | None = None,
     mailbox: str | None = None,
-) -> AttachmentContent:
+) -> EmailLinks:
     """
     Extract hyperlinks from an email's HTML content.
 
@@ -1186,7 +1192,8 @@ async def get_attachment(
         mailbox: Mailbox name (optional)
     """
     if filename is None:
-        return await get_email_links(message_id, account, mailbox)
+        links = await get_email_links(message_id, account, mailbox)
+        return {"links": links["links"]}
     return await get_email_attachment(message_id, filename, account, mailbox)
 
 
