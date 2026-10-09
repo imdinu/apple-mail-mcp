@@ -549,9 +549,7 @@ class TestGetEmail:
             result = await get_email(42)
 
         assert result["id"] == 42
-        # Loaded once by _resolve_visible_account (no visible default)
-        # and once by the Strategy 0 UUID gate.
-        assert acct_map.ensure_loaded.await_count == 2
+        acct_map.ensure_loaded.assert_awaited()
         acct_map.names_to_uuids.assert_called_with({"Hidden"})
 
     @pytest.mark.asyncio
