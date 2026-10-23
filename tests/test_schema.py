@@ -308,9 +308,14 @@ class TestMigrationV3ToV4:
     def test_migration_adds_attachment_count_column(self, v3_db):
         _run_migrations(v3_db, 3, SCHEMA_VERSION)
 
-        # attachment_count should exist and default to 0
+        # attachment_count should exist and default to 0. Checked on a
+        # fresh row: the v6 step clears pre-existing ones (#105).
+        v3_db.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (2, 'acc', 'INBOX')"
+        )
         cursor = v3_db.execute(
-            "SELECT attachment_count FROM emails WHERE message_id = 1"
+            "SELECT attachment_count FROM emails WHERE message_id = 2"
         )
         assert cursor.fetchone()[0] == 0
 
@@ -401,19 +406,170 @@ class TestMigrationV4ToV5:
         )
         assert cursor.fetchone() is not None
 
-    def test_migration_preserves_existing_data(self, v4_db):
+    def test_migration_keeps_emails_table(self, v4_db):
+        # The v5 step leaves rows alone; the chain continues into v6,
+        # which clears them for a full-path re-index (#105).
         _run_migrations(v4_db, 4, SCHEMA_VERSION)
 
-        cursor = v4_db.execute(
-            "SELECT subject FROM emails WHERE message_id = 1"
-        )
-        assert cursor.fetchone()[0] == "Pre-existing email"
+        cursor = v4_db.execute("SELECT COUNT(*) FROM emails")
+        assert cursor.fetchone()[0] == 0
 
     def test_migration_updates_version(self, v4_db):
         _run_migrations(v4_db, 4, SCHEMA_VERSION)
 
         cursor = v4_db.execute("SELECT version FROM schema_version")
         assert cursor.fetchone()[0] == SCHEMA_VERSION
+
+
+class TestMigrationV5ToV6:
+    """v5→v6 clears rows indexed with collapsed mailbox names (#105)."""
+
+    @pytest.fixture
+    def v5_db_path(self, tmp_path: Path) -> Path:
+        """A v5 index file whose rows carry the old collapsed names."""
+        path = tmp_path / "v5.db"
+        conn = init_database(path)
+        conn.execute("UPDATE schema_version SET version = 5")
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox, subject) "
+            "VALUES (1, 'acc', 'Ablage', 'Collapsed nested mail')"
+        )
+        conn.execute(
+            "INSERT INTO attachments (email_rowid, filename) "
+            "VALUES (last_insert_rowid(), 'a.pdf')"
+        )
+        conn.execute(
+            "INSERT INTO sync_state (account, mailbox) VALUES ('acc', 'Ablage')"
+        )
+        conn.execute(
+            "INSERT INTO failed_index_jobs "
+            "(emlx_path, account, mailbox, error_type, error_message) "
+            "VALUES ('/x.emlx', 'acc', 'Ablage', 'E', 'm')"
+        )
+        conn.commit()
+        conn.close()
+        return path
+
+    def _count(self, conn, table: str) -> int:
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    def test_opening_v5_index_clears_indexed_rows(self, v5_db_path: Path):
+        conn = init_database(v5_db_path)
+
+        assert self._count(conn, "emails") == 0
+        assert self._count(conn, "attachments") == 0
+        assert self._count(conn, "sync_state") == 0
+        assert self._count(conn, "failed_index_jobs") == 0
+        # FTS shadow content went with the rows (AFTER DELETE trigger)
+        hits = conn.execute(
+            "SELECT COUNT(*) FROM emails_fts WHERE emails_fts MATCH 'Collapsed'"
+        ).fetchone()[0]
+        assert hits == 0
+        conn.close()
+
+    def test_updates_version(self, v5_db_path: Path):
+        conn = init_database(v5_db_path)
+        version = conn.execute("SELECT version FROM schema_version").fetchone()
+        assert version[0] == SCHEMA_VERSION == 6
+        conn.close()
+
+    def test_runs_once(self, v5_db_path: Path):
+        """Rows synced after the upgrade survive the next open."""
+        init_database(v5_db_path).close()
+        conn = init_database(v5_db_path)
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (1, 'acc', 'Ablage/Nebenkosten')"
+        )
+        conn.commit()
+        conn.close()
+
+        conn = init_database(v5_db_path)
+        assert self._count(conn, "emails") == 1
+        conn.close()
+
+    def test_schema_still_usable(self, v5_db_path: Path):
+        conn = init_database(v5_db_path)
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox, subject) "
+            "VALUES (2, 'acc', 'Ablage/Nebenkosten', 'Fresh row')"
+        )
+        hits = conn.execute(
+            "SELECT COUNT(*) FROM emails_fts WHERE emails_fts MATCH 'Fresh'"
+        ).fetchone()[0]
+        assert hits == 1
+        conn.close()
+
+
+class TestMigrationConcurrency:
+    """Every process migrates on open, index writer or not (#107 review).
+    The migration must be atomic and must re-check the version under
+    the write lock, or a reader that saw v5 first wipes the rows a
+    writer has already re-indexed under v6."""
+
+    def _v5(self, tmp_path: Path) -> Path:
+        path = tmp_path / "v5.db"
+        conn = init_database(path)
+        conn.execute("UPDATE schema_version SET version = 5")
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (1, 'acc', 'Ablage')"
+        )
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_stale_version_read_does_not_rerun_migration(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from apple_mail_mcp.index import schema
+
+        path = self._v5(tmp_path)
+
+        # Reader B checks the version first and still sees 5 ...
+        reader = schema.create_connection(path)
+        assert schema._schema_version(reader) == 5
+
+        # ... writer A migrates and re-indexes meanwhile ...
+        writer = init_database(path)
+        writer.execute(
+            "INSERT INTO emails (message_id, account, mailbox) "
+            "VALUES (1, 'acc', 'Ablage/Nebenkosten')"
+        )
+        writer.commit()
+
+        # ... then B proceeds on its stale read.
+        schema._migrate_if_needed(reader, stale_version=5)
+
+        rows = writer.execute("SELECT mailbox FROM emails").fetchall()
+        assert [r[0] for r in rows] == ["Ablage/Nebenkosten"]
+        reader.close()
+        writer.close()
+
+    def test_failed_migration_leaves_v5_intact(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from apple_mail_mcp.index import schema
+
+        path = self._v5(tmp_path)
+
+        def boom():
+            raise RuntimeError("crash mid-migration")
+
+        monkeypatch.setattr(schema, "get_schema_sql", boom)
+        with pytest.raises(RuntimeError):
+            init_database(path)
+        monkeypatch.undo()
+
+        conn = sqlite3.connect(path)
+        assert (
+            conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            == 5
+        )
+        assert conn.execute("SELECT mailbox FROM emails").fetchall() == [
+            ("Ablage",)
+        ]
+        conn.close()
 
 
 class TestInsertAttachments:

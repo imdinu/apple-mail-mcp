@@ -14,10 +14,12 @@ import os
 import sqlite3
 from pathlib import Path
 
+from .mailbox_resolver import register_sql_functions
+
 logger = logging.getLogger(__name__)
 
 # Current schema version for migrations
-SCHEMA_VERSION = 5  # Bumped for failed_index_jobs (DLQ) support
+SCHEMA_VERSION = 6  # Bumped to re-index full nested mailbox paths (#105)
 
 # Default PRAGMAs for all connections (centralized to avoid drift)
 DEFAULT_PRAGMAS = {
@@ -160,6 +162,8 @@ def create_connection(db_path: Path) -> sqlite3.Connection:
     # Apply standard PRAGMAs
     for pragma, value in DEFAULT_PRAGMAS.items():
         conn.execute(f"PRAGMA {pragma}={value}")
+
+    register_sql_functions(conn)
 
     return conn
 
@@ -305,35 +309,87 @@ def init_database(db_path: Path) -> sqlite3.Connection:
                 "Could not set secure permissions on %s: %s", db_path, e
             )
 
-    # Check current schema version
-    sql = "SELECT name FROM sqlite_master "
-    sql += "WHERE type='table' AND name='schema_version'"
-    cursor = conn.execute(sql)
-    if cursor.fetchone() is None:
-        # Fresh database - create schema
-        logger.info(
-            "Creating fresh database schema (version %d)", SCHEMA_VERSION
-        )
-        conn.executescript(get_schema_sql())
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
-        )
-        conn.commit()
-    else:
-        # Check for migrations
-        cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
-        row = cursor.fetchone()
-        current_version = row[0] if row else 0
-
-        if current_version < SCHEMA_VERSION:
-            logger.info(
-                "Migrating database from version %d to %d",
-                current_version,
-                SCHEMA_VERSION,
-            )
-            _run_migrations(conn, current_version, SCHEMA_VERSION)
+    # Lock-free fast path: an up-to-date index needs no write lock.
+    version = _schema_version(conn)
+    if version is None or version < SCHEMA_VERSION:
+        _migrate_if_needed(conn, stale_version=version)
 
     return conn
+
+
+def _schema_version(conn: sqlite3.Connection) -> int | None:
+    """Stored schema version; None for a database without a schema."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='schema_version'"
+    )
+    if cursor.fetchone() is None:
+        return None
+    row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+    return row[0] if row else 0
+
+
+def _migrate_if_needed(
+    conn: sqlite3.Connection, stale_version: int | None
+) -> None:
+    """Create or migrate the schema atomically under the write lock.
+
+    Every process opening the index runs this — the writer and any
+    index-passive instance alike (#106). ``stale_version`` was read
+    without a lock and may be outdated by the time the lock is held:
+    re-read it, or a reader that saw v5 first would replay the v6 drop
+    over rows the writer has already re-indexed. Whoever comes first
+    migrates; everyone else waits on busy_timeout (the v6 step takes
+    well under a second) and then finds nothing to do. A passive
+    process may migrate too — the step is atomic, and the writer's
+    next sync repopulates either way.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = _schema_version(conn)
+        if version is None:
+            logger.info(
+                "Creating fresh database schema (version %d)", SCHEMA_VERSION
+            )
+            _execute_script(conn, get_schema_sql())
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                (SCHEMA_VERSION,),
+            )
+        elif version < SCHEMA_VERSION:
+            logger.info(
+                "Migrating database from version %d to %d",
+                version,
+                SCHEMA_VERSION,
+            )
+            _run_migrations(conn, version, SCHEMA_VERSION)
+        elif stale_version is not None:
+            logger.debug(
+                "Schema already migrated to %d by another process", version
+            )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _execute_script(conn: sqlite3.Connection, script: str) -> None:
+    """Run a multi-statement script inside the current transaction.
+
+    ``executescript()`` would COMMIT first, which splits a migration
+    into separately committed halves — a crash between DROP and CREATE
+    then leaves an index without tables.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        # A last statement without ";" still runs (truly incomplete
+        # SQL raises) instead of silently dropping out of a migration.
+        conn.execute(statement)
 
 
 def _run_migrations(
@@ -357,14 +413,17 @@ def _run_migrations(
         )
 
         # Drop old tables and recreate
-        conn.executescript("""
+        _execute_script(
+            conn,
+            """
             DROP TABLE IF EXISTS emails_fts;
             DROP TABLE IF EXISTS emails;
             DROP TABLE IF EXISTS sync_state;
-        """)
+        """,
+        )
 
         # Recreate with new schema
-        conn.executescript(get_schema_sql())
+        _execute_script(conn, get_schema_sql())
 
     if from_version < 3:
         # Migration from v2 to v3: Add emlx_path column for disk-first sync
@@ -393,7 +452,9 @@ def _run_migrations(
         )
 
         # Create attachments table
-        conn.executescript("""
+        _execute_script(
+            conn,
+            """
             CREATE TABLE IF NOT EXISTS attachments (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
                 email_rowid INTEGER NOT NULL
@@ -407,7 +468,8 @@ def _run_migrations(
                 ON attachments(email_rowid);
             CREATE INDEX IF NOT EXISTS idx_attachments_filename
                 ON attachments(filename);
-        """)
+        """,
+        )
 
         logger.info("Migration v3→v4 complete.")
         import sys
@@ -424,7 +486,9 @@ def _run_migrations(
     if from_version < 5:
         # Migration from v4 to v5: Add failed_index_jobs (DLQ) table
         logger.info("Migrating schema v4→v5: adding failed_index_jobs table")
-        conn.executescript("""
+        _execute_script(
+            conn,
+            """
             CREATE TABLE IF NOT EXISTS failed_index_jobs (
                 emlx_path TEXT PRIMARY KEY,
                 account TEXT NOT NULL,
@@ -437,8 +501,40 @@ def _run_migrations(
             );
             CREATE INDEX IF NOT EXISTS idx_failed_jobs_mailbox
                 ON failed_index_jobs(account, mailbox);
-        """)
+        """,
+        )
         logger.info("Migration v4→v5 complete.")
+
+    if from_version < 6:
+        # Migration from v5 to v6: mailbox values are full paths now
+        # ("Ablage/Nebenkosten", #105). Older rows collapsed nested
+        # mailboxes onto their outermost parent, which yields silently
+        # wrong search results rather than visibly stale ones. Clear
+        # them; the next startup sync repopulates from disk. sync_state
+        # and the DLQ carry the same collapsed names.
+        logger.info("Migrating schema v5→v6: clearing rows for re-index")
+        # Drop and recreate rather than DELETE: the per-row FTS delete
+        # trigger takes seconds on a large index, a drop ~0.1s.
+        _execute_script(
+            conn,
+            """
+            DROP TABLE IF EXISTS attachments;
+            DROP TABLE IF EXISTS emails_fts;
+            DROP TABLE IF EXISTS emails;
+            DROP TABLE IF EXISTS sync_state;
+            DROP TABLE IF EXISTS failed_index_jobs;
+        """,
+        )
+        _execute_script(conn, get_schema_sql())
+        logger.info("Migration v5→v6 complete.")
+        import sys
+
+        print(
+            "\n⚠ Upgraded to schema v6 (full paths for nested mailboxes).\n"
+            "  The index was cleared and is rebuilt by the next sync —\n"
+            "  searches return partial results until it completes.\n",
+            file=sys.stderr,
+        )
 
     conn.execute("UPDATE schema_version SET version = ?", (to_version,))
     conn.commit()

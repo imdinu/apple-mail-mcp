@@ -19,6 +19,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from .mailbox_resolver import exclusion_clause, resolve_for_search
+
 # Characters that make a bare FTS5 token dangerous
 # (hyphens = NOT, colons = column filter, parens = grouping, etc.)
 _HAS_SPECIAL = re.compile(r"['\-\(\)\:\^]")
@@ -130,12 +132,17 @@ def add_account_mailbox_filter(
     *,
     before: str | None = None,
     after: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> str:
     """
     Add account/mailbox/date WHERE clauses to a SQL query.
 
     This helper reduces repetition when building filtered queries.
     Modifies params in-place and returns the updated SQL string.
+
+    Mailbox values are resolved against the stored full paths first
+    (see :mod:`.mailbox_resolver`), so ``"Nebenkosten"`` finds
+    ``Ablage/Nebenkosten`` and ``"[Gmail]"`` its whole subtree.
 
     Args:
         sql: Base SQL query string
@@ -149,20 +156,35 @@ def add_account_mailbox_filter(
             UUIDs; callers resolve display names -> UUIDs upstream).
         before: Exclude emails on/after this date (YYYY-MM-DD)
         after: Include emails on/after this date (YYYY-MM-DD)
+        conn: Index connection; required with ``mailbox`` or
+            ``exclude_mailboxes``, which resolve against it
 
     Returns:
         Updated SQL string with added WHERE clauses
+
+    Raises:
+        AmbiguousMailboxError: ``mailbox`` is a leaf of several paths.
     """
+    if (mailbox or exclude_mailboxes) and conn is None:
+        raise TypeError("mailbox filters need conn to resolve against")
     if account:
         sql += f" AND {table_alias}.account = ?"
         params.append(account)
     if mailbox:
-        sql += f" AND LOWER({table_alias}.mailbox) = LOWER(?)"
-        params.append(mailbox)
+        paths = resolve_for_search(
+            conn, mailbox, account=account, exclude_accounts=exclude_accounts
+        )
+        # No match leaves an empty "IN ()", which SQLite evaluates to
+        # false: an unknown mailbox still matches nothing.
+        placeholders = ", ".join("?" for _ in paths)
+        sql += f" AND {table_alias}.mailbox IN ({placeholders})"
+        params.extend(paths)
     if exclude_mailboxes:
-        placeholders = ", ".join("LOWER(?)" for _ in exclude_mailboxes)
-        sql += f" AND LOWER({table_alias}.mailbox) NOT IN ({placeholders})"
-        params.extend(exclude_mailboxes)
+        clause, clause_params = exclusion_clause(
+            conn, f"{table_alias}.mailbox", exclude_mailboxes
+        )
+        sql += f" AND {clause}"
+        params.extend(clause_params)
     if exclude_accounts:
         placeholders = ", ".join("?" for _ in exclude_accounts)
         sql += f" AND {table_alias}.account NOT IN ({placeholders})"
@@ -319,6 +341,7 @@ def search_fts(
         exclude_accounts=exclude_accounts,
         before=before,
         after=after,
+        conn=conn,
     )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
@@ -441,6 +464,7 @@ def search_fts_highlight(
         exclude_accounts=exclude_accounts,
         before=before,
         after=after,
+        conn=conn,
     )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
@@ -536,7 +560,7 @@ def count_matches(
     """
 
     params: list = [safe_query]
-    sql = add_account_mailbox_filter(sql, params, account, mailbox)
+    sql = add_account_mailbox_filter(sql, params, account, mailbox, conn=conn)
 
     try:
         cursor = conn.execute(sql, params)
@@ -595,6 +619,7 @@ def search_attachments(
         exclude_accounts=exclude_accounts,
         before=before,
         after=after,
+        conn=conn,
     )
     sql += " ORDER BY e.date_received DESC LIMIT ?"
     params.append(limit)

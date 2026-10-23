@@ -779,6 +779,8 @@ async def get_email(
         raise ValueError(f"Email {message_id} not found.")
     resolved_mailbox = _resolve_mailbox(mailbox)
 
+    from .index.mailbox_resolver import AmbiguousMailboxError
+
     def _enrich_attachments(result: dict) -> dict:
         """Replace JXA attachments with richer index data when available."""
         try:
@@ -813,7 +815,10 @@ async def get_email(
             excluded_uuids = acct_map.names_to_uuids(_excluded_account_names())
 
             emlx_path = manager.find_email_path(
-                message_id, account=idx_acct, mailbox=mailbox
+                message_id,
+                account=idx_acct,
+                mailbox=mailbox,
+                exclude_accounts=excluded_uuids,
             )
             if emlx_path:
                 # A stale index row (account excluded after indexing,
@@ -850,7 +855,9 @@ async def get_email(
                         return _enrich_attachments(result)
                 else:
                     stale_index_entry = (idx_acct, mailbox)
-    except _AccountHiddenError:
+    except (_AccountHiddenError, AmbiguousMailboxError):
+        # Ambiguous mailbox: a caller error with a copyable fix — the
+        # JXA cascade below could only hide it behind a full scan.
         raise
     except Exception:
         logger.debug(
@@ -914,7 +921,10 @@ async def get_email(
             excluded_uuids = acct_map.names_to_uuids(_excluded_account_names())
 
             location = manager.find_email_location(
-                message_id, account=idx_acct, mailbox=idx_mb
+                message_id,
+                account=idx_acct,
+                mailbox=idx_mb,
+                exclude_accounts=excluded_uuids,
             )
             if location:
                 idx_account, idx_mailbox = location
@@ -1033,7 +1043,10 @@ async def _resolve_emlx_path(
         idx_acct = acct_map.name_to_uuid(account) or account
 
     emlx_path = manager.find_email_path(
-        message_id, account=idx_acct, mailbox=mailbox
+        message_id,
+        account=idx_acct,
+        mailbox=mailbox,
+        exclude_accounts=excluded_uuids,
     )
     if not emlx_path:
         raise ValueError(f"Email {message_id} not found in index.")
@@ -1220,7 +1233,11 @@ async def search(
         query: Search keywords (2-3 specific terms work best).
             Do NOT use long natural-language phrases.
         account: Filter to specific account name (optional).
-        mailbox: Filter to specific mailbox (optional).
+        mailbox: Filter to specific mailbox (optional). A full path
+            ("Archive/2025"), a parent holding no mail itself
+            ("[Gmail]" searches its subfolders), or a bare folder
+            name ("2025") if only one mailbox has it.
+            Case-insensitive.
         scope: Where to search:
             - "all": Subject + sender + body (default, recommended)
             - "subject": Subject line only
@@ -1229,7 +1246,9 @@ async def search(
             - "attachments": Attachment filenames
         limit: Maximum results (default: 20)
         offset: Skip first N results for pagination (default: 0)
-        exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"])
+        exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"]).
+            A name excludes every mailbox it matches — full path,
+            folder name, and everything below either.
         before: Exclude emails on/after this date (YYYY-MM-DD).
         after: Include only emails on/after this date (YYYY-MM-DD).
         highlight: Wrap matched terms in **markers** in subject
@@ -1252,7 +1271,9 @@ async def search(
         raise instead, naming the index path and how to build it.
 
     Raises:
-        ValueError: Index required for this scope and not built.
+        ValueError: Index required for this scope and not built, or
+            mailbox names a folder that exists in several places —
+            the message lists the full paths to retry with.
         RuntimeError: Index exists but could not be queried.
 
     Examples:
@@ -1365,6 +1386,8 @@ async def search(
     # Try FTS5 index for all searchable scopes
     if scope in ("all", "body", "subject", "sender"):
         if indexed:
+            from .index.mailbox_resolver import AmbiguousMailboxError
+
             # Translate friendly name → UUID for index lookup
             acct_map = _get_account_map()
             await acct_map.ensure_loaded()
@@ -1399,6 +1422,10 @@ async def search(
                     offset=offset,
                     highlight=highlight,
                 )
+            except AmbiguousMailboxError:
+                # A bad argument, not a broken index: keep the copyable
+                # candidates and skip the rebuild advice.
+                raise
             except Exception as e:
                 raise RuntimeError(_search_index_error(manager, e)) from e
             return _maybe_hint(

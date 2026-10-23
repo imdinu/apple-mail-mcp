@@ -136,11 +136,11 @@ Search emails with automatic FTS5 optimization. Uses the FTS5 index for fast sea
 |-----------|------|---------|-------------|
 | `query` | `string` | *required* | Search term or phrase |
 | `account` | `string?` | `None` | Account filter. `None` = search all (FTS) or default (JXA) |
-| `mailbox` | `string?` | `None` | Mailbox filter. `None` = search all (FTS) or default (JXA) |
+| `mailbox` | `string?` | `None` | Mailbox filter. `None` = search all (FTS) or default (JXA). With the index: full path (`Archive/2025`), parent (`[Gmail]` → its subfolders), or an unambiguous folder name (`2025`); case-insensitive. An ambiguous name raises with the full paths to retry with |
 | `scope` | `string?` | `all` | Search scope (see below) |
 | `limit` | `int?` | `20` | Max results |
 | `offset` | `int?` | `0` | Skip first N results (for pagination) |
-| `exclude_mailboxes` | `list?` | `["Drafts"]` | Mailboxes to exclude (FTS/attachment scopes only) |
+| `exclude_mailboxes` | `list?` | `["Drafts"]` | Mailboxes to exclude (FTS/attachment scopes only). A name excludes every mailbox it matches — full path, folder name, and everything below either |
 | `before` | `string?` | `None` | Only return emails before this date (YYYY-MM-DD) |
 | `after` | `string?` | `None` | Only return emails after this date (YYYY-MM-DD) |
 | `highlight` | `bool?` | `False` | Highlight matching terms in results |

@@ -30,6 +30,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote
 
+from .mailbox_resolver import normalize_mailbox
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,7 +152,8 @@ def _resolve_mailbox_rowids(
     prefix but are displayed and addressed by their bare name
     (`Sent Mail`, not `[Gmail]/Sent Mail`). Matching is
     case-insensitive because the configured default mailbox is
-    "Inbox" while IMAP stores "INBOX".
+    "Inbox" while IMAP stores "INBOX", and Unicode-normalized because
+    macOS stores names decomposed (NFD) while callers type NFC (#120).
     """
     if account_uuid:
         cur = conn.execute(
@@ -161,11 +164,11 @@ def _resolve_mailbox_rowids(
         cur = conn.execute(
             "SELECT ROWID, url FROM mailboxes WHERE url IS NOT NULL"
         )
-    want = mailbox_name.casefold()
+    want = normalize_mailbox(mailbox_name)
     rowids: list[int] = []
     for rowid, url in cur:
         _, path = _parse_mailbox_url(url)
-        decoded = path.casefold()
+        decoded = normalize_mailbox(path)
         if decoded == want or decoded.rsplit("/", 1)[-1] == want:
             rowids.append(rowid)
     return rowids

@@ -79,7 +79,7 @@ Instead, translation happens at search time via `AccountMap` (`index/accounts.py
 The index uses SQLite with FTS5 external content tables:
 
 ```sql
--- Email content cache (schema v5)
+-- Email content cache (schema v6)
 CREATE TABLE emails (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id INTEGER NOT NULL,

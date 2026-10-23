@@ -551,3 +551,240 @@ class TestSearchFtsHighlight:
         # but search_fts handles via retry
         results = search_fts_highlight(fts_db, "budget")
         assert isinstance(results, list)
+
+
+@pytest.fixture
+def nested_db():
+    """Index holding full mailbox paths, as the fixed parser stores them."""
+    import unicodedata
+
+    from apple_mail_mcp.index.schema import create_connection, get_schema_sql
+
+    conn = create_connection(":memory:")
+    conn.executescript(get_schema_sql())
+    rows = [
+        (1, "acct-1", "INBOX", "budget inbox"),
+        (2, "acct-1", "INBOX/Junk", "budget junk"),
+        (3, "acct-1", "Ablage/Nebenkosten", "budget nebenkosten"),
+        (4, "acct-1", "Archive/Steuer", "budget steuer archive"),
+        (5, "acct-1", "Projekte/Steuer", "budget steuer projekte"),
+        (6, "acct-1", "[Gmail]/All Mail", "budget allmail"),
+        (7, "acct-1", "[Gmail]/Spam", "budget spam"),
+        (8, "acct-1", unicodedata.normalize("NFD", "Gelöscht"), "budget nfd"),
+    ]
+    for msg_id, acct, mbox, subject in rows:
+        conn.execute(
+            "INSERT INTO emails (message_id, account, mailbox, subject, "
+            "sender, content, date_received, attachment_count) "
+            "VALUES (?, ?, ?, ?, 'a@b.com', 'budget', '2026-01-01', 1)",
+            (msg_id, acct, mbox, subject),
+        )
+        conn.execute(
+            "INSERT INTO attachments (email_rowid, filename) "
+            "VALUES (last_insert_rowid(), 'budget.pdf')"
+        )
+    conn.commit()
+    yield conn
+    conn.close()
+
+
+class TestNestedMailboxFilter:
+    """Mailbox filters resolve against full stored paths (#105, #107)."""
+
+    def _ids(self, results):
+        return sorted(r.id for r in results)
+
+    def test_full_path(self, nested_db):
+        hits = search_fts(nested_db, "budget", mailbox="Ablage/Nebenkosten")
+        assert self._ids(hits) == [3]
+
+    def test_leaf_resolves_to_nested_path(self, nested_db):
+        hits = search_fts(nested_db, "budget", mailbox="Nebenkosten")
+        assert self._ids(hits) == [3]
+        assert hits[0].mailbox == "Ablage/Nebenkosten"
+
+    def test_parent_without_own_mail_searches_subtree(self, nested_db):
+        """search(mailbox="[Gmail]") kept working across the fix."""
+        hits = search_fts(nested_db, "budget", mailbox="[Gmail]")
+        assert self._ids(hits) == [6, 7]
+
+    def test_exact_inbox_does_not_include_children(self, nested_db):
+        hits = search_fts(nested_db, "budget", mailbox="inbox")
+        assert self._ids(hits) == [1]
+
+    def test_ambiguous_leaf_raises(self, nested_db):
+        from apple_mail_mcp.index.mailbox_resolver import (
+            AmbiguousMailboxError,
+        )
+
+        with pytest.raises(AmbiguousMailboxError) as exc:
+            search_fts(nested_db, "budget", mailbox="Steuer")
+        assert 'mailbox="Archive/Steuer"' in str(exc.value)
+        assert 'mailbox="Projekte/Steuer"' in str(exc.value)
+
+    def test_nfc_query_matches_nfd_mailbox(self, nested_db):
+        import unicodedata
+
+        nfc = unicodedata.normalize("NFC", "Gelöscht")
+        assert self._ids(search_fts(nested_db, "budget", mailbox=nfc)) == [8]
+
+    def test_unknown_mailbox_returns_nothing(self, nested_db):
+        assert search_fts(nested_db, "budget", mailbox="Nonexistent") == []
+
+    def test_exclude_subtree(self, nested_db):
+        hits = search_fts(
+            nested_db, "budget", limit=20, exclude_mailboxes=["[Gmail]"]
+        )
+        assert self._ids(hits) == [1, 2, 3, 4, 5, 8]
+
+    def test_exclude_unions_ambiguous_leaf(self, nested_db):
+        hits = search_fts(
+            nested_db, "budget", limit=20, exclude_mailboxes=["Steuer"]
+        )
+        assert self._ids(hits) == [1, 2, 3, 6, 7, 8]
+
+    def test_exclude_unknown_mailbox_is_noop(self, nested_db):
+        hits = search_fts(
+            nested_db, "budget", limit=20, exclude_mailboxes=["Nonexistent"]
+        )
+        assert len(hits) == 8
+
+    def test_highlight(self, nested_db):
+        hits = search_fts_highlight(nested_db, "budget", mailbox="[Gmail]")
+        assert self._ids(hits) == [6, 7]
+
+    def test_count(self, nested_db):
+        assert count_matches(nested_db, "budget", mailbox="[Gmail]") == 2
+        assert count_matches(nested_db, "budget", mailbox="Nebenkosten") == 1
+
+    def test_attachments(self, nested_db):
+        rows = search_attachments(nested_db, "budget", mailbox="Nebenkosten")
+        assert [r["message_id"] for r in rows] == [3]
+        rows = search_attachments(
+            nested_db, "budget", limit=20, exclude_mailboxes=["[Gmail]"]
+        )
+        assert sorted(r["message_id"] for r in rows) == [1, 2, 3, 4, 5, 8]
+
+    def test_account_scope(self, nested_db):
+        """Candidates come from the filtered account only."""
+        assert (
+            search_fts(nested_db, "budget", account="acct-2", mailbox="Steuer")
+            == []
+        )
+
+    def test_resolves_once_per_call(self, nested_db, monkeypatch):
+        """The include filter costs one candidate query per call."""
+        from apple_mail_mcp.index import mailbox_resolver
+
+        calls = []
+        real = mailbox_resolver._stored_mailboxes
+
+        def spy(*args, **kwargs):
+            calls.append(args)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mailbox_resolver, "_stored_mailboxes", spy)
+        search_fts(
+            nested_db, "budget", mailbox="[Gmail]", exclude_mailboxes=["Spam"]
+        )
+        assert len(calls) == 1
+
+
+class TestExclusionSnapshot:
+    """A row committed by another connection between resolving the
+    exclusions and running the query must still be excluded (#107
+    review): resolution and query share one statement's snapshot."""
+
+    @pytest.fixture
+    def two_conns(self, tmp_path):
+        from apple_mail_mcp.index.schema import (
+            create_connection,
+            get_schema_sql,
+        )
+
+        path = tmp_path / "idx.db"
+        writer = create_connection(path)
+        writer.executescript(get_schema_sql())
+        writer.execute(
+            "INSERT INTO emails (message_id, account, mailbox, subject, "
+            "sender, content, date_received, attachment_count) "
+            "VALUES (1, 'acct', 'INBOX', 'needle', 'a@b', 'needle', "
+            "'2026-01-01', 1)"
+        )
+        writer.execute(
+            "INSERT INTO attachments (email_rowid, filename) "
+            "VALUES (last_insert_rowid(), 'needle.pdf')"
+        )
+        writer.commit()
+        reader = create_connection(path)
+        yield reader, writer
+        reader.close()
+        writer.close()
+
+    def _arrive_after_resolution(self, monkeypatch, writer) -> list[bool]:
+        """Commit a Private row once the exclusion filter is prepared
+        but before the query runs. Returns a list that records the
+        insert, so a test can prove the race actually happened."""
+        from apple_mail_mcp.index import search as search_module
+
+        real = search_module.exclusion_clause
+        arrived: list[bool] = []
+
+        def racing(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if not arrived:
+                arrived.append(True)
+                writer.execute(
+                    "INSERT INTO emails (message_id, account, mailbox, "
+                    "subject, sender, content, date_received, "
+                    "attachment_count) VALUES (2, 'acct', 'Private', "
+                    "'needle', 'a@b', 'needle', '2026-01-01', 1)"
+                )
+                writer.execute(
+                    "INSERT INTO attachments (email_rowid, filename) "
+                    "VALUES (last_insert_rowid(), 'needle.pdf')"
+                )
+                writer.commit()
+            return result
+
+        monkeypatch.setattr(search_module, "exclusion_clause", racing)
+        return arrived
+
+    def test_search(self, two_conns, monkeypatch):
+        reader, writer = two_conns
+        arrived = self._arrive_after_resolution(monkeypatch, writer)
+        hits = search_fts(reader, "needle", exclude_mailboxes=["Private"])
+        assert arrived == [True]
+        assert [h.mailbox for h in hits] == ["INBOX"]
+
+    def test_highlight(self, two_conns, monkeypatch):
+        reader, writer = two_conns
+        arrived = self._arrive_after_resolution(monkeypatch, writer)
+        hits = search_fts_highlight(
+            reader, "needle", exclude_mailboxes=["Private"]
+        )
+        assert arrived == [True]
+        assert [h.mailbox for h in hits] == ["INBOX"]
+
+    def test_attachments(self, two_conns, monkeypatch):
+        reader, writer = two_conns
+        arrived = self._arrive_after_resolution(monkeypatch, writer)
+        rows = search_attachments(
+            reader, "needle", exclude_mailboxes=["Private"]
+        )
+        assert arrived == [True]
+        assert {r["mailbox"] for r in rows} == {"INBOX"}
+
+
+def test_exclusions_work_while_connection_is_busy(nested_db):
+    """The index connection is shared with the sync thread. SQLite
+    refuses to (re)define a function while a statement is active, so
+    exclusions must not register one per query."""
+    search_fts(nested_db, "budget", exclude_mailboxes=["Steuer"])
+    busy = nested_db.execute("SELECT rowid FROM emails")
+    busy.fetchone()  # leave a statement mid-iteration
+    hits = search_fts(
+        nested_db, "budget", limit=20, exclude_mailboxes=["Steuer"]
+    )
+    assert sorted(h.id for h in hits) == [1, 2, 3, 6, 7, 8]
+    busy.close()

@@ -215,6 +215,30 @@ class TestFetchRecentMessages:
         # ROWIDs 1 and 2 are both in Inbox of ACCOUNT-A
         assert {r.message_id for r in rows} == {1, 2}
 
+    def test_nfc_name_matches_nfd_mailbox_url(self, fake_envelope):
+        """macOS stores mailbox names decomposed (#120)."""
+        import unicodedata
+        from urllib.parse import quote
+
+        nfd = unicodedata.normalize("NFD", "Gelöscht")
+        conn = sqlite3.connect(fake_envelope)
+        conn.execute(
+            "INSERT INTO mailboxes VALUES (4, ?)",
+            (f"imap://ACCOUNT-B/{quote(nfd)}",),
+        )
+        conn.execute("UPDATE messages SET mailbox = 4 WHERE ROWID = 3")
+        conn.commit()
+        conn.close()
+
+        rows = fetch_recent_messages(
+            fake_envelope,
+            account_uuid="ACCOUNT-B",
+            mailbox_name=unicodedata.normalize("NFC", "Gelöscht"),
+            filter_kind="all",
+            limit=10,
+        )
+        assert {r.message_id for r in rows} == {3}
+
     def test_limit_caps_results(self, fake_envelope):
         rows = fetch_recent_messages(
             fake_envelope,

@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .disk import find_mail_directory, parse_emlx
+from .disk import _infer_account_mailbox, find_mail_directory, parse_emlx
 from .schema import (
     CLEAR_PARSE_FAILURE_SQL,
     INSERT_EMAIL_SQL,
@@ -37,10 +37,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Regex to extract account/mailbox from path
-# ~/Library/Mail/V10/[AccountUUID]/[Mailbox].mbox/.../*.emlx
+# Regex that gates which paths the watcher handles and extracts the
+# message ID. ~/Library/Mail/V10/[AccountUUID]/[Mailbox].mbox/.../*.emlx
+# The (account, mailbox) pair comes from disk._infer_account_mailbox, so
+# watcher and disk sync cannot disagree on a row key. The mailbox group
+# is greedy so a nested mailbox (Ablage.mbox/Nebenkosten.mbox, one .mbox
+# per level) matches up to its leaf; the optional segment before Data/
+# admits the per-mailbox store UUID.
 PATH_PATTERN = re.compile(
-    r"/V\d+/([^/]+)/(.+?)\.mbox/.*?/(\d+)(?:\.partial)?\.emlx$"
+    r"/V\d+/([^/]+)/(.+)\.mbox/(?:[^/]+/)?Data/.*?/(\d+)(?:\.partial)?\.emlx$"
 )
 
 # Constants for safety limits
@@ -235,16 +240,18 @@ class IndexWatcher:
         if not match:
             return None
 
-        account_uuid, mailbox_dir, message_id_str = match.groups()
-
         try:
-            message_id = int(message_id_str)
+            message_id = int(match.group(3))
         except ValueError:
             return None
 
-        # Use UUID as account name (more reliable than trying to map)
-        account_name = account_uuid
-        mailbox_name = mailbox_dir
+        # The (account, mailbox) pair is part of the row key, so derive
+        # it with the disk sync's parser rather than a second one: two
+        # parsers drifted apart before (#105). The regex only gates
+        # which paths the watcher handles. Account is the UUID (more
+        # reliable than trying to map names).
+        mail_dir = Path(str(path)[: match.start(1) - 1])
+        account_name, mailbox_name = _infer_account_mailbox(path, mail_dir)
 
         return account_name, mailbox_name, message_id
 

@@ -422,6 +422,37 @@ class TestGetEmail:
     @patch("apple_mail_mcp.server._get_account_map")
     @patch("apple_mail_mcp.server._get_index_manager")
     @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_surfaces_ambiguous_mailbox(
+        self, mock_exec, mock_mgr, mock_acct_map
+    ):
+        """An ambiguous mailbox hint is a caller error with a copyable
+        fix (#107) — raise it instead of burying it under the JXA
+        cascade, whose Strategy 3 would scan every mailbox."""
+        from unittest.mock import AsyncMock
+
+        from apple_mail_mcp.index.mailbox_resolver import (
+            AmbiguousMailboxError,
+        )
+
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.find_email_path.side_effect = (
+            AmbiguousMailboxError("Ablage", ["A/Ablage", "B/Ablage"])
+        )
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.name_to_uuid.return_value = None
+
+        from apple_mail_mcp.server import get_email
+
+        with pytest.raises(AmbiguousMailboxError, match='mailbox="A/Ablage"'):
+            await get_email(42, mailbox="Ablage")
+
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
     async def test_strategy0_cleans_stale_index_entry(
         self, mock_exec, mock_mgr, mock_acct_map
     ):
@@ -1855,6 +1886,33 @@ class TestSearchIndexHonesty:
         assert "readable" in message
 
     @pytest.mark.asyncio
+    async def test_ambiguous_mailbox_surfaces_verbatim(self):
+        """The copyable candidates reach the caller unwrapped (#107):
+        it is a bad argument, not a broken index — no rebuild advice."""
+        from apple_mail_mcp.index.mailbox_resolver import (
+            AmbiguousMailboxError,
+        )
+
+        manager = self._manager(has_index=True)
+        error = AmbiguousMailboxError("Ablage", ["A/Ablage", "B/Ablage"])
+        manager.search.side_effect = error
+
+        with (
+            patch("apple_mail_mcp.server._get_index_manager") as mock_get,
+            patch("apple_mail_mcp.server._get_account_map") as mock_map,
+        ):
+            mock_get.return_value = manager
+            mock_map.return_value = self._account_map()
+
+            from apple_mail_mcp.server import search
+
+            with pytest.raises(AmbiguousMailboxError) as excinfo:
+                await search("renewal", mailbox="Ablage")
+
+        assert excinfo.value is error
+        assert "rebuild" not in str(excinfo.value)
+
+    @pytest.mark.asyncio
     async def test_other_index_errors_keep_the_rebuild_advice(self):
         """Unrelated failures are not recast as permission problems."""
         import sqlite3
@@ -1951,3 +2009,68 @@ class TestDiskPermissionErrors:
 
             with pytest.raises(RuntimeError, match="Full Disk Access"):
                 await get_email_links(42)
+
+
+class TestAmbiguityHidesExcludedAccounts:
+    """Server-level: the exclusions the server already resolved reach
+    the identity lookups, whatever the manager's own cache holds."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["get_email", "get_email_links"])
+    async def test_no_hidden_folder_names(self, tmp_path, tool):
+        from unittest.mock import AsyncMock
+
+        from apple_mail_mcp import server
+        from apple_mail_mcp.index.accounts import AccountMap
+        from apple_mail_mcp.index.mailbox_resolver import (
+            AmbiguousMailboxError,
+        )
+        from apple_mail_mcp.index.manager import IndexManager
+
+        manager = IndexManager(db_path=tmp_path / "idx.db")
+        manager.index_writer = False
+        # Lazy manager-side resolution finds nothing (e.g. JXA failed).
+        manager._exclusions_resolved = True
+        conn = manager._get_conn()
+        for i, (acct, mbox) in enumerate(
+            [
+                ("visible-id", "Public/Archive"),
+                ("visible-id", "Other/Archive"),
+                ("hidden-id", "Secret Acquisition/Archive"),
+            ],
+            start=1,
+        ):
+            conn.execute(
+                "INSERT INTO emails (message_id, account, mailbox) "
+                "VALUES (?, ?, ?)",
+                (i, acct, mbox),
+            )
+        conn.commit()
+        account_map = AccountMap()
+        account_map.load_from_jxa(
+            [
+                {"name": "Visible", "id": "visible-id"},
+                {"name": "Hidden", "id": "hidden-id"},
+            ]
+        )
+        with (
+            patch.object(server, "_get_index_manager", return_value=manager),
+            patch.object(server, "_get_account_map", return_value=account_map),
+            patch.object(
+                server, "_excluded_account_names", return_value={"Hidden"}
+            ),
+            patch.object(
+                server,
+                "_resolve_visible_account",
+                AsyncMock(return_value="Visible"),
+            ),
+            patch.object(
+                server,
+                "execute_with_core_async",
+                AsyncMock(side_effect=AssertionError("no JXA expected")),
+            ),
+        ):
+            with pytest.raises(AmbiguousMailboxError) as exc:
+                await getattr(server, tool)(999, mailbox="Archive")
+        assert "Secret" not in str(exc.value)
+        manager.close()

@@ -66,7 +66,7 @@ pipx upgrade apple-mail-mcp
 
 **Symptom:** After upgrading, search returns unexpected results or `get_email_attachment()` doesn't work.
 
-**Cause:** Schema changes between versions (e.g., v0.1.3 added attachment metadata in schema v4; v0.3.0 added the failed-parse DLQ in schema v5). Migrations are forward-only and run automatically; a manual rebuild is only needed if existing rows lack new columns (attachments, paths).
+**Cause:** Schema changes between versions (e.g., v0.1.3 added attachment metadata in schema v4; v0.3.0 added the failed-parse DLQ in schema v5; schema v6 stores full paths for nested mailboxes). Migrations are forward-only and run automatically; a manual rebuild is only needed if existing rows lack new columns (attachments, paths). The v6 migration clears the index itself, and the next sync re-indexes everything — searches are incomplete until that finishes.
 
 **Fix:**
 

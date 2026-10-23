@@ -14,7 +14,7 @@ src/apple_mail_mcp/
 ├── executor.py         # run_jxa(), execute_with_core(), execute_query()
 ├── index/              # FTS5 search index module
 │   ├── __init__.py     # Exports IndexManager
-│   ├── schema.py       # SQLite schema v5 (DLQ + attachments)
+│   ├── schema.py       # SQLite schema v6 (full mailbox paths, DLQ + attachments)
 │   ├── lock.py         # IndexLock — cross-process single-writer flock
 │   ├── accounts.py     # AccountMap — account name↔UUID cache
 │   ├── envelope_direct.py  # Direct Envelope Index SQLite reads
@@ -22,6 +22,7 @@ src/apple_mail_mcp/
 │   ├── disk.py         # .emlx reading + get_disk_inventory()
 │   ├── sync.py         # Disk-based state reconciliation
 │   ├── search.py       # FTS5 search functions
+│   ├── mailbox_resolver.py  # Mailbox name → stored full path(s) (#107)
 │   └── watcher.py      # Real-time file watcher
 └── jxa/
     ├── __init__.py     # Exports MAIL_CORE_JS
@@ -75,6 +76,7 @@ Self-contained SQLite + FTS5 search system:
 - **`disk.py`** — reads `.emlx` files directly (30x faster than JXA)
 - **`sync.py`** — state reconciliation between DB and filesystem
 - **`search.py`** — FTS5 queries with BM25 ranking and special character escaping
+- **`mailbox_resolver.py`** — Maps a caller's mailbox value to the full paths stored in the index (`resolve_for_search`: exact → subtree → unambiguous leaf; `resolve_for_identity`: exact → unambiguous leaf). Case-insensitive and NFC/NFD-normalized; ambiguous leaves raise with copyable candidates
 - **`schema.py`** — DDL with migrations, creates DB with `0600` permissions
 - **`watcher.py`** — `watchfiles`-based real-time monitor
 

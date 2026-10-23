@@ -480,7 +480,13 @@ class TestResolveEmlxPath:
             def has_index(self):
                 return True
 
-            def find_email_path(self, message_id, account=None, mailbox=None):
+            def find_email_path(
+                self,
+                message_id,
+                account=None,
+                mailbox=None,
+                exclude_accounts=None,
+            ):
                 return emlx
 
         async def _no_jxa(self):
@@ -506,7 +512,13 @@ class TestResolveEmlxPath:
             def has_index(self):
                 return True
 
-            def find_email_path(self, message_id, account=None, mailbox=None):
+            def find_email_path(
+                self,
+                message_id,
+                account=None,
+                mailbox=None,
+                exclude_accounts=None,
+            ):
                 return emlx
 
         monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "PHI")

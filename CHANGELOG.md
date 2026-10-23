@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Nested mailboxes are indexed under their full path.** Every level of a mailbox hierarchy is its own `.mbox` directory, and both path parsers stopped at the first one, so every child collapsed onto its outermost parent: `Ablage/Nebenkosten` was indexed as `Ablage`, and Gmail's `[Gmail]/All Mail`, `[Gmail]/Spam` and `[Gmail]/Trash` all became one mailbox `[Gmail]` — on one reported store 47% of the corpus. `search(mailbox="Nebenkosten")` returned nothing rather than an error. The index now stores full paths (`[Gmail]/Spam`), and the file watcher derives them with the same parser as the disk sync. (#105)
+- **One mailbox resolver for every index lookup.** `search()` (all scopes, highlight, count, attachments) resolves its `mailbox` against the stored paths: exact full path, else the subtree below it (`mailbox="[Gmail]"` keeps working and covers its subfolders), else a bare folder name that only one mailbox has. A name that matches several mailboxes raises with copyable candidates — `Ambiguous mailbox "Ablage" — specify one of: mailbox="Ablage/Nebenkosten", mailbox="Archive/Ablage"` — instead of silently picking or merging. `exclude_mailboxes` never stops at the first rule that matches: it excludes the union of exact, subtree and folder-name matches (`"Drafts"` also drops `[Gmail]/Drafts`), resolved inside the query itself so mail arriving mid-search cannot slip past it. Lookups that pin down one message (`get_email`, `get_email_attachment`, stale-entry cleanup) never expand to a subtree, and compare case-insensitively now, as search already did. Folder names in that error never include excluded accounts. (#107)
+- **Non-ASCII mailbox names match as typed.** macOS stores mailbox names decomposed (NFD) while callers type them composed (NFC), so a byte-exact compare missed names like `Gelöschte Objekte` or `Çöp kutusu`. The resolver and the `get_emails()` fast path normalize both sides. (#120)
+
+### Changed
+
+- **Schema v6 re-indexes on upgrade.** Rows indexed before the fix hold collapsed mailbox names, which yields silently wrong search results. The migration clears the index on first open — atomically, under SQLite's write lock, and only once even when several server instances open the index at the same time; the startup sync rebuilds it from disk. Searches are incomplete until that sync finishes.
+
 ## [0.5.0] - 2026-09-12
 
 ### Added

@@ -28,6 +28,7 @@ from ..config import (
     get_index_path,
     get_index_staleness_hours,
 )
+from .mailbox_resolver import resolve_exact, resolve_for_identity
 from .schema import (
     INSERT_EMAIL_SQL,
     init_database,
@@ -38,7 +39,7 @@ from .schema import (
 from .search import SearchResult  # Re-use, don't duplicate
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from .watcher import IndexWatcher
 
@@ -112,6 +113,7 @@ class IndexManager:
         # (build/sync/watcher). Lets JXA-free paths like the disk
         # email count honor exclusions without their own JXA call.
         self._exclude_account_uuids: set[str] = set()
+        self._exclusions_resolved = False
         # Why the most recent sync_updates() could not read the Mail
         # store, or None if it ran (#110). "permission" = Full Disk
         # Access denied; "missing" = Mail directory not found. A
@@ -126,7 +128,44 @@ class IndexManager:
         from .accounts import resolve_excluded_account_uuids
 
         self._exclude_account_uuids = resolve_excluded_account_uuids()
+        self._exclusions_resolved = True
         return self._exclude_account_uuids
+
+    def _mailbox_clause(
+        self,
+        conn: sqlite3.Connection,
+        mailbox: str,
+        account: str | None,
+        column: str = "mailbox",
+        exclude_accounts: Iterable[str] | None = None,
+    ) -> tuple[str, list[str]]:
+        """WHERE fragment pinning ``column`` to the stored path(s) of
+        ``mailbox``, resolved with identity semantics (exact → leaf,
+        never a subtree — see :mod:`.mailbox_resolver`).
+
+        Raises:
+            AmbiguousMailboxError: ``mailbox`` is a leaf of several paths.
+        """
+        # Resolve exclusions on first use rather than trusting the
+        # cache: an index-passive server never runs build/sync/watcher,
+        # so the cache stays empty and an ambiguity error would name a
+        # hidden account's folders. Server tools load the AccountMap
+        # first, so this costs no extra JXA call there.
+        excluded = set(
+            self._exclude_account_uuids
+            if self._exclusions_resolved
+            else self._resolve_exclusions()
+        )
+        # Callers that resolved exclusions themselves (the server) pass
+        # them too: a failed lazy resolution above degrades to "nothing
+        # excluded" and must not be the only line of defense.
+        excluded.update(exclude_accounts or ())
+        paths = resolve_for_identity(
+            conn, mailbox, account=account, exclude_accounts=excluded
+        )
+        # An empty "IN ()" is false in SQLite: unknown → no rows.
+        placeholders = ", ".join("?" for _ in paths)
+        return f"{column} IN ({placeholders})", paths
 
     @classmethod
     def get_instance(cls) -> IndexManager:
@@ -652,9 +691,14 @@ class IndexManager:
 
         # Delete existing entries for rebuild scope
         if account and mailbox:
+            # Full path only: on this DELETE a leaf fallback could pick
+            # some other folder than the one the user named.
+            paths = resolve_exact(conn, mailbox, account=account)
+            placeholders = ", ".join("?" for _ in paths)
             conn.execute(
-                "DELETE FROM emails WHERE account = ? AND mailbox = ?",
-                (account, mailbox),
+                "DELETE FROM emails WHERE account = ? "
+                f"AND mailbox IN ({placeholders})",
+                [account, *paths],
             )
         elif account:
             conn.execute("DELETE FROM emails WHERE account = ?", (account,))
@@ -684,9 +728,11 @@ class IndexManager:
         conn = self._get_conn()
 
         if account and mailbox:
-            sql = """SELECT message_id FROM emails
-                     WHERE account = ? AND mailbox = ?"""
-            cursor = conn.execute(sql, (account, mailbox))
+            clause, paths = self._mailbox_clause(conn, mailbox, account)
+            sql = (
+                f"SELECT message_id FROM emails WHERE account = ? AND {clause}"
+            )
+            cursor = conn.execute(sql, [account, *paths])
         elif account:
             cursor = conn.execute(
                 "SELECT message_id FROM emails WHERE account = ?", (account,)
@@ -705,6 +751,8 @@ class IndexManager:
         message_id: int,
         account: str | None = None,
         mailbox: str | None = None,
+        *,
+        exclude_accounts: Iterable[str] | None = None,
     ) -> tuple[str, str] | None:
         """Look up an email's (account, mailbox) from the index.
 
@@ -715,6 +763,8 @@ class IndexManager:
             message_id: Mail.app message ID
             account: Optional account filter (UUID)
             mailbox: Optional mailbox filter
+            exclude_accounts: Account UUIDs never considered when
+                resolving ``mailbox`` (keeps them out of error messages)
 
         Returns:
             (account, mailbox) tuple or None if not found
@@ -726,8 +776,11 @@ class IndexManager:
             where.append("account = ?")
             params.append(account)
         if mailbox:
-            where.append("mailbox = ?")
-            params.append(mailbox)
+            clause, paths = self._mailbox_clause(
+                conn, mailbox, account, exclude_accounts=exclude_accounts
+            )
+            where.append(clause)
+            params.extend(paths)
 
         sql = (
             "SELECT account, mailbox FROM emails WHERE "
@@ -744,6 +797,8 @@ class IndexManager:
         message_id: int,
         account: str | None = None,
         mailbox: str | None = None,
+        *,
+        exclude_accounts: Iterable[str] | None = None,
     ) -> Path | None:
         """Look up an email's .emlx file path from the index.
 
@@ -753,6 +808,8 @@ class IndexManager:
             message_id: Mail.app message ID
             account: Optional account filter (UUID)
             mailbox: Optional mailbox filter
+            exclude_accounts: Account UUIDs never considered when
+                resolving ``mailbox`` (keeps them out of error messages)
 
         Returns:
             Path to the .emlx file, or None if not found / path is NULL
@@ -764,8 +821,11 @@ class IndexManager:
             where.append("account = ?")
             params.append(account)
         if mailbox:
-            where.append("mailbox = ?")
-            params.append(mailbox)
+            clause, paths = self._mailbox_clause(
+                conn, mailbox, account, exclude_accounts=exclude_accounts
+            )
+            where.append(clause)
+            params.extend(paths)
 
         sql = (
             "SELECT emlx_path FROM emails WHERE "
@@ -782,6 +842,8 @@ class IndexManager:
         message_id: int,
         account: str | None = None,
         mailbox: str | None = None,
+        *,
+        exclude_accounts: Iterable[str] | None = None,
     ) -> int:
         """Delete a single email entry from the index.
 
@@ -796,7 +858,10 @@ class IndexManager:
             account: Optional account filter (UUID) — narrows the
                 delete when the same message_id appears in multiple
                 accounts (rare).
-            mailbox: Optional mailbox filter
+            mailbox: Optional mailbox filter — full path or a leaf
+                only one mailbox has; never widens to a subtree.
+            exclude_accounts: Account UUIDs never considered when
+                resolving ``mailbox`` (keeps them out of error messages)
 
         Returns:
             Number of rows deleted (typically 0 or 1).
@@ -814,8 +879,11 @@ class IndexManager:
             where.append("account = ?")
             params.append(account)
         if mailbox:
-            where.append("mailbox = ?")
-            params.append(mailbox)
+            clause, paths = self._mailbox_clause(
+                conn, mailbox, account, exclude_accounts=exclude_accounts
+            )
+            where.append(clause)
+            params.extend(paths)
 
         sql = "DELETE FROM emails WHERE " + " AND ".join(where)
         cursor = conn.execute(sql, params)
@@ -916,6 +984,8 @@ class IndexManager:
         message_id: int,
         account: str | None = None,
         mailbox: str | None = None,
+        *,
+        exclude_accounts: Iterable[str] | None = None,
     ) -> list[dict] | None:
         """Get attachment metadata for an email from the index.
 
@@ -926,6 +996,8 @@ class IndexManager:
             message_id: Mail.app message ID
             account: Optional account filter (UUID)
             mailbox: Optional mailbox filter
+            exclude_accounts: Account UUIDs never considered when
+                resolving ``mailbox`` (keeps them out of error messages)
 
         Returns:
             List of attachment dicts, or None if email not found
@@ -937,8 +1009,15 @@ class IndexManager:
             where.append("e.account = ?")
             params.append(account)
         if mailbox:
-            where.append("e.mailbox = ?")
-            params.append(mailbox)
+            clause, paths = self._mailbox_clause(
+                conn,
+                mailbox,
+                account,
+                column="e.mailbox",
+                exclude_accounts=exclude_accounts,
+            )
+            where.append(clause)
+            params.extend(paths)
 
         sql = (
             "SELECT a.filename, a.mime_type, a.file_size, a.content_id "
