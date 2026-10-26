@@ -9,6 +9,7 @@ to prevent injection attacks.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..config import get_index_max_emails
+from .disk import EmlxParseError
 from .schema import (
     CLEAR_PARSE_FAILURE_SQL,
     INSERT_EMAIL_SQL,
@@ -70,7 +72,73 @@ def get_db_inventory(
     return inventory
 
 
+def _record_parse_failure(
+    conn: sqlite3.Connection,
+    path: str,
+    account: str,
+    mailbox: str,
+    error: BaseException,
+) -> None:
+    """Write a dead-letter-queue row for ``path``; never raise.
+
+    ``EmlxParseError`` is unwrapped so the DLQ names the real cause
+    (``AttributeError``, ``HeaderParseError``, ``PermissionError``…)
+    rather than the wrapper.
+    """
+    cause = error.cause if isinstance(error, EmlxParseError) else error
+    try:
+        conn.execute(
+            RECORD_PARSE_FAILURE_SQL,
+            parse_failure_row(path, account, mailbox, cause),
+        )
+    except sqlite3.Error as dlq_err:
+        # The DLQ insert itself failed — the failure signal is
+        # now lost. Likely indicates a deeper problem (disk
+        # full, DB corruption, schema-version mismatch). Log at
+        # ERROR so it surfaces in default-config logging
+        # instead of being swallowed silently. (#77)
+        logger.error(
+            "DLQ write failed for %s — parse failure signal "
+            "lost (cause: %s). Check disk space and DB "
+            "integrity.",
+            path,
+            dlq_err,
+        )
+
+
 def sync_from_disk(
+    conn: sqlite3.Connection,
+    mail_dir: Path,
+    progress_callback: Callable[[int, int | None, str], None] | None = None,
+    exclude_account_uuids: set[str] | None = None,
+) -> SyncResult:
+    """
+    Sync index with disk using state reconciliation.
+
+    Thin guard around :func:`_reconcile` (which documents the
+    algorithm): if the reconcile raises for any reason, the open
+    SQLite transaction is rolled back before the exception propagates.
+    Without this, an aborted sync left the connection inside its
+    transaction for the life of the process, and every other writer
+    — CLI ``index``/``rebuild``, a second server instance — saw
+    ``database is locked`` until the server restarted (#125). The
+    process-level advisory writer lock (``IndexLock``) is a separate
+    thing and is not touched here.
+    """
+    try:
+        return _reconcile(
+            conn,
+            mail_dir,
+            progress_callback,
+            exclude_account_uuids=exclude_account_uuids,
+        )
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            conn.rollback()
+        raise
+
+
+def _reconcile(
     conn: sqlite3.Connection,
     mail_dir: Path,
     progress_callback: Callable[[int, int | None, str], None] | None = None,
@@ -255,56 +323,46 @@ def sync_from_disk(
             skipped_per_mailbox[mb_key] = skipped_per_mailbox.get(mb_key, 0) + 1
             continue
 
+        # One hostile file must not abort the whole reconcile (#125):
+        # parse_emlx raises EmlxParseError for what it cannot parse,
+        # and anything else a (mocked, future) parser throws lands
+        # here too. Record it in the DLQ and carry on. Only the
+        # inserts below are outside this guard — a sqlite error there
+        # is not a per-file problem, and sync_from_disk rolls back.
         try:
             parsed = parse_emlx(Path(path))
-            if parsed:
-                attachments = parsed.attachments or []
-                insert_row = email_to_row(
-                    {
-                        "id": parsed.id,
-                        "subject": parsed.subject,
-                        "sender": parsed.sender,
-                        "content": parsed.content,
-                        "date_received": parsed.date_received,
-                    },
-                    account,
-                    mailbox,
-                    path,
-                    attachment_count=len(attachments),
-                )
-                cursor = conn.execute(INSERT_EMAIL_SQL, insert_row)
-
-                # Insert attachment metadata
-                if attachments and cursor.lastrowid is not None:
-                    insert_attachments(conn, cursor.lastrowid, attachments)
-
-                # Clear any prior DLQ entry — this path parses now.
-                conn.execute(CLEAR_PARSE_FAILURE_SQL, (path,))
-
-                added += 1
-                mailbox_counts[mb_key] = current_count + 1
-        except (OSError, ValueError, UnicodeDecodeError) as e:
+        except Exception as e:
             logger.debug("Failed to parse %s: %s", path, e)
             errors += 1
-            # Record into the DLQ for visibility / future retry.
-            try:
-                conn.execute(
-                    RECORD_PARSE_FAILURE_SQL,
-                    parse_failure_row(path, account, mailbox, e),
-                )
-            except sqlite3.Error as dlq_err:
-                # The DLQ insert itself failed — the failure signal is
-                # now lost. Likely indicates a deeper problem (disk
-                # full, DB corruption, schema-version mismatch). Log at
-                # ERROR so it surfaces in default-config logging
-                # instead of being swallowed silently. (#77)
-                logger.error(
-                    "DLQ write failed for %s — parse failure signal "
-                    "lost (cause: %s). Check disk space and DB "
-                    "integrity.",
-                    path,
-                    dlq_err,
-                )
+            _record_parse_failure(conn, path, account, mailbox, e)
+            parsed = None
+
+        if parsed:
+            attachments = parsed.attachments or []
+            insert_row = email_to_row(
+                {
+                    "id": parsed.id,
+                    "subject": parsed.subject,
+                    "sender": parsed.sender,
+                    "content": parsed.content,
+                    "date_received": parsed.date_received,
+                },
+                account,
+                mailbox,
+                path,
+                attachment_count=len(attachments),
+            )
+            cursor = conn.execute(INSERT_EMAIL_SQL, insert_row)
+
+            # Insert attachment metadata
+            if attachments and cursor.lastrowid is not None:
+                insert_attachments(conn, cursor.lastrowid, attachments)
+
+            # Clear any prior DLQ entry — this path parses now.
+            conn.execute(CLEAR_PARSE_FAILURE_SQL, (path,))
+
+            added += 1
+            mailbox_counts[mb_key] = current_count + 1
 
         processed += 1
         if progress_callback and processed % 100 == 0:
