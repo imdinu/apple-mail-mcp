@@ -313,3 +313,156 @@ class TestNestedMailboxRegex:
         assert m is not None
         assert m.group(2) == "Work/Q1"
         assert m.group(3) == "49461"
+
+
+class TestEmlxParseErrorHandling:
+    """The typed parser failure keeps the watcher's retry contract (#125).
+
+    ``parse_emlx`` now wraps what it cannot parse in ``EmlxParseError``.
+    A read error underneath (Mail.app still writing) must still be
+    retried; anything else is final; the DLQ names the real cause; and
+    a later success clears the DLQ row.
+    """
+
+    def _make_watcher(self, db_path: Path) -> IndexWatcher:
+        import threading
+
+        watcher = IndexWatcher.__new__(IndexWatcher)
+        watcher.db_path = str(db_path)
+        watcher._conn = None
+        watcher._pending_adds = {}
+        watcher._pending_deletes = set()
+        watcher._pending_lock = threading.Lock()
+        watcher._stop_event = threading.Event()
+        watcher._mail_dir = None
+        watcher._thread = None
+        watcher.on_update = None
+        watcher.debounce_ms = 500
+        watcher._exclude_account_uuids = set()
+        return watcher
+
+    @staticmethod
+    def _email(path: Path):
+        from apple_mail_mcp.index.disk import EmlxEmail
+
+        return EmlxEmail(
+            id=1,
+            subject="late arrival",
+            sender="a@example.com",
+            content="body",
+            date_received="2026-10-21T10:00:00+00:00",
+            emlx_path=path,
+        )
+
+    @staticmethod
+    def _dlq(db_path: Path) -> list[tuple[str, str]]:
+        conn = create_connection(str(db_path))
+        rows = conn.execute(
+            "SELECT emlx_path, error_type FROM failed_index_jobs"
+        ).fetchall()
+        conn.close()
+        return [(r["emlx_path"], r["error_type"]) for r in rows]
+
+    @staticmethod
+    def _email_count(db_path: Path) -> int:
+        conn = create_connection(str(db_path))
+        n = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        conn.close()
+        return n
+
+    @patch("apple_mail_mcp.index.watcher.time.sleep")
+    @patch("apple_mail_mcp.index.watcher.parse_emlx")
+    def test_wrapped_read_error_is_retried_then_indexed(
+        self, mock_parse, mock_sleep, watcher_db
+    ):
+        from apple_mail_mcp.index.disk import EmlxParseError
+
+        db_path, conn = watcher_db
+        conn.close()
+        path = Path("/fake/1.emlx")
+        still_writing = OSError(11, "Resource temporarily unavailable")
+        mock_parse.side_effect = [
+            EmlxParseError(path, still_writing),
+            self._email(path),
+        ]
+
+        watcher = self._make_watcher(db_path)
+        watcher._pending_adds = {("acct", "INBOX", 1): path}
+        watcher._process_pending()
+
+        assert mock_parse.call_count == 2
+        assert mock_sleep.call_count == 1
+        assert self._email_count(db_path) == 1
+        assert self._dlq(db_path) == []
+
+    @patch("apple_mail_mcp.index.watcher.time.sleep")
+    @patch("apple_mail_mcp.index.watcher.parse_emlx")
+    def test_wrapped_read_error_exhausts_retries_into_dlq(
+        self, mock_parse, mock_sleep, watcher_db
+    ):
+        from apple_mail_mcp.index.disk import EmlxParseError
+        from apple_mail_mcp.index.watcher import MAX_FILE_RETRIES
+
+        db_path, conn = watcher_db
+        conn.close()
+        path = Path("/fake/1.emlx")
+        mock_parse.side_effect = EmlxParseError(
+            path, PermissionError(1, "Operation not permitted")
+        )
+
+        watcher = self._make_watcher(db_path)
+        watcher._pending_adds = {("acct", "INBOX", 1): path}
+        watcher._process_pending()
+
+        assert mock_parse.call_count == MAX_FILE_RETRIES
+        assert mock_sleep.call_count == MAX_FILE_RETRIES - 1
+        assert self._email_count(db_path) == 0
+        # The DLQ names the original cause, not the wrapper.
+        assert self._dlq(db_path) == [(str(path), "PermissionError")]
+
+    @patch("apple_mail_mcp.index.watcher.time.sleep")
+    @patch("apple_mail_mcp.index.watcher.parse_emlx")
+    def test_wrapped_non_read_error_is_final(
+        self, mock_parse, mock_sleep, watcher_db
+    ):
+        from apple_mail_mcp.index.disk import EmlxParseError
+
+        db_path, conn = watcher_db
+        conn.close()
+        path = Path("/fake/1.emlx")
+        mock_parse.side_effect = EmlxParseError(
+            path, AttributeError("'Header' object has no attribute 'split'")
+        )
+
+        watcher = self._make_watcher(db_path)
+        watcher._pending_adds = {("acct", "INBOX", 1): path}
+        watcher._process_pending()
+
+        assert mock_parse.call_count == 1
+        assert mock_sleep.call_count == 0
+        assert self._dlq(db_path) == [(str(path), "AttributeError")]
+
+    @patch("apple_mail_mcp.index.watcher.parse_emlx")
+    def test_success_clears_earlier_dlq_row(self, mock_parse, watcher_db):
+        from apple_mail_mcp.index.schema import (
+            RECORD_PARSE_FAILURE_SQL,
+            parse_failure_row,
+        )
+
+        db_path, conn = watcher_db
+        path = Path("/fake/1.emlx")
+        conn.execute(
+            RECORD_PARSE_FAILURE_SQL,
+            parse_failure_row(str(path), "acct", "INBOX", OSError("earlier")),
+        )
+        conn.commit()
+        conn.close()
+        assert self._dlq(db_path) == [(str(path), "OSError")]
+
+        mock_parse.return_value = self._email(path)
+        watcher = self._make_watcher(db_path)
+        watcher._pending_adds = {("acct", "INBOX", 1): path}
+        watcher._process_pending()
+
+        assert self._email_count(db_path) == 1
+        assert self._dlq(db_path) == []

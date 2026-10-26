@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .disk import find_mail_directory, parse_emlx
+from .disk import EmlxParseError, find_mail_directory, parse_emlx
 from .schema import (
     CLEAR_PARSE_FAILURE_SQL,
     INSERT_EMAIL_SQL,
@@ -309,6 +309,32 @@ class IndexWatcher:
                         email = parse_emlx(path)
                         if email:
                             break
+                    except EmlxParseError as e:
+                        # parse_emlx wraps the exceptions it does not
+                        # handle itself (#125). A read error underneath
+                        # may be Mail.app still writing the file — retry
+                        # it like a bare OSError; any other cause is
+                        # final and goes to the DLQ.
+                        cause = e.cause
+                        last_error = cause
+                        if isinstance(cause, OSError):
+                            if attempt < MAX_FILE_RETRIES - 1:
+                                logger.debug(
+                                    "Retry %d for %s: %s",
+                                    attempt + 1,
+                                    path,
+                                    cause,
+                                )
+                                time.sleep(FILE_RETRY_DELAY_MS / 1000)
+                                continue
+                            logger.warning(
+                                "Failed to parse %s after retries: %s",
+                                path,
+                                cause,
+                            )
+                            break
+                        logger.warning("Error parsing %s: %s", path, cause)
+                        break
                     except OSError as e:
                         last_error = e
                         if attempt < MAX_FILE_RETRIES - 1:

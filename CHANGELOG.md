@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **One unparseable `.emlx` no longer aborts the whole background sync.** `sync_from_disk()`'s new-message loop caught a narrower set of exceptions than `build_from_disk()`, so a single pre-2010 message with a raw non-ASCII byte in its `Date:` header (`'Header' object has no attribute 'split'`), or a `From:` encoded-word with invalid base64 (`HeaderParseError`), stopped every startup sync while `apple-mail-mcp index` skipped the same file — the index silently froze at build time. Worse, the aborted sync never rolled back, so its connection sat inside the open transaction for the life of the process and every other writer (CLI `index`/`rebuild`, a second server instance) got `database is locked` until a restart. `parse_emlx()` now raises a typed `EmlxParseError` (original exception as `cause`) instead of swallowing read errors, so the sync loop and the watcher record each file they could not parse in the dead-letter queue and carry on (a missing or not-.emlx-shaped file still returns `None`, and the plist footer stays best-effort); `sync_from_disk()` rolls back its SQLite transaction on any exception before propagating it (the process-level advisory writer lock is unaffected and still held by the server); and the two header shapes above parse through — undecodable header values are coerced to text, a bad encoded-word falls back to the raw header like the existing `UnicodeDecodeError` branch, and a `Date:` the stdlib rejects defers to the plist's `date-received` before keeping the raw text. That plist fallback had never fired: it read `UTC` off the `datetime` class and the best-effort guard hid the `AttributeError`; fixed. (#125)
+
 ## [0.5.0] - 2026-09-12
 
 ### Added

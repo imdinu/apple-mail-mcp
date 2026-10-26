@@ -302,3 +302,161 @@ class TestSyncFromDisk:
             sync_from_disk(sync_db, mail_dir)
 
         assert "hit cap" in caplog.text
+
+
+class TestSyncIsolatesHostileFiles:
+    """One bad .emlx must not abort the reconcile or hold the lock (#125)."""
+
+    PLIST = (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<plist version="1.0"><dict>'
+        b"<key>flags</key><integer>0</integer>"
+        b"<key>date-received</key><real>1160347200</real>"
+        b"</dict></plist>\n"
+    )
+
+    @pytest.fixture
+    def sync_db(self, tmp_path: Path):
+        db_path = tmp_path / "sync_test.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(get_schema_sql())
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)",
+            (SCHEMA_VERSION,),
+        )
+        conn.commit()
+        yield conn
+        conn.close()
+
+    @pytest.fixture
+    def mail_dir(self, tmp_path: Path) -> Path:
+        mail_dir = tmp_path / "Mail" / "V10"
+        mail_dir.mkdir(parents=True)
+        return mail_dir
+
+    def _write(self, mail_dir: Path, msg_id: int, headers: bytes) -> Path:
+        mbox = mail_dir / "acc1" / "INBOX.mbox" / "Data" / "Messages"
+        mbox.mkdir(parents=True, exist_ok=True)
+        msg = headers + b"Content-Type: text/plain; charset=us-ascii\n\nbody\n"
+        path = mbox / f"{msg_id}.emlx"
+        path.write_bytes(f"{len(msg)}\n".encode() + msg + self.PLIST)
+        return path
+
+    def _write_ok(self, mail_dir: Path, msg_id: int) -> Path:
+        return self._write(
+            mail_dir,
+            msg_id,
+            f"From: a@example.com\nSubject: {msg_id}\n".encode(),
+        )
+
+    def test_hostile_date_header_is_indexed_not_fatal(
+        self, sync_db: sqlite3.Connection, mail_dir: Path
+    ):
+        self._write_ok(mail_dir, 1001)
+        self._write(
+            mail_dir,
+            1002,
+            b"From: a@example.com\nSubject: old\n"
+            b"Date: Sun, 08 Oct 2006 23:34:16 \xef\xbf\xbd0100\n",
+        )
+        self._write(
+            mail_dir,
+            1003,
+            b"From: =?utf-8?B?x?= <sender@example.com>\nSubject: spam\n",
+        )
+
+        result = sync_from_disk(sync_db, mail_dir)
+
+        assert result.added == 3
+        assert result.errors == 0
+        assert not sync_db.in_transaction
+
+    def test_unparseable_file_goes_to_dlq_and_sync_continues(
+        self, sync_db: sqlite3.Connection, mail_dir: Path, monkeypatch
+    ):
+        from apple_mail_mcp.index import disk as disk_module
+
+        self._write_ok(mail_dir, 1001)
+        bad = self._write_ok(mail_dir, 1002)
+        self._write_ok(mail_dir, 1003)
+
+        real_parse = disk_module.parse_emlx
+
+        def parse_or_explode(path: Path):
+            if path == bad:
+                # Not an EmlxParseError on purpose: whatever a future
+                # parser throws must still be contained per file.
+                raise AttributeError("'Header' object has no attribute 'split'")
+            return real_parse(path)
+
+        monkeypatch.setattr(disk_module, "parse_emlx", parse_or_explode)
+
+        result = sync_from_disk(sync_db, mail_dir)
+
+        assert result.added == 2
+        assert result.errors == 1
+        assert not sync_db.in_transaction
+        rows = sync_db.execute(
+            "SELECT emlx_path, error_type, error_message FROM failed_index_jobs"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["emlx_path"] == str(bad)
+        assert rows[0]["error_type"] == "AttributeError"
+        assert "split" in rows[0]["error_message"]
+        # The other two files are in, and the sync is recorded as done.
+        assert sync_db.execute("SELECT COUNT(*) FROM emails").fetchone()[0] == 2
+        assert sync_db.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
+
+    def test_dlq_names_the_real_cause_not_the_wrapper(
+        self, sync_db: sqlite3.Connection, mail_dir: Path, monkeypatch
+    ):
+        bad = self._write_ok(mail_dir, 1002)
+
+        def denied(_self):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(Path, "read_bytes", denied)
+
+        result = sync_from_disk(sync_db, mail_dir)
+
+        assert result.added == 0
+        assert result.errors == 1
+        row = sync_db.execute(
+            "SELECT emlx_path, error_type FROM failed_index_jobs"
+        ).fetchone()
+        assert row["emlx_path"] == str(bad)
+        assert row["error_type"] == "PermissionError"
+
+    def test_db_error_rolls_back_the_whole_reconcile(
+        self, sync_db: sqlite3.Connection, mail_dir: Path, monkeypatch
+    ):
+        """A non-per-file failure propagates, but never leaves the
+        connection inside its transaction (that held the write lock for
+        the life of the process and turned into 'database is locked' for
+        every other writer)."""
+        from apple_mail_mcp.index import sync as sync_module
+
+        self._write_ok(mail_dir, 1001)
+        self._write_ok(mail_dir, 1002)
+
+        real_row = sync_module.email_to_row
+        calls = {"n": 0}
+
+        def row_then_explode(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise sqlite3.OperationalError("database is locked")
+            return real_row(*args, **kwargs)
+
+        monkeypatch.setattr(sync_module, "email_to_row", row_then_explode)
+
+        with pytest.raises(sqlite3.OperationalError):
+            sync_from_disk(sync_db, mail_dir)
+
+        assert not sync_db.in_transaction
+        assert sync_db.execute("SELECT COUNT(*) FROM emails").fetchone()[0] == 0
+        assert (
+            sync_db.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
+            == 0
+        )

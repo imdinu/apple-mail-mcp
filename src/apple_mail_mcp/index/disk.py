@@ -32,6 +32,7 @@ import re
 import sqlite3
 import warnings
 from dataclasses import dataclass
+from email.errors import HeaderParseError
 from email.header import decode_header, make_header
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -132,6 +133,37 @@ class EmlxEmail:
     date_sent: str = ""
     reply_to: str = ""
     message_id_header: str = ""
+
+
+class EmlxParseError(Exception):
+    """parse_emlx could not turn ``path`` into an :class:`EmlxEmail`.
+
+    Raised for any exception the parser does not handle itself — a read
+    error, a header that breaks the stdlib, a bug — with the original
+    exception as ``cause`` (and ``__cause__``). Callers that index many
+    files catch this per file and record it in the dead-letter queue
+    instead of aborting the whole pass (#125). Two documented outcomes
+    stay silent: a file that is not .emlx-shaped (too large, no
+    byte-count line) or no longer exists returns ``None``, and the
+    plist footer is parsed best-effort (a broken plist only loses
+    read/flagged/date fallback).
+    """
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        super().__init__(f"{path}: {cause}")
+        self.path = path
+        self.cause = cause
+        # ``raise … from`` sets this too; set it here so an instance
+        # built directly (tests, other callers) carries its cause.
+        self.__cause__ = cause
+
+
+# Header values can be ``email.header.Header`` objects when the raw
+# header carries undecodable bytes (surrogateescape under the compat32
+# policy). Every stdlib parser downstream expects ``str``.
+def _header_text(value: object) -> str:
+    """Return a header value as text, or "" when the header is absent."""
+    return "" if value is None else str(value)
 
 
 def find_mail_directory() -> Path:
@@ -335,7 +367,15 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         path: Path to .emlx file
 
     Returns:
-        EmlxEmail with parsed content, or None if parsing fails
+        EmlxEmail with parsed content, or None if the file is not
+        .emlx-shaped (over MAX_EMLX_SIZE, or no byte-count line) or
+        no longer exists.
+
+    Raises:
+        EmlxParseError: for anything else that goes wrong — the file
+            could not be read, a header broke the stdlib parsers, the
+            MIME parse itself failed. The original exception is
+            ``cause`` so callers can still retry a read error.
     """
     try:
         # Check file size to prevent OOM from huge/malformed files
@@ -362,26 +402,29 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         # Parse MIME message
         msg = email.message_from_bytes(mime_content)
 
-        # Extract subject with proper decoding
-        subject = ""
-        if msg["Subject"]:
+        # Extract subject with proper decoding. A broken RFC 2047
+        # encoded-word (bad base64) raises HeaderParseError, which is
+        # not a ValueError — fall back to the raw text like the
+        # UnicodeDecodeError branch does (#125).
+        subject = _header_text(msg["Subject"])
+        if subject:
             try:
-                subject = str(make_header(decode_header(msg["Subject"])))
-            except (UnicodeDecodeError, LookupError):
-                subject = msg["Subject"] or ""
+                subject = str(make_header(decode_header(subject)))
+            except (UnicodeDecodeError, LookupError, HeaderParseError):
+                pass
 
         # Extract sender
-        sender = msg["From"] or ""
+        sender = _header_text(msg["From"])
         if sender:
             try:
                 sender = str(make_header(decode_header(sender)))
-            except (UnicodeDecodeError, LookupError):
+            except (UnicodeDecodeError, LookupError, HeaderParseError):
                 pass
 
         # Extract received date from Received header (delivery time)
         # Falls back to Date header if no Received header exists
         date_received = ""
-        received_header = msg["Received"]
+        received_header = _header_text(msg["Received"])
         if received_header:
             try:
                 from email.utils import parsedate_to_datetime
@@ -394,14 +437,20 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
                     date_received = dt.isoformat()
             except (ValueError, TypeError):
                 pass
-        if not date_received and msg["Date"]:
+        # A Date header the stdlib cannot parse (a raw non-ASCII byte
+        # where the timezone sign belongs, in pre-2010 mail migrated
+        # from other MTAs) is kept as text, but only as the last resort
+        # behind the plist's date-received below.
+        date_header = _header_text(msg["Date"])
+        unparsed_date = ""
+        if not date_received and date_header:
             try:
                 from email.utils import parsedate_to_datetime
 
-                dt = parsedate_to_datetime(msg["Date"])
+                dt = parsedate_to_datetime(date_header)
                 date_received = dt.isoformat()
             except (ValueError, TypeError):
-                date_received = msg["Date"]
+                unparsed_date = date_header
 
         # Extract body text
         body = _extract_body_text(msg)
@@ -414,23 +463,23 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
 
         # Extract sent date from Date header (composition time)
         date_sent = ""
-        if msg["Date"]:
+        if date_header:
             try:
                 from email.utils import parsedate_to_datetime
 
-                dt = parsedate_to_datetime(msg["Date"])
+                dt = parsedate_to_datetime(date_header)
                 date_sent = dt.isoformat()
             except (ValueError, TypeError):
-                date_sent = msg["Date"]
+                date_sent = date_header
 
-        reply_to = ""
-        if msg["Reply-To"]:
+        reply_to = _header_text(msg["Reply-To"])
+        if reply_to:
             try:
-                reply_to = str(make_header(decode_header(msg["Reply-To"])))
-            except (UnicodeDecodeError, LookupError):
-                reply_to = msg["Reply-To"] or ""
+                reply_to = str(make_header(decode_header(reply_to)))
+            except (UnicodeDecodeError, LookupError, HeaderParseError):
+                pass
 
-        message_id_header = msg.get("Message-ID", "") or ""
+        message_id_header = _header_text(msg.get("Message-ID", ""))
 
         # Extract read/flagged from plist footer flags bitmask
         read = None
@@ -445,12 +494,18 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
                 if not date_received:
                     ts = plist.get("date-received")
                     if ts:
-                        from datetime import datetime
+                        # UTC lives on the datetime *module*; reading it
+                        # off the class raised AttributeError, which the
+                        # best-effort guard below hid — so this fallback
+                        # never actually fired (#125 review).
+                        from datetime import UTC, datetime
 
-                        dt = datetime.fromtimestamp(ts, tz=datetime.UTC)
+                        dt = datetime.fromtimestamp(ts, tz=UTC)
                         date_received = dt.isoformat()
             except Exception:
                 pass  # Plist parsing is best-effort
+        if not date_received:
+            date_received = unparsed_date
 
         return EmlxEmail(
             id=msg_id,
@@ -467,9 +522,16 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
             message_id_header=message_id_header,
         )
 
-    except (OSError, ValueError, UnicodeDecodeError, LookupError):
-        # Skip malformed files
+    except FileNotFoundError:
+        # Gone between inventory and parse (Mail.app moved or deleted
+        # it): not a parse failure, the next sync drops it. Keep None.
         return None
+    except Exception as e:
+        # Never swallow anything else: the caller decides whether to
+        # retry (a read error while Mail.app is still writing), record
+        # the file in the dead-letter queue, or skip it. Returning None
+        # here used to hide read errors from the DLQ entirely (#125).
+        raise EmlxParseError(path, e) from e
 
 
 def _extract_body_text(msg: email.message.Message) -> str:

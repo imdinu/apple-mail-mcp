@@ -1758,3 +1758,150 @@ class TestPermissionSurfacing:
                 _read_external_attachment(emlx_path, 2, "img.png")
         finally:
             ext_file.chmod(0o600)
+
+
+class TestParseEmlxHostileHeaders:
+    """Headers that break the stdlib parsers must not escape parse_emlx (#125).
+
+    Two shapes seen in the wild: a raw non-ASCII byte where the timezone
+    sign of ``Date:`` belongs (pre-2010 mail migrated from other MTAs),
+    and a ``From:`` encoded-word carrying invalid base64. Both used to
+    raise straight through the sync loop and abort the whole reconcile.
+    """
+
+    PLIST = (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<plist version="1.0"><dict>'
+        b"<key>flags</key><integer>0</integer>"
+        b"<key>date-received</key><real>1160347200</real>"
+        b"</dict></plist>\n"
+    )
+
+    def _write(self, tmp_path: Path, headers: bytes) -> Path:
+        msg = headers + b"Content-Type: text/plain; charset=us-ascii\n\nbody\n"
+        path = tmp_path / "4711.emlx"
+        path.write_bytes(f"{len(msg)}\n".encode() + msg + self.PLIST)
+        return path
+
+    def test_non_ascii_byte_in_date_no_longer_raises(self, tmp_path: Path):
+        """The #125 shape: a raw byte where the timezone sign belongs.
+
+        Under compat32 the header arrives as an ``email.header.Header``
+        and ``parsedate_to_datetime`` raised ``AttributeError`` on it.
+        Coerced to text the stdlib tolerates the junk timezone, so the
+        message parses with its wall-clock time.
+        """
+        from apple_mail_mcp.index.disk import parse_emlx
+
+        path = self._write(
+            tmp_path,
+            b"From: sender@example.com\n"
+            b"To: dest@example.com\n"
+            b"Subject: repro\n"
+            b"Date: Sun, 08 Oct 2006 23:34:16 \xef\xbf\xbd0100\n"
+            b"Message-ID: <repro-0001@example.com>\n",
+        )
+        parsed = parse_emlx(path)
+        assert parsed is not None
+        assert parsed.id == 4711
+        assert parsed.subject == "repro"
+        assert parsed.date_received.startswith("2006-10-08T23:34:16")
+        assert isinstance(parsed.date_sent, str)
+        assert parsed.date_sent.startswith("2006-10-08T23:34:16")
+
+    def test_unparseable_date_defers_to_plist_date_received(
+        self, tmp_path: Path
+    ):
+        """A Date: the stdlib rejects outright must not win over the plist.
+
+        Before: the raw text was kept, and the plist fallback could never
+        fire anyway because it read ``UTC`` off the ``datetime`` class
+        (an AttributeError the best-effort guard swallowed).
+        """
+        from apple_mail_mcp.index.disk import parse_emlx
+
+        path = self._write(
+            tmp_path,
+            b"From: sender@example.com\n"
+            b"Subject: repro\n"
+            b"Date: not a date\n"
+            b"Message-ID: <repro-0003@example.com>\n",
+        )
+        parsed = parse_emlx(path)
+        assert parsed is not None
+        # 1160347200 is the plist's date-received in the fixture.
+        assert parsed.date_received == "2006-10-08T22:40:00+00:00"
+        # date_sent has no plist equivalent and keeps the raw text.
+        assert parsed.date_sent == "not a date"
+
+    def test_unparseable_date_without_plist_keeps_raw_text(
+        self, tmp_path: Path
+    ):
+        from apple_mail_mcp.index.disk import parse_emlx
+
+        msg = b"From: a@example.com\nDate: not a date\n\nbody\n"
+        path = tmp_path / "4712.emlx"
+        path.write_bytes(f"{len(msg)}\n".encode() + msg)
+        parsed = parse_emlx(path)
+        assert parsed is not None
+        assert parsed.date_received == "not a date"
+
+    def test_invalid_base64_in_from_keeps_raw_header(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import parse_emlx
+
+        path = self._write(
+            tmp_path,
+            b"From: =?utf-8?B?x?= <sender@example.com>\n"
+            b"To: dest@example.com\n"
+            b"Subject: =?utf-8?B?x?=\n"
+            b"Reply-To: =?utf-8?B?x?= <reply@example.com>\n"
+            b"Date: Mon, 05 Oct 2026 19:22:59 -0400\n"
+            b"Message-ID: <repro-0002@example.com>\n",
+        )
+        parsed = parse_emlx(path)
+        assert parsed is not None
+        assert parsed.sender == "=?utf-8?B?x?= <sender@example.com>"
+        assert parsed.subject == "=?utf-8?B?x?="
+        assert parsed.reply_to == "=?utf-8?B?x?= <reply@example.com>"
+        assert parsed.date_received.startswith("2026-10-05")
+
+    def test_unexpected_error_surfaces_as_emlx_parse_error(
+        self, tmp_path: Path, monkeypatch
+    ):
+        import email as email_module
+
+        from apple_mail_mcp.index.disk import EmlxParseError, parse_emlx
+
+        path = self._write(tmp_path, b"From: a@example.com\nSubject: x\n")
+
+        def boom(_data: bytes):
+            raise RuntimeError("malformed plist")
+
+        monkeypatch.setattr(email_module, "message_from_bytes", boom)
+        with pytest.raises(EmlxParseError) as excinfo:
+            parse_emlx(path)
+        assert excinfo.value.path == path
+        assert isinstance(excinfo.value.cause, RuntimeError)
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert "malformed plist" in str(excinfo.value)
+
+    def test_read_error_is_not_swallowed(self, tmp_path: Path, monkeypatch):
+        """A read error reaches the caller (typed), so the DLQ can see it."""
+        from apple_mail_mcp.index.disk import EmlxParseError, parse_emlx
+
+        path = self._write(tmp_path, b"From: a@example.com\nSubject: x\n")
+
+        def denied(_self):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(Path, "read_bytes", denied)
+        with pytest.raises(EmlxParseError) as excinfo:
+            parse_emlx(path)
+        assert isinstance(excinfo.value.cause, PermissionError)
+
+    def test_not_emlx_shaped_still_returns_none(self, tmp_path: Path):
+        from apple_mail_mcp.index.disk import parse_emlx
+
+        path = tmp_path / "1.emlx"
+        path.write_bytes(b"no byte count line")
+        assert parse_emlx(path) is None
