@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The index build no longer carries a dead Envelope Index overlay.** `scan_all_emails()` tried to read Apple's Envelope Index for per-message metadata, but looked one directory above where Mail keeps it, so the lookup failed silently on every machine and the build always fell back to `.emlx` parsing. Had the path been correct, the overlay would have produced timestamps 31 years in the future, `imap:` as the account name, percent-encoded mailbox names, and integer row ids as subject and sender — and the next sync, which derives identity from the file path, would have deleted and re-inserted every row to undo it. The overlay and its helpers are removed; the build parses `.emlx` files alone, and `envelope_direct.py` remains the single Envelope Index reader, serving `get_emails()`. Diagnosis by InfiniteSemicolon. (#127)
+
 ## [0.5.0] - 2026-09-12
 
 ### Added

@@ -11,7 +11,7 @@ Mail.app storage structure:
     │           ├── 12345.emlx
     │           └── 12346.emlx
     └── MailData/
-        └── Envelope Index    # SQLite with metadata
+        └── Envelope Index    # Apple's metadata DB, read by envelope_direct.py
 
 .emlx file format:
     1255                      ← Byte count of MIME content
@@ -29,7 +29,6 @@ import logging
 import mimetypes
 import plistlib
 import re
-import sqlite3
 import warnings
 from dataclasses import dataclass
 from email.header import decode_header, make_header
@@ -175,151 +174,6 @@ def find_mail_directory() -> Path:
 
     _cached_mail_dir = mail_dir
     return mail_dir
-
-
-def find_envelope_index(mail_dir: Path) -> Path:
-    """
-    Find the Envelope Index SQLite database.
-
-    Args:
-        mail_dir: Path to ~/Library/Mail/V10/
-
-    Returns:
-        Path to the Envelope Index database
-
-    Raises:
-        FileNotFoundError: If database not found
-    """
-    # The Envelope Index is in MailData directory
-    envelope_path = mail_dir.parent / "MailData" / "Envelope Index"
-
-    if not envelope_path.exists():
-        raise FileNotFoundError(
-            f"Envelope Index not found: {envelope_path}\n"
-            "Ensure Apple Mail has synced email."
-        )
-
-    return envelope_path
-
-
-def read_envelope_index(mail_dir: Path) -> dict[int, dict]:
-    """
-    Read the Envelope Index database to get message metadata.
-
-    The Envelope Index contains:
-    - Message IDs and their file paths
-    - Account and mailbox information
-    - Basic metadata (subject, sender, dates)
-
-    Args:
-        mail_dir: Path to ~/Library/Mail/V10/
-
-    Returns:
-        Dict mapping message ID to metadata dict with:
-        - account: Account name
-        - mailbox: Mailbox name
-        - emlx_path: Path to .emlx file (relative)
-        - subject: Email subject
-        - sender: Sender address
-        - date_received: ISO date string
-    """
-    envelope_path = find_envelope_index(mail_dir)
-
-    # Connect in read-only mode to avoid locking issues
-    conn = sqlite3.connect(f"file:{envelope_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-
-    result: dict[int, dict] = {}
-
-    try:
-        # Query the messages table joined with mailboxes
-        # Schema varies by macOS version, so we use a flexible approach
-        cursor = conn.execute("""
-            SELECT
-                m.ROWID as id,
-                m.subject,
-                m.sender,
-                m.date_received,
-                m.mailbox as mailbox_id,
-                mb.url as mailbox_url
-            FROM messages m
-            LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID
-            ORDER BY m.date_received DESC
-        """)
-
-        for row in cursor:
-            msg_id = row["id"]
-
-            # Parse mailbox URL to get account and mailbox name
-            # Format: mailbox://[account-uuid]/[mailbox-name]
-            mailbox_url = row["mailbox_url"] or ""
-            account, mailbox = _parse_mailbox_url(mailbox_url)
-
-            result[msg_id] = {
-                "account": account,
-                "mailbox": mailbox,
-                "subject": row["subject"] or "",
-                "sender": row["sender"] or "",
-                "date_received": _format_timestamp(row["date_received"]),
-            }
-
-    except sqlite3.OperationalError as e:
-        # Schema might be different, try alternative approach
-        if "no such table" in str(e).lower():
-            # Fallback to scanning .emlx files directly
-            pass
-        else:
-            raise
-    finally:
-        conn.close()
-
-    return result
-
-
-def _parse_mailbox_url(url: str) -> tuple[str, str]:
-    """
-    Parse a mailbox URL to extract account and mailbox names.
-
-    Args:
-        url: mailbox://account-uuid/mailbox-name
-
-    Returns:
-        (account_name, mailbox_name) tuple
-    """
-    if not url:
-        return ("Unknown", "Unknown")
-
-    # Remove mailbox:// prefix
-    path = url.replace("mailbox://", "")
-
-    # Split by /
-    parts = path.split("/", 1)
-
-    if len(parts) >= 2:
-        account = parts[0] or "Unknown"
-        mailbox = parts[1] or "Unknown"
-        return (account, mailbox)
-
-    return (parts[0] if parts else "Unknown", "Unknown")
-
-
-def _format_timestamp(timestamp: float | int | None) -> str:
-    """Convert Core Data timestamp to ISO string."""
-    if timestamp is None:
-        return ""
-
-    # Core Data timestamps are seconds since Jan 1, 2001
-    # Convert to Unix timestamp (seconds since Jan 1, 1970)
-    import datetime
-
-    CORE_DATA_EPOCH = 978307200  # Jan 1, 2001 in Unix time
-
-    try:
-        unix_ts = timestamp + CORE_DATA_EPOCH
-        dt = datetime.datetime.fromtimestamp(unix_ts, tz=datetime.UTC)
-        return dt.isoformat()
-    except (OSError, ValueError, OverflowError):
-        return ""
 
 
 def parse_emlx(path: Path) -> EmlxEmail | None:
@@ -1146,8 +1000,11 @@ def scan_all_emails(
     """
     Scan all emails from the Mail directory.
 
-    This combines the Envelope Index metadata with .emlx file content
-    for comprehensive email data.
+    Every field comes from the ``.emlx`` file itself: headers and body
+    via :func:`parse_emlx`, account and mailbox via
+    :func:`_infer_account_mailbox` — the same derivation
+    :func:`iter_disk_inventory` uses, so a build and a later sync agree
+    on every row's identity.
 
     Args:
         mail_dir: Path to ~/Library/Mail/V10/
@@ -1156,15 +1013,8 @@ def scan_all_emails(
 
     Yields:
         Email dicts with: id, account, mailbox, subject, sender,
-        content, date_received, emlx_path
+        content, date_received, emlx_path, attachments
     """
-    # First, try to read metadata from Envelope Index
-    try:
-        metadata = read_envelope_index(mail_dir)
-    except (FileNotFoundError, sqlite3.Error):
-        metadata = {}
-
-    # Scan .emlx files and combine with metadata
     for emlx_path in scan_emlx_files(
         mail_dir, exclude_account_uuids=exclude_account_uuids
     ):
@@ -1176,24 +1026,16 @@ def scan_all_emails(
         if not parsed:
             continue
 
-        msg_id = parsed.id
-
-        # Get metadata from Envelope Index if available
-        meta = metadata.get(msg_id, {})
-
-        # Infer account/mailbox from path if not in metadata
-        if not meta:
-            account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
-            meta = {"account": account, "mailbox": mailbox}
+        account, mailbox = _infer_account_mailbox(emlx_path, mail_dir)
 
         yield {
-            "id": msg_id,
-            "account": meta.get("account", "Unknown"),
-            "mailbox": meta.get("mailbox", "Unknown"),
-            "subject": parsed.subject or meta.get("subject", ""),
-            "sender": parsed.sender or meta.get("sender", ""),
+            "id": parsed.id,
+            "account": account,
+            "mailbox": mailbox,
+            "subject": parsed.subject or "",
+            "sender": parsed.sender or "",
             "content": parsed.content,
-            "date_received": meta.get("date_received") or parsed.date_received,
+            "date_received": parsed.date_received,
             "emlx_path": str(emlx_path),
             "attachments": parsed.attachments or [],
         }

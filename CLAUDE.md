@@ -281,7 +281,6 @@ from apple_mail_mcp.index.disk import (
     scan_all_emails,          # Iterator over all emails (with content)
     get_disk_inventory,       # Fast walk, NO content parsing → dict
     iter_disk_inventory,      # Streaming variant → generator (added v0.3.0)
-    read_envelope_index,      # Query metadata DB
 )
 
 # Fast inventory (for sync)

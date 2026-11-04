@@ -729,15 +729,54 @@ class TestScanAllEmailsErrorHandling:
         # Create another valid email
         self._make_emlx(msgs / "3.emlx", subject="Also Good")
 
-        # Provide empty MailData so envelope index is skipped
-        (mail_dir.parent / "MailData").mkdir(parents=True, exist_ok=True)
-
         results = list(scan_all_emails(mail_dir))
 
         subjects = {r["subject"] for r in results}
         assert "Good" in subjects
         assert "Also Good" in subjects
         assert len(results) == 2
+
+    def test_identity_and_date_come_from_the_emlx_only(self, tmp_path: Path):
+        """A build never consults Apple's Envelope Index (#127).
+
+        Account, mailbox and date_received derive from the .emlx path and
+        headers — the same derivation sync uses — so a build and the next
+        sync agree on every row. An Envelope Index sitting where Mail keeps
+        it, carrying different values, must not change the output.
+        """
+        import sqlite3
+
+        from apple_mail_mcp.index.disk import scan_all_emails
+
+        mail_dir = tmp_path / "V10"
+        msgs = (
+            mail_dir / "ACCOUNT-UUID" / "Sent Messages.mbox" / "Data" / "0"
+        ) / "Messages"
+        msgs.mkdir(parents=True)
+        self._make_emlx(msgs / "1.emlx", subject="fixture")
+
+        envelope_dir = mail_dir / "MailData"
+        envelope_dir.mkdir()
+        conn = sqlite3.connect(str(envelope_dir / "Envelope Index"))
+        conn.execute("CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url)")
+        conn.execute(
+            "CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, subject, "
+            "sender, date_received, mailbox)"
+        )
+        conn.execute(
+            "INSERT INTO mailboxes VALUES (1, 'imap://OTHER/Other%20Box')"
+        )
+        conn.execute("INSERT INTO messages VALUES (1, 41, 42, 1789905600, 1)")
+        conn.commit()
+        conn.close()
+
+        (row,) = list(scan_all_emails(mail_dir))
+
+        assert row["account"] == "ACCOUNT-UUID"
+        assert row["mailbox"] == "Sent Messages"
+        assert row["subject"] == "fixture"
+        assert row["sender"] == "a@b.com"
+        assert row["date_received"].startswith("2024-01-15")
 
     def test_skips_file_that_raises(self, tmp_path: Path, monkeypatch):
         """If parse_emlx raises, the generator continues."""
@@ -751,8 +790,6 @@ class TestScanAllEmailsErrorHandling:
         self._make_emlx(msgs / "1.emlx", subject="OK")
         self._make_emlx(msgs / "2.emlx", subject="Boom")
         self._make_emlx(msgs / "3.emlx", subject="Fine")
-
-        (mail_dir.parent / "MailData").mkdir(parents=True, exist_ok=True)
 
         original_parse = disk.parse_emlx
 

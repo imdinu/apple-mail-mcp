@@ -254,7 +254,7 @@ CREATE TABLE failed_index_jobs (
 
 ### Why Not Use Apple's Envelope Index?
 
-Mail.app maintains its own SQLite database at `~/Library/Mail/V*/MailData/Envelope Index`. We read it for metadata during indexing (`disk.py:read_envelope_index()`), but we don't use it for search because:
+Mail.app maintains its own SQLite database at `~/Library/Mail/V*/MailData/Envelope Index`. We read it for `get_emails()` listings (`envelope_direct.py`), where it is the fastest path to metadata, but the index build parses `.emlx` files alone and we don't use it for search because:
 
 1. **No FTS5** — it has basic indexes but no full-text search capability
 2. **Schema instability** — Apple changes the schema across macOS versions without documentation
