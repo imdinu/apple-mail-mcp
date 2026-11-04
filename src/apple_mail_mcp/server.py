@@ -33,7 +33,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal
+from typing import cast
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -45,6 +45,7 @@ else:
 from fastmcp import FastMCP
 
 from .builders import AccountsQueryBuilder, QueryBuilder
+from .choices import EmailFilter, SearchScope
 from .config import (
     get_default_account,
     get_default_mailbox,
@@ -500,9 +501,7 @@ async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
 async def get_emails(
     account: str | None = None,
     mailbox: str | None = None,
-    filter: Literal[
-        "all", "unread", "flagged", "today", "last_7_days", "this_week"
-    ] = "all",
+    filter: EmailFilter = "all",
     limit: int = 50,
 ) -> list[EmailSummary]:
     """
@@ -651,7 +650,7 @@ async def get_emails(
     query = query.order_by("date_received", descending=True).limit(limit)
 
     try:
-        return await execute_query_async(query)
+        return cast(list[EmailSummary], await execute_query_async(query))
     except Exception as exc:
         # An unknown mailbox makes JXA fail with a raw "...Error:
         # Error: Can't get object. (-1728)". Surface a clean,
@@ -779,7 +778,7 @@ async def get_email(
         raise ValueError(f"Email {message_id} not found.")
     resolved_mailbox = _resolve_mailbox(mailbox)
 
-    def _enrich_attachments(result: dict) -> dict:
+    def _enrich_attachments(result: dict) -> EmailFull:
         """Replace JXA attachments with richer index data when available."""
         try:
             mgr = _get_index_manager()
@@ -791,7 +790,7 @@ async def get_email(
                     result["attachments"] = idx_atts
         except Exception:
             pass
-        return result
+        return cast(EmailFull, result)
 
     # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
     # Stale-entry detection: if find_email_path returns a path but the file
@@ -994,6 +993,12 @@ class LinkResult(TypedDict):
     text: str
 
 
+class EmailLinks(TypedDict):
+    """Content returned by get_email_links."""
+
+    links: list[LinkResult]
+
+
 class AttachmentContent(TypedDict, total=False):
     """Content returned by get_attachment."""
 
@@ -1049,7 +1054,7 @@ async def get_email_links(
     message_id: int,
     account: str | None = None,
     mailbox: str | None = None,
-) -> dict:
+) -> EmailLinks:
     """
     Extract hyperlinks from an email's HTML content.
 
@@ -1186,7 +1191,8 @@ async def get_attachment(
         mailbox: Mailbox name (optional)
     """
     if filename is None:
-        return await get_email_links(message_id, account, mailbox)
+        links = await get_email_links(message_id, account, mailbox)
+        return {"links": links["links"]}
     return await get_email_attachment(message_id, filename, account, mailbox)
 
 
@@ -1195,7 +1201,7 @@ async def search(
     query: str,
     account: str | None = None,
     mailbox: str | None = None,
-    scope: Literal["all", "subject", "sender", "body", "attachments"] = "all",
+    scope: SearchScope = "all",
     limit: int = 20,
     offset: int = 0,
     exclude_mailboxes: list[str] | None = None,
