@@ -415,7 +415,43 @@ def search_fts_highlight(
     if not safe_query:
         return []
 
-    sql = """
+    # Two-phase query. FTS5 auxiliary functions (highlight/snippet)
+    # re-tokenize the full column text for every candidate row, and
+    # SQLite evaluates them BEFORE the ORDER BY/LIMIT sorter prunes.
+    # A single-query form therefore ran snippet() over every match —
+    # ~1.5-4s for a common term on a ~130K-row index. Rank + filter
+    # in a rowid-only subquery first, then highlight only the page
+    # that survives (~0.3s). Same rows, same order, same scores.
+    #
+    # The unary ``+`` on the outer rowid is load-bearing: without it
+    # SQLite hands the IN list to FTS5 as a rowid-equality constraint
+    # and re-runs the MATCH once per result row (~10ms each for a
+    # phrase). With it, the outer is a single MATCH pass and the IN
+    # is a cheap post-filter applied before the aux functions run.
+    inner = """
+        SELECT emails_fts.rowid
+        FROM emails_fts
+        JOIN emails e ON emails_fts.rowid = e.rowid
+        WHERE emails_fts MATCH ?
+    """
+    inner_params: list = [safe_query]
+    inner = add_account_mailbox_filter(
+        inner,
+        inner_params,
+        account,
+        mailbox,
+        exclude_mailboxes=exclude_mailboxes,
+        exclude_accounts=exclude_accounts,
+        before=before,
+        after=after,
+    )
+    inner += " ORDER BY bm25(emails_fts, 1.0, 0.5, 2.0) LIMIT ?"
+    inner_params.append(limit)
+    if offset:
+        inner += " OFFSET ?"
+        inner_params.append(offset)
+
+    sql = f"""
         SELECT
             e.message_id,
             e.account,
@@ -429,24 +465,10 @@ def search_fts_highlight(
         FROM emails_fts
         JOIN emails e ON emails_fts.rowid = e.rowid
         WHERE emails_fts MATCH ?
+          AND +emails_fts.rowid IN ({inner})
+        ORDER BY score DESC
     """
-
-    params: list = [safe_query]
-    sql = add_account_mailbox_filter(
-        sql,
-        params,
-        account,
-        mailbox,
-        exclude_mailboxes=exclude_mailboxes,
-        exclude_accounts=exclude_accounts,
-        before=before,
-        after=after,
-    )
-    sql += " ORDER BY score DESC LIMIT ?"
-    params.append(limit)
-    if offset:
-        sql += " OFFSET ?"
-        params.append(offset)
+    params: list = [safe_query, *inner_params]
 
     try:
         cursor = conn.execute(sql, params)
