@@ -109,4 +109,4 @@ See [Configuration](configuration.md#cli-commands) for the full command list.
 
 - [Installation](installation.md) — alternative install methods (pipx, uv, from source)
 - [Configuration](configuration.md) — TOML config, environment variables, and precedence
-- [Tools](tools.md) — full reference for all 8 MCP tools
+- [Tools](tools.md) — full reference for all 11 MCP tools
