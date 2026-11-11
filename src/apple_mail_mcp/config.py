@@ -44,8 +44,9 @@ class ConfigError(RuntimeError):
     """Raised when ``~/.apple-mail-mcp/config.toml`` is malformed or invalid."""
 
 
-# Cache state. The sentinel distinguishes "not yet loaded" from "loaded as {}".
-_cached_config: dict | None = None  # None == not loaded yet
+# Process-wide cache of the parsed config. None means not loaded yet; a
+# missing or empty file caches as {}.
+_cached_config: dict | None = None
 
 
 def _load_config_file() -> dict:

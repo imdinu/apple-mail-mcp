@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **fastmcp ≥ 3.4.7 is required** (was ≥ 3.0.0b1). The lock moves starlette from 0.52 to 1.6 with it; if you pin starlette yourself alongside this package, 1.x is what resolves. (#118)
+- **`ty` type-checks `src/` in CI**, pinned to 0.0.73, and CI installs with `uv sync --locked` so a `pyproject.toml` change that leaves `uv.lock` behind fails the build. (#118)
+
 ### Fixed
 
+- **Messages with no usable `Date` header get their received date from the `.emlx` plist.** The fallback read `datetime.UTC` off the `datetime` class, where it does not exist; the `AttributeError` was swallowed by the best-effort plist handler, so those messages were indexed with an empty date. The fallback uses the module-level `UTC`, with a regression test. Found by itsbrex while making the type checker a gate. (#118)
 - **The index build no longer carries a dead Envelope Index overlay.** `scan_all_emails()` tried to read Apple's Envelope Index for per-message metadata, but looked one directory above where Mail keeps it, so the lookup failed silently on every machine and the build always fell back to `.emlx` parsing. Had the path been correct, the overlay would have produced timestamps 31 years in the future, `imap:` as the account name, percent-encoded mailbox names, and integer row ids as subject and sender — and the next sync, which derives identity from the file path, would have deleted and re-inserted every row to undo it. The overlay and its helpers are removed; the build parses `.emlx` files alone, and `envelope_direct.py` remains the single Envelope Index reader, serving `get_emails()`. Diagnosis by InfiniteSemicolon. (#127)
 
 ## [0.5.0] - 2026-09-12
