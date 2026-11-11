@@ -30,8 +30,10 @@ import mimetypes
 import plistlib
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from email.errors import HeaderParseError
 from email.header import decode_header, make_header
+from email.utils import getaddresses
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -131,6 +133,29 @@ class EmlxEmail:
     date_sent: str = ""
     reply_to: str = ""
     message_id_header: str = ""
+    to: list[dict[str, str]] = field(default_factory=list)
+    cc: list[dict[str, str]] = field(default_factory=list)
+
+
+def _read_recipients(
+    msg: email.message.Message, header: str
+) -> list[dict[str, str]]:
+    """Parse an address header into ``[{name, address}]``.
+
+    Addresses are split before RFC 2047 decoding so an encoded comma
+    stays inside its display name. Repeated headers are merged; a name
+    that fails to decode is kept raw rather than dropping the message.
+    """
+    recipients = []
+    for name, address in getaddresses(msg.get_all(header, [])):
+        if not address:
+            continue
+        try:
+            name = str(make_header(decode_header(name)))
+        except (UnicodeDecodeError, LookupError, HeaderParseError):
+            pass
+        recipients.append({"name": name, "address": address})
+    return recipients
 
 
 def find_mail_directory() -> Path:
@@ -299,9 +324,9 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
                 if not date_received:
                     ts = plist.get("date-received")
                     if ts:
-                        from datetime import datetime
+                        from datetime import UTC, datetime
 
-                        dt = datetime.fromtimestamp(ts, tz=datetime.UTC)
+                        dt = datetime.fromtimestamp(ts, tz=UTC)
                         date_received = dt.isoformat()
             except Exception:
                 pass  # Plist parsing is best-effort
@@ -319,11 +344,24 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
             date_sent=date_sent,
             reply_to=reply_to,
             message_id_header=message_id_header,
+            to=_read_recipients(msg, "To"),
+            cc=_read_recipients(msg, "Cc"),
         )
 
     except (OSError, ValueError, UnicodeDecodeError, LookupError):
         # Skip malformed files
         return None
+
+
+def _decoded_payload(part: email.message.Message) -> bytes | None:
+    """``part.get_payload(decode=True)`` narrowed to bytes.
+
+    The stdlib signature is ``Message | bytes | Any``; for a leaf part
+    it is always ``bytes`` (or ``None``), but narrowing here keeps every
+    caller type-clean without per-site asserts.
+    """
+    payload = part.get_payload(decode=True)
+    return payload if isinstance(payload, bytes) and payload else None
 
 
 def _extract_body_text(msg: email.message.Message) -> str:
@@ -337,7 +375,7 @@ def _extract_body_text(msg: email.message.Message) -> str:
         for part in msg.walk():
             content_type = part.get_content_type()
             if content_type == "text/plain":
-                payload = part.get_payload(decode=True)
+                payload = _decoded_payload(part)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
                     try:
@@ -353,7 +391,7 @@ def _extract_body_text(msg: email.message.Message) -> str:
         for part in msg.walk():
             content_type = part.get_content_type()
             if content_type == "text/html":
-                payload = part.get_payload(decode=True)
+                payload = _decoded_payload(part)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
                     try:
@@ -363,7 +401,7 @@ def _extract_body_text(msg: email.message.Message) -> str:
                         pass
         return ""
     else:
-        payload = msg.get_payload(decode=True)
+        payload = _decoded_payload(msg)
         if payload:
             charset = msg.get_content_charset() or "utf-8"
             try:
@@ -487,15 +525,21 @@ def _mime_part_numbers(
     """
     result: dict[int, str] = {}
 
+    def _children(part: email.message.Message) -> list[email.message.Message]:
+        payload = part.get_payload()
+        if not isinstance(payload, list):
+            return []
+        return [c for c in payload if isinstance(c, email.message.Message)]
+
     def _walk(part: email.message.Message, prefix: list[str]) -> None:
         if part.is_multipart():
-            for i, child in enumerate(part.get_payload(), 1):
+            for i, child in enumerate(_children(part), 1):
                 _walk(child, [*prefix, str(i)])
         else:
             result[id(part)] = ".".join(prefix)
 
     if msg.is_multipart():
-        for i, child in enumerate(msg.get_payload(), 1):
+        for i, child in enumerate(_children(msg), 1):
             _walk(child, [str(i)])
     else:
         result[id(msg)] = "1"
@@ -757,7 +801,7 @@ def get_attachment_content(
                 continue
 
             # Primary path: embedded MIME payload
-            payload = part.get_payload(decode=True)
+            payload = _decoded_payload(part)
             if payload:
                 return (payload, ct)
 
@@ -905,7 +949,7 @@ def _extract_links_from_message(
         if part.get_content_type() != "text/html":
             continue
 
-        payload = part.get_payload(decode=True)
+        payload = _decoded_payload(part)
         if not payload:
             continue
 
@@ -920,7 +964,10 @@ def _extract_links_from_message(
             soup = BeautifulSoup(html, "html.parser")
 
         for a_tag in soup.find_all("a", href=True):
-            url = a_tag["href"].strip()
+            href = a_tag.get("href")
+            if not isinstance(href, str):
+                continue
+            url = href.strip()
             if not url:
                 continue
 

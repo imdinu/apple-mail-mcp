@@ -94,6 +94,55 @@ class TestParseEmlx:
 class TestParseEmlxExtendedFields:
     """Tests for extended fields from plist footer and MIME headers."""
 
+    def test_recipient_headers_decode_names_and_merge_headers(
+        self, tmp_path: Path
+    ):
+        """To/Cc parse to {name, address}; RFC 2047 names are decoded
+        after splitting, so a quoted comma stays in its display name."""
+        mime = (
+            b"From: sender@example.com\n"
+            b"To: =?utf-8?q?Jos=C3=A9?= <jose@example.com>\n"
+            b'To: "Doe, Jane" <jane@example.com>\n'
+            b"Cc: peer@example.com\n\n"
+            b"Body\n"
+        )
+        path = tmp_path / "123.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.to == [
+            {"name": "José", "address": "jose@example.com"},
+            {"name": "Doe, Jane", "address": "jane@example.com"},
+        ]
+        assert result.cc == [{"name": "", "address": "peer@example.com"}]
+
+    def test_absent_recipient_headers_are_empty_lists(self, tmp_path: Path):
+        mime = b"From: sender@example.com\n\nBody\n"
+        path = tmp_path / "124.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.to == []
+        assert result.cc == []
+
+    def test_undecodable_recipient_name_is_kept_raw(self, tmp_path: Path):
+        """A malformed encoded-word must not drop the whole message."""
+        mime = (
+            b"From: sender@example.com\n"
+            b"To: =?utf-8?b?A?= <bad@example.com>\n\n"
+            b"Body\n"
+        )
+        path = tmp_path / "125.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.to == [
+            {"name": "=?utf-8?b?A?=", "address": "bad@example.com"}
+        ]
+
     def test_plist_flags_read_and_flagged(self, tmp_path: Path):
         """Plist footer flags bitmask: bit 0 = read, bit 4 = flagged."""
         mime = (
@@ -201,6 +250,29 @@ class TestParseEmlxExtendedFields:
         assert result is not None
         assert result.read is None
         assert result.flagged is None
+
+    def test_plist_date_received_fallback(self, tmp_path: Path):
+        """No Received/Date header: date_received comes from the plist
+        footer's ``date-received`` (seconds since the Unix epoch, UTC).
+
+        Regression: the fallback referenced ``datetime.UTC`` (the
+        constant lives on the module, not the class), raised inside a
+        best-effort ``except Exception``, and silently left the field
+        empty.
+        """
+        mime = b"From: x@y.z\nSubject: Undated\n\nBody"
+        plist = (
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<plist version="1.0"><dict>'
+            b"<key>date-received</key><real>1705314600</real>"
+            b"</dict></plist>\n"
+        )
+        path = tmp_path / "102.emlx"
+        path.write_bytes(f"{len(mime)}\n".encode() + mime + plist)
+
+        result = parse_emlx(path)
+        assert result is not None
+        assert result.date_received == "2024-01-15T10:30:00+00:00"
 
 
 class TestExtractBodyText:
@@ -1221,34 +1293,34 @@ class TestNestedExternalAttachments:
                 application/pdf (part 2.2 - the invoice)
         """
         return (
-            'Content-Type: multipart/mixed; boundary="outer"\r\n'
-            "\r\n"
-            "--outer\r\n"
-            'Content-Type: multipart/alternative; boundary="alt"\r\n'
-            "\r\n"
-            "--alt\r\n"
-            "Content-Type: text/plain\r\n"
-            "\r\n"
-            "Body text\r\n"
-            "--alt\r\n"
-            "Content-Type: text/html\r\n"
-            "\r\n"
-            "<p>Body</p>\r\n"
-            "--alt--\r\n"
-            "--outer\r\n"
-            'Content-Type: multipart/mixed; boundary="fwd"\r\n'
-            "\r\n"
-            "--fwd\r\n"
-            "Content-Type: text/html\r\n"
-            "\r\n"
-            "<p>Forwarded body</p>\r\n"
-            "--fwd\r\n"
-            "Content-Type: application/pdf\r\n"
-            'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
-            "\r\n"
-            "--fwd--\r\n"
-            "--outer--\r\n"
-        ).encode()
+            b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+            b"\r\n"
+            b"--outer\r\n"
+            b'Content-Type: multipart/alternative; boundary="alt"\r\n'
+            b"\r\n"
+            b"--alt\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Body text\r\n"
+            b"--alt\r\n"
+            b"Content-Type: text/html\r\n"
+            b"\r\n"
+            b"<p>Body</p>\r\n"
+            b"--alt--\r\n"
+            b"--outer\r\n"
+            b'Content-Type: multipart/mixed; boundary="fwd"\r\n'
+            b"\r\n"
+            b"--fwd\r\n"
+            b"Content-Type: text/html\r\n"
+            b"\r\n"
+            b"<p>Forwarded body</p>\r\n"
+            b"--fwd\r\n"
+            b"Content-Type: application/pdf\r\n"
+            b'Content-Disposition: attachment; filename="invoice.pdf"\r\n'
+            b"\r\n"
+            b"--fwd--\r\n"
+            b"--outer--\r\n"
+        )
 
     def test_get_attachment_content_nested(self, tmp_path: Path):
         """get_attachment_content finds file in dotted subdir."""
@@ -1300,26 +1372,26 @@ class TestNestedExternalAttachments:
     def test_deeply_nested(self, tmp_path: Path):
         """Three levels deep: subdir 1.2.1 works."""
         mime_raw = (
-            'Content-Type: multipart/mixed; boundary="L1"\r\n'
-            "\r\n"
-            "--L1\r\n"
-            'Content-Type: multipart/mixed; boundary="L2"\r\n'
-            "\r\n"
-            "--L2\r\n"
-            "Content-Type: text/plain\r\n"
-            "\r\n"
-            "Body\r\n"
-            "--L2\r\n"
-            'Content-Type: multipart/mixed; boundary="L3"\r\n'
-            "\r\n"
-            "--L3\r\n"
-            "Content-Type: application/pdf\r\n"
-            'Content-Disposition: attachment; filename="deep.pdf"\r\n'
-            "\r\n"
-            "--L3--\r\n"
-            "--L2--\r\n"
-            "--L1--\r\n"
-        ).encode()
+            b'Content-Type: multipart/mixed; boundary="L1"\r\n'
+            b"\r\n"
+            b"--L1\r\n"
+            b'Content-Type: multipart/mixed; boundary="L2"\r\n'
+            b"\r\n"
+            b"--L2\r\n"
+            b"Content-Type: text/plain\r\n"
+            b"\r\n"
+            b"Body\r\n"
+            b"--L2\r\n"
+            b'Content-Type: multipart/mixed; boundary="L3"\r\n'
+            b"\r\n"
+            b"--L3\r\n"
+            b"Content-Type: application/pdf\r\n"
+            b'Content-Disposition: attachment; filename="deep.pdf"\r\n'
+            b"\r\n"
+            b"--L3--\r\n"
+            b"--L2--\r\n"
+            b"--L1--\r\n"
+        )
 
         pdf_bytes = b"%PDF deeply nested"
         emlx = _build_partial_tree(
@@ -1331,7 +1403,7 @@ class TestNestedExternalAttachments:
 
         result = get_attachment_content(emlx, "deep.pdf")
         assert result is not None
-        data, mime_type = result
+        data, _mime_type = result
         assert data == pdf_bytes
 
 
@@ -1432,6 +1504,7 @@ class TestDetectMailVersion:
 
         assert _detect_mail_version() == "V10"
 
+    @pytest.mark.real_mail_dir
     def test_find_mail_directory_caches(self, tmp_path: Path, monkeypatch):
         """find_mail_directory() caches its result."""
         import apple_mail_mcp.index.disk as disk_mod
@@ -1441,15 +1514,11 @@ class TestDetectMailVersion:
         (mail_dir / "account-uuid").mkdir()
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        # Clear cache
-        disk_mod._cached_mail_dir = None
+        # Cache is reset by the autouse _no_real_mail_directory fixture.
 
         result1 = disk_mod.find_mail_directory()
         result2 = disk_mod.find_mail_directory()
         assert result1 == result2 == mail_dir
-
-        # Clean up cache for other tests
-        disk_mod._cached_mail_dir = None
 
 
 class TestInlineImagesWithoutFilename:

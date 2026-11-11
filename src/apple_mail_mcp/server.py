@@ -31,9 +31,10 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Literal
+from typing import Any, TypeVar, cast, overload
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -42,9 +43,8 @@ if sys.version_info >= (3, 12):
 else:
     from typing_extensions import TypedDict
 
-from fastmcp import FastMCP
-
 from .builders import AccountsQueryBuilder, QueryBuilder
+from .choices import EmailFilter, SearchScope
 from .config import (
     get_default_account,
     get_default_mailbox,
@@ -56,9 +56,103 @@ from .executor import (
     execute_with_core_async,
 )
 
-mcp = FastMCP("Apple Mail")
-
 logger = logging.getLogger(__name__)
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+class _LazyFastMCP:
+    """Collects tool/resource registrations; builds the real server on demand.
+
+    ``import fastmcp`` costs ~1s (it pulls in the HTTP stack, sampling,
+    event stores, ...). Every CLI command imports this module for the
+    tool functions but only ``serve`` needs the MCP server, so the
+    import is deferred to the first ``run()``. The decorators return
+    the function unchanged, exactly like fastmcp 3.x's do, so direct
+    calls (CLI, the deprecated ``get_attachment`` alias, tests) behave
+    identically. Keep ``@mcp.tool`` / ``@mcp.resource(...)`` as the
+    spelling — the roster drift test scans for it.
+
+    Any other attribute (``name``, ``list_tools``, ``_lifespan``, ...)
+    falls through to the real server, so ``parent.mount(mcp)`` and
+    ``fastmcp inspect <file>:mcp`` work. This object is still not a
+    ``FastMCP``, though: anything that type-checks its argument needs
+    ``mcp.server``, the real instance. Notably ``fastmcp.Client(mcp)``
+    fails (transport inference uses ``isinstance``); use
+    ``Client(mcp.server)``.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._tools: list[tuple[dict[str, Any], Callable[..., Any]]] = []
+        self._resources: list[tuple[dict[str, Any], Callable[..., Any]]] = []
+        self._server: Any = None
+
+    @overload
+    def tool(self, fn: F, /) -> F: ...
+
+    @overload
+    def tool(self, fn: None = None, /, **kwargs: Any) -> Callable[[F], F]: ...
+
+    def tool(self, fn: F | None = None, /, **kwargs: Any) -> Any:
+        """``@mcp.tool`` or ``@mcp.tool(annotations=...)``, as in fastmcp."""
+        if fn is not None:
+            self._tools.append(({}, fn))
+            return fn
+
+        def register(f: F) -> F:
+            self._tools.append((kwargs, f))
+            return f
+
+        return register
+
+    def resource(self, uri: str, **kwargs: Any) -> Callable[[F], F]:
+        def register(fn: F) -> F:
+            self._resources.append(({"uri": uri, **kwargs}, fn))
+            return fn
+
+        return register
+
+    @property
+    def server(self) -> Any:
+        """The real fastmcp ``FastMCP`` instance, built and cached on first use.
+
+        Pass this, not ``mcp``, wherever a ``FastMCP`` is required, e.g.
+        ``fastmcp.Client(mcp.server)``.
+        """
+        if self._server is None:
+            from fastmcp import FastMCP
+
+            server = FastMCP(self._name)
+            for kwargs, fn in self._tools:
+                server.tool(fn, **kwargs)
+            for kwargs, fn in self._resources:
+                server.resource(**kwargs)(fn)
+            self._server = server
+        return self._server
+
+    def run(self, *args: Any, **kwargs: Any) -> None:
+        self.server.run(*args, **kwargs)
+
+    async def run_async(self, *args: Any, **kwargs: Any) -> None:
+        await self.server.run_async(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        """Fall through to the real server for anything not defined here.
+
+        Python only calls this when normal lookup fails, so the
+        import-time ``tool``/``resource`` decorators never reach it and
+        stay lazy. Dunder probes are refused: ``hasattr(mcp,
+        "__wrapped__")`` (``inspect.unwrap``) must not import fastmcp,
+        and ``copy.copy`` probes ``__setstate__`` on an instance with
+        no ``_server`` yet, which would otherwise recurse.
+        """
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return getattr(self.server, name)
+
+
+mcp = _LazyFastMCP("Apple Mail")
 
 # Attachment cache directory
 ATTACHMENT_CACHE_DIR = _Path.home() / ".apple-mail-mcp" / "attachments"
@@ -188,6 +282,13 @@ class AttachmentSummary(TypedDict):
     size: int
 
 
+class Recipient(TypedDict):
+    """A message recipient: display name (may be empty) and address."""
+
+    name: str
+    address: str
+
+
 class EmailFull(TypedDict, total=False):
     """Complete email with full content."""
 
@@ -201,6 +302,8 @@ class EmailFull(TypedDict, total=False):
     flagged: bool
     reply_to: str
     message_id: str
+    to: list[Recipient]
+    cc: list[Recipient]
     attachments: list[AttachmentSummary]
 
 
@@ -435,8 +538,21 @@ def _detect_matched_columns(query: str, result) -> str:
 
 # ========== MCP Tools (8 total) ==========
 
+# MCP tool annotations: advisory hints that let clients and gateways
+# classify a tool without guessing from its name. They never replace
+# the read-only (#80) or hidden-account (#90) gates. Every tool below
+# only reads mail, so all share one set; openWorldHint is true because
+# the tools reach external systems: Mail.app and, through it, the
+# accounts' mail servers.
+READ_ONLY_TOOL_ANNOTATIONS = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
 
-@mcp.tool
+
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def list_accounts() -> list[Account]:
     """
     List all configured email accounts in Apple Mail.
@@ -468,7 +584,7 @@ async def list_accounts() -> list[Account]:
     return [a for a in accounts if a.get("name") not in excluded]
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
     """
     List all mailboxes for an email account.
@@ -496,13 +612,11 @@ async def list_mailboxes(account: str | None = None) -> list[Mailbox]:
     return await execute_with_core_async(script)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_emails(
     account: str | None = None,
     mailbox: str | None = None,
-    filter: Literal[
-        "all", "unread", "flagged", "today", "last_7_days", "this_week"
-    ] = "all",
+    filter: EmailFilter = "all",
     limit: int = 50,
 ) -> list[EmailSummary]:
     """
@@ -651,7 +765,7 @@ async def get_emails(
     query = query.order_by("date_received", descending=True).limit(limit)
 
     try:
-        return await execute_query_async(query)
+        return cast(list[EmailSummary], await execute_query_async(query))
     except Exception as exc:
         # An unknown mailbox makes JXA fail with a raw "...Error:
         # Error: Can't get object. (-1728)". Surface a clean,
@@ -721,12 +835,14 @@ JSON.stringify({{
     flagged: msg.flaggedStatus(),
     reply_to: msg.replyTo(),
     message_id: msg.messageId(),
+    to: MailCore.getRecipients(msg, "toRecipients"),
+    cc: MailCore.getRecipients(msg, "ccRecipients"),
     attachments: attachments
 }});
 """
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_email(
     message_id: int,
     account: str | None = None,
@@ -750,6 +866,7 @@ async def get_email(
         - content: Full plain text body
         - read, flagged status
         - reply_to, message_id (email Message-ID header)
+        - to, cc: Lists of {name, address} recipients
         - attachments: List of {filename, mime_type, size}
 
     Note:
@@ -779,7 +896,7 @@ async def get_email(
         raise ValueError(f"Email {message_id} not found.")
     resolved_mailbox = _resolve_mailbox(mailbox)
 
-    def _enrich_attachments(result: dict) -> dict:
+    def _enrich_attachments(result: dict) -> EmailFull:
         """Replace JXA attachments with richer index data when available."""
         try:
             mgr = _get_index_manager()
@@ -791,7 +908,7 @@ async def get_email(
                     result["attachments"] = idx_atts
         except Exception:
             pass
-        return result
+        return cast(EmailFull, result)
 
     # Strategy 0: Read directly from .emlx file on disk (fastest, no JXA)
     # Stale-entry detection: if find_email_path returns a path but the file
@@ -804,13 +921,19 @@ async def get_email(
             from .index.disk import parse_emlx
 
             acct_map = _get_account_map()
-            await acct_map.ensure_loaded()
+            excluded_names = _excluded_account_names()
+            # The map is only needed to translate a caller-supplied
+            # account name and/or the configured exclusions to UUIDs.
+            # With neither, skip the JXA round-trip (~250ms cold) —
+            # the disk path below is pure index + .emlx.
+            if account is not None or excluded_names:
+                await acct_map.ensure_loaded()
 
             idx_acct = None
             if account is not None:
                 idx_acct = acct_map.name_to_uuid(account)
 
-            excluded_uuids = acct_map.names_to_uuids(_excluded_account_names())
+            excluded_uuids = acct_map.names_to_uuids(excluded_names)
 
             emlx_path = manager.find_email_path(
                 message_id, account=idx_acct, mailbox=mailbox
@@ -838,6 +961,8 @@ async def get_email(
                             else False,
                             "reply_to": parsed.reply_to,
                             "message_id": parsed.message_id_header,
+                            "to": parsed.to,
+                            "cc": parsed.cc,
                             "attachments": [
                                 {
                                     "filename": a.filename,
@@ -994,6 +1119,12 @@ class LinkResult(TypedDict):
     text: str
 
 
+class EmailLinks(TypedDict):
+    """Content returned by get_email_links."""
+
+    links: list[LinkResult]
+
+
 class AttachmentContent(TypedDict, total=False):
     """Content returned by get_attachment."""
 
@@ -1044,12 +1175,12 @@ async def _resolve_emlx_path(
     return emlx_path
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_email_links(
     message_id: int,
     account: str | None = None,
     mailbox: str | None = None,
-) -> dict:
+) -> EmailLinks:
     """
     Extract hyperlinks from an email's HTML content.
 
@@ -1086,7 +1217,7 @@ async def get_email_links(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_email_attachment(
     message_id: int,
     filename: str,
@@ -1164,7 +1295,7 @@ async def get_email_attachment(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def get_attachment(
     message_id: int,
     filename: str | None = None,
@@ -1186,16 +1317,17 @@ async def get_attachment(
         mailbox: Mailbox name (optional)
     """
     if filename is None:
-        return await get_email_links(message_id, account, mailbox)
+        links = await get_email_links(message_id, account, mailbox)
+        return {"links": links["links"]}
     return await get_email_attachment(message_id, filename, account, mailbox)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def search(
     query: str,
     account: str | None = None,
     mailbox: str | None = None,
-    scope: Literal["all", "subject", "sender", "body", "attachments"] = "all",
+    scope: SearchScope = "all",
     limit: int = 20,
     offset: int = 0,
     exclude_mailboxes: list[str] | None = None,

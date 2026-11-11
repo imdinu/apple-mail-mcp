@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Annotated, TypeVar
 
 import cyclopts
 
+from .choices import EmailFilter, SearchScope
 from .config import get_index_path
 
 if TYPE_CHECKING:
@@ -793,10 +794,10 @@ def _print_json(data):
 def cli_search(
     query: str,
     scope: Annotated[
-        str,
+        SearchScope,
         cyclopts.Parameter(
             name=["--scope", "-s"],
-            help="all, subject, sender, body, attachments",
+            help="Fields to match",
         ),
     ] = "all",
     account: Annotated[
@@ -899,10 +900,10 @@ def cli_emails(
         cyclopts.Parameter(name=["--mailbox", "-m"], help="Mailbox name"),
     ] = None,
     filter: Annotated[
-        str,
+        EmailFilter,
         cyclopts.Parameter(
             name=["--filter", "-f"],
-            help="all, unread, flagged, today, last_7_days",
+            help="Which emails to list",
         ),
     ] = "all",
     limit: Annotated[

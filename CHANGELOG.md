@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get_email()` returns `to` and `cc`.** Each is a list of `{name, address}`, from every read strategy: the disk path parses the To/Cc MIME headers (repeated headers merged, RFC 2047 names decoded), and the JXA paths read them from Mail.app, returning `[]` if Mail cannot resolve them. Bcc is left out; it is absent on received mail. By itsbrex. (#129)
+- **Every tool declares MCP tool annotations**, so clients and gateways can classify a tool without guessing from its name: `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`. The hints are advisory and sit alongside the read-only and hidden-account gates. By itsbrex. (#129)
+
+### Changed
+
+- **Highlighted search ranks first and highlights only the returned page.** SQLite evaluated FTS5 `highlight()`/`snippet()` for every matching row before `LIMIT` pruned them, so a broad term re-tokenized most of the index on each call. Rows, order and scores are unchanged; broad-term searches measured 1.9–2.1 s now take 0.4–0.7 s, typical terms run 2–6x faster. By itsbrex. (#117)
+- **CLI commands start without importing fastmcp.** The server builds its FastMCP instance on first run, which takes importing it for a CLI command from about 2.0 s to 0.25 s. `get_email()` also skips the Mail.app account lookup when there is no account hint and no exclusions configured (about 250 ms cold). By itsbrex. (#117)
+- **fastmcp ≥ 3.4.7 is required** (was ≥ 3.0.0b1). The lock moves starlette from 0.52 to 1.6 with it; if you pin starlette yourself alongside this package, 1.x is what resolves. (#118)
+- **`ty` type-checks `src/` in CI**, pinned to 0.0.73, and CI installs with `uv sync --locked` so a `pyproject.toml` change that leaves `uv.lock` behind fails the build. (#118)
+
 ### Fixed
 
+- **Messages with no usable `Date` header get their received date from the `.emlx` plist.** The fallback read `datetime.UTC` off the `datetime` class, where it does not exist; the `AttributeError` was swallowed by the best-effort plist handler, so those messages were indexed with an empty date. The fallback uses the module-level `UTC`, with a regression test. Found by itsbrex while making the type checker a gate. (#118)
 - **The index build no longer carries a dead Envelope Index overlay.** `scan_all_emails()` tried to read Apple's Envelope Index for per-message metadata, but looked one directory above where Mail keeps it, so the lookup failed silently on every machine and the build always fell back to `.emlx` parsing. Had the path been correct, the overlay would have produced timestamps 31 years in the future, `imap:` as the account name, percent-encoded mailbox names, and integer row ids as subject and sender — and the next sync, which derives identity from the file path, would have deleted and re-inserted every row to undo it. The overlay and its helpers are removed; the build parses `.emlx` files alone, and `envelope_direct.py` remains the single Envelope Index reader, serving `get_emails()`. Diagnosis by InfiniteSemicolon. (#127)
 
 ## [0.5.0] - 2026-09-12

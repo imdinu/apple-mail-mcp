@@ -19,6 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from apple_mail_mcp.index.envelope_direct import (
+    envelope_index_path as _real_envelope_index_path,
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_server_singletons(monkeypatch):
@@ -151,6 +155,88 @@ class TestGetEmails:
         assert len(result) == 1
         assert result[0]["subject"] == "Fallback"
         mock_exec.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    @patch("apple_mail_mcp.server.execute_query_async")
+    async def test_strategy0_reads_envelope_index_under_mail_dir(
+        self, mock_query, mock_core, monkeypatch, tmp_path
+    ):
+        """Full Disk Access -> served from <mail_dir>/MailData/Envelope Index.
+
+        Only ``find_mail_directory`` is faked: the path derivation,
+        default-account scoping, mailbox resolution and SQL all run for
+        real, and neither JXA entry point may be called. Every other
+        test stubs this path out, so without this one a broken fast
+        path would only show up as a silent (slow) JXA fallback.
+        """
+        import sqlite3
+
+        from apple_mail_mcp.index.accounts import AccountMap
+
+        mail_dir = tmp_path / "V10"
+        (mail_dir / "MailData").mkdir(parents=True)
+        conn = sqlite3.connect(mail_dir / "MailData" / "Envelope Index")
+        conn.executescript(
+            """
+            CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+            CREATE TABLE addresses (
+                ROWID INTEGER PRIMARY KEY, address TEXT, comment TEXT
+            );
+            CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE messages (
+                ROWID INTEGER PRIMARY KEY, message_id INTEGER,
+                sender INTEGER, subject INTEGER, date_received INTEGER,
+                mailbox INTEGER, read INTEGER DEFAULT 0,
+                flagged INTEGER DEFAULT 0, deleted INTEGER DEFAULT 0
+            );
+            INSERT INTO subjects VALUES (1, 'Hello'), (2, 'Urgent');
+            INSERT INTO addresses VALUES
+              (1, 'alice@example.com', ''), (2, 'bob@example.com', '');
+            INSERT INTO mailboxes VALUES
+              (1, 'imap://ACCOUNT-A/INBOX'),
+              (2, 'imap://ACCOUNT-A/Archive'),
+              (3, 'imap://ACCOUNT-B/INBOX');
+            INSERT INTO messages VALUES
+              (1, 100, 1, 1, 800000000, 1, 0, 0, 0),  -- match
+              (2, 200, 2, 2, 800001000, 1, 0, 1, 0),  -- match, newest
+              (3, 300, 1, 1, 800002000, 1, 1, 0, 0),  -- read
+              (4, 400, 1, 1, 800003000, 2, 0, 0, 0),  -- other mailbox
+              (5, 500, 1, 1, 800004000, 3, 0, 0, 0),  -- other account
+              (6, 600, 1, 1, 800005000, 1, 0, 0, 1);  -- deleted
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Opt out of this module's autouse envelope_index_path stub.
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.envelope_direct.envelope_index_path",
+            _real_envelope_index_path,
+        )
+        monkeypatch.setattr(
+            "apple_mail_mcp.index.disk.find_mail_directory", lambda: mail_dir
+        )
+        # Warm cache: no default account configured, so Strategy 0
+        # scopes to the first cached account (Work = ACCOUNT-A).
+        AccountMap.get_instance().load_from_jxa(
+            [
+                {"name": "Work", "id": "ACCOUNT-A"},
+                {"name": "Home", "id": "ACCOUNT-B"},
+            ]
+        )
+
+        from apple_mail_mcp.server import get_emails
+
+        result = await get_emails(filter="unread")
+
+        assert [e["id"] for e in result] == [2, 1]
+        assert result[0]["subject"] == "Urgent"
+        assert result[0]["sender"] == "bob@example.com"
+        assert result[0]["read"] is False
+        assert result[0]["flagged"] is True
+        mock_query.assert_not_called()
+        mock_core.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("apple_mail_mcp.server.execute_query_async")
@@ -347,6 +433,7 @@ class TestGetEmail:
             date_sent="2025-01-01T00:00:00",
             reply_to="",
             message_id_header="<abc@example.com>",
+            to=[{"name": "Bob", "address": "bob@example.com"}],
         )
 
         mock_mgr.return_value.has_index.return_value = True
@@ -374,6 +461,8 @@ class TestGetEmail:
         assert result["subject"] == "Disk email"
         assert result["read"] is True
         assert result["message_id"] == "<abc@example.com>"
+        assert result["to"] == [{"name": "Bob", "address": "bob@example.com"}]
+        assert result["cc"] == []
         # JXA should NOT have been called
         mock_exec.assert_not_called()
 
@@ -417,6 +506,140 @@ class TestGetEmail:
 
         assert result["subject"] == "From JXA"
         mock_exec.assert_called()
+
+    @staticmethod
+    def _disk_hit(mock_mgr):
+        """Wire the index mocks so Strategy 0 finds the message on disk."""
+        from pathlib import Path
+
+        from apple_mail_mcp.index.disk import EmlxEmail
+
+        parsed = EmlxEmail(
+            id=42,
+            subject="Disk email",
+            sender="alice@example.com",
+            content="Read from disk",
+            date_received="2025-01-01T00:00:00",
+            emlx_path=Path("/tmp/fake.emlx"),
+        )
+        mock_mgr.return_value.has_index.return_value = True
+        mock_mgr.return_value.find_email_path.return_value = Path(
+            "/tmp/fake.emlx"
+        )
+        mock_mgr.return_value.get_email_attachments.return_value = []
+        return parsed
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_skips_jxa_account_map_when_unneeded(
+        self, mock_exec, mock_mgr, mock_acct_map, monkeypatch
+    ):
+        """No account hint + no exclusions: the disk read is JXA-free.
+
+        `AccountMap.ensure_loaded()` is an osascript round-trip
+        (~250ms cold). Strategy 0 only needs the map to translate a
+        caller-supplied account name or configured exclusions to
+        UUIDs, so with neither it must not be loaded at all.
+        """
+        from unittest.mock import AsyncMock
+
+        monkeypatch.delenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", raising=False)
+        parsed = self._disk_hit(mock_mgr)
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.names_to_uuids.return_value = set()
+
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+
+        assert result["subject"] == "Disk email"
+        acct_map.ensure_loaded.assert_not_awaited()
+        acct_map.name_to_uuid.assert_not_called()
+        mock_mgr.return_value.find_email_path.assert_called_once_with(
+            42, account=None, mailbox=None
+        )
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_loads_account_map_for_account_hint(
+        self, mock_exec, mock_mgr, mock_acct_map, monkeypatch
+    ):
+        """An explicit account hint still resolves name -> UUID via the map."""
+        from unittest.mock import AsyncMock
+
+        monkeypatch.delenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", raising=False)
+        parsed = self._disk_hit(mock_mgr)
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.name_to_uuid.return_value = "UUID-WORK"
+        acct_map.names_to_uuids.return_value = set()
+
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            from apple_mail_mcp.server import get_email
+
+            await get_email(42, account="Work")
+
+        acct_map.ensure_loaded.assert_awaited_once()
+        mock_mgr.return_value.find_email_path.assert_called_once_with(
+            42, account="UUID-WORK", mailbox=None
+        )
+
+    @pytest.mark.asyncio
+    @patch("apple_mail_mcp.server._get_account_map")
+    @patch("apple_mail_mcp.server._get_index_manager")
+    @patch("apple_mail_mcp.server.execute_with_core_async")
+    async def test_strategy0_loads_account_map_when_exclusions_set(
+        self, mock_exec, mock_mgr, mock_acct_map, monkeypatch
+    ):
+        """Configured exclusions keep the UUID gate: the map must load."""
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setenv("APPLE_MAIL_INDEX_EXCLUDE_ACCOUNTS", "Hidden")
+        parsed = self._disk_hit(mock_mgr)
+        acct_map = mock_acct_map.return_value
+        acct_map.ensure_loaded = AsyncMock()
+        acct_map.names_to_uuids.return_value = {"UUID-HIDDEN"}
+        # No default account is configured (conftest strips host
+        # config), so _resolve_visible_account() must find a visible
+        # account in the cache or get_email() refuses to run at all.
+        acct_map.get_cached_accounts.return_value = [
+            {"name": "Hidden"},
+            {"name": "Visible"},
+        ]
+
+        with (
+            patch(
+                "apple_mail_mcp.server.asyncio.to_thread",
+                return_value=parsed,
+            ),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            from apple_mail_mcp.server import get_email
+
+            result = await get_email(42)
+
+        assert result["id"] == 42
+        acct_map.ensure_loaded.assert_awaited()
+        acct_map.names_to_uuids.assert_called_with({"Hidden"})
 
     @pytest.mark.asyncio
     @patch("apple_mail_mcp.server._get_account_map")
@@ -1389,6 +1612,84 @@ class TestWriteImplyingToolsHaveGuard:
         return False
 
 
+class TestToolAnnotations:
+    """Every tool declares MCP annotations so clients and gateways can
+    classify it without guessing from its name.
+
+    readOnlyHint must agree with the #80 guard: a tool is read-only
+    exactly when it does not call _ensure_writable().
+    """
+
+    HINTS = (
+        "readOnlyHint",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+    )
+
+    @staticmethod
+    def _tool_writes() -> dict[str, bool]:
+        """Map each @mcp.tool function to whether it is a write tool."""
+        import ast
+
+        import apple_mail_mcp.server as server_module
+
+        tree = ast.parse(Path(server_module.__file__).read_text())
+        guard = TestWriteImplyingToolsHaveGuard
+        return {
+            node.name: guard._calls_ensure_writable(node)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and guard._has_mcp_tool_decorator(node)
+        }
+
+    @staticmethod
+    def _server():
+        """The FastMCP instance to hand to Client().
+
+        Client() picks its transport with isinstance(..., FastMCP), so
+        #117's lazy wrapper needs its .server; before #117, mcp is it.
+        """
+        from apple_mail_mcp.server import mcp
+
+        return getattr(mcp, "server", mcp)
+
+    @pytest.mark.asyncio
+    async def test_every_tool_declares_annotations(self):
+        from fastmcp import Client
+
+        writes = self._tool_writes()
+        async with Client(self._server()) as client:
+            tools = await client.list_tools()
+
+        assert {t.name for t in tools} == set(writes)
+        for tool in tools:
+            hints = tool.annotations
+            assert hints is not None, f"{tool.name} has no annotations"
+            for hint in self.HINTS:
+                assert getattr(hints, hint) is not None, (tool.name, hint)
+            assert hints.readOnlyHint is not writes[tool.name], tool.name
+
+    @pytest.mark.asyncio
+    async def test_read_only_tools_are_safe_to_retry(self):
+        from fastmcp import Client
+
+        writes = self._tool_writes()
+        async with Client(self._server()) as client:
+            tools = await client.list_tools()
+
+        read_only = [t for t in tools if not writes[t.name]]
+        assert read_only
+        for tool in read_only:
+            hints = tool.annotations
+            assert hints is not None, tool.name
+            assert (
+                hints.readOnlyHint,
+                hints.destructiveHint,
+                hints.idempotentHint,
+            ) == (True, False, True), tool.name
+
+
 class TestInputValidation:
     """MCP boundary validation: pagination clamps + date checks (#96)."""
 
@@ -1682,6 +1983,42 @@ class TestGetAttachmentLinksMode:
             assert result["links"][0]["url"] == "https://example.com"
             assert result["links"][0]["text"] == "Example"
             assert "file_path" not in result
+
+
+class TestGetEmailLinksOutputSchema:
+    """get_email_links advertises only what it returns.
+
+    Annotating it with the attachment TypedDict made fastmcp publish
+    filename/mime_type/size/file_path in its output schema.
+    """
+
+    @pytest.mark.asyncio
+    async def test_schema_is_links_only(self):
+        from apple_mail_mcp.server import mcp
+
+        tool = await mcp.get_tool("get_email_links")
+        schema = tool.output_schema
+
+        assert schema is not None
+        assert set(schema["properties"]) == {"links"}
+        assert schema["required"] == ["links"]
+
+    @pytest.mark.asyncio
+    async def test_deprecated_get_attachment_schema_unchanged(self):
+        """The deprecated tool still covers both of its result shapes."""
+        from apple_mail_mcp.server import mcp
+
+        tool = await mcp.get_tool("get_attachment")
+        schema = tool.output_schema
+
+        assert schema is not None
+        assert set(schema["properties"]) == {
+            "filename",
+            "mime_type",
+            "size",
+            "file_path",
+            "links",
+        }
 
 
 class TestSearchIndexHonesty:
