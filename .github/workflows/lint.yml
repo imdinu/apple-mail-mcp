@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       - run: uv run ruff check src/
       - run: uv run ruff format --check src/
       - run: uv run ty check src/
@@ -36,5 +36,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       - run: uv run pytest -q
