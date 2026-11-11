@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get_email()` returns `to` and `cc`.** Each is a list of `{name, address}`, from every read strategy: the disk path parses the To/Cc MIME headers (repeated headers merged, RFC 2047 names decoded), and the JXA paths read them from Mail.app, returning `[]` if Mail cannot resolve them. Bcc is left out; it is absent on received mail. By itsbrex. (#129)
+- **Every tool declares MCP tool annotations**, so clients and gateways can classify a tool without guessing from its name: `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`. The hints are advisory and sit alongside the read-only and hidden-account gates. By itsbrex. (#129)
+
 ### Changed
 
+- **Highlighted search ranks first and highlights only the returned page.** SQLite evaluated FTS5 `highlight()`/`snippet()` for every matching row before `LIMIT` pruned them, so a broad term re-tokenized most of the index on each call. Rows, order and scores are unchanged; broad-term searches measured 1.9–2.1 s now take 0.4–0.7 s, typical terms run 2–6x faster. By itsbrex. (#117)
+- **CLI commands start without importing fastmcp.** The server builds its FastMCP instance on first run, which takes importing it for a CLI command from about 2.0 s to 0.25 s. `get_email()` also skips the Mail.app account lookup when there is no account hint and no exclusions configured (about 250 ms cold). By itsbrex. (#117)
 - **fastmcp ≥ 3.4.7 is required** (was ≥ 3.0.0b1). The lock moves starlette from 0.52 to 1.6 with it; if you pin starlette yourself alongside this package, 1.x is what resolves. (#118)
 - **`ty` type-checks `src/` in CI**, pinned to 0.0.73, and CI installs with `uv sync --locked` so a `pyproject.toml` change that leaves `uv.lock` behind fails the build. (#118)
 
