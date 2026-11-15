@@ -1795,3 +1795,83 @@ class TestPermissionSurfacing:
                 _read_external_attachment(emlx_path, 2, "img.png")
         finally:
             ext_file.chmod(0o600)
+
+
+def _write_emlx(tmp_path: Path, mime_content: bytes, name: str = "1.emlx") -> Path:
+    """Write a minimal .emlx file (byte count + MIME content)."""
+    path = tmp_path / name
+    path.write_bytes(f"{len(mime_content)}\n".encode() + mime_content)
+    return path
+
+
+class TestHeaderDecoding:
+    """Raw 8-bit header bytes must not decay into U+FFFD runs."""
+
+    def test_8bit_subject_is_decoded_as_utf8(self, tmp_path: Path):
+        mime = (
+            b"From: sender@example.com\n"
+            b"Subject: \xf0\x9f\x9a\xa8 Storage 100% Used\n"
+            b"Date: Mon, 15 Jan 2024 10:30:00 -0500\n"
+            b"\n"
+            b"body\n"
+        )
+        result = parse_emlx(_write_emlx(tmp_path, mime))
+        assert result is not None
+        assert result.subject == "\U0001f6a8 Storage 100% Used"
+        assert "�" not in result.subject
+
+    def test_8bit_prefix_and_encoded_word_are_both_decoded(self, tmp_path: Path):
+        encoded = (
+            "=?UTF-8?B?R2l2ZSBUaGFua3MgZm9yICQzMDAgT0ZGIEVuZHVyYW5jZSBWZWhp"
+            "Y2xlIFByb3RlY3Rpb24=?="
+        )
+        mime = (
+            b"From: sender@example.com\n"
+            b"Subject: \xf0\x9f\xa6\x83 " + encoded.encode() + b"\n"
+            b"Date: Mon, 15 Jan 2024 10:30:00 -0500\n"
+            b"\n"
+            b"body\n"
+        )
+        result = parse_emlx(_write_emlx(tmp_path, mime))
+        assert result is not None
+        assert result.subject.startswith("\U0001f983 ")
+        assert "Give Thanks" in result.subject
+        assert "=?" not in result.subject
+        assert "�" not in result.subject
+
+    def test_plain_ascii_subject_is_unchanged(self, tmp_path: Path):
+        mime = (
+            b"From: sender@example.com\n"
+            b"Subject: Test Email Subject\n"
+            b"Date: Mon, 15 Jan 2024 10:30:00 -0500\n"
+            b"\n"
+            b"body\n"
+        )
+        result = parse_emlx(_write_emlx(tmp_path, mime))
+        assert result is not None
+        assert result.subject == "Test Email Subject"
+
+    def test_encoded_word_subject_is_still_decoded(self, tmp_path: Path):
+        mime = (
+            b"From: sender@example.com\n"
+            b"Subject: =?utf-8?q?Hello_W=C3=B6rld?=\n"
+            b"Date: Mon, 15 Jan 2024 10:30:00 -0500\n"
+            b"\n"
+            b"body\n"
+        )
+        result = parse_emlx(_write_emlx(tmp_path, mime))
+        assert result is not None
+        assert result.subject == "Hello Wörld"
+
+    def test_8bit_sender_name_is_decoded_as_utf8(self, tmp_path: Path):
+        mime = (
+            b"From: Jos\xc3\xa9 Garc\xc3\xada <jose@example.com>\n"
+            b"Subject: Plain\n"
+            b"Date: Mon, 15 Jan 2024 10:30:00 -0500\n"
+            b"\n"
+            b"body\n"
+        )
+        result = parse_emlx(_write_emlx(tmp_path, mime))
+        assert result is not None
+        assert "José García" in result.sender
+        assert "�" not in result.sender

@@ -24,14 +24,17 @@ Mail.app storage structure:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import email
 import logging
 import mimetypes
 import plistlib
+import quopri
 import re
 import warnings
 from dataclasses import dataclass
-from email.header import decode_header, make_header
+from email.header import decode_header
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +49,98 @@ MAIL_VERSION = "V10"
 
 # Cached result of find_mail_directory()
 _cached_mail_dir: Path | None = None
+
+# Charsets that mean "raw bytes, no declared encoding".
+_UNKNOWN_CHARSETS = ("unknown-8bit", "unknown", "")
+
+# RFC 2047 encoded word: =?charset?encoding?text?=
+_ENCODED_WORD = re.compile(r"=\?([^?\s]+)\?([bBqQ])\?([^?]*)\?=")
+
+
+def _decode_bytes(value: bytes, charset: str = "") -> str:
+    """Decode raw header bytes without losing non-ASCII characters.
+
+    ``unknown-8bit`` means "raw bytes, no declared encoding". Rendering
+    those bytes as ASCII replaces every non-ASCII byte with U+FFFD - one
+    replacement character per byte, so a single 4-byte emoji turns into
+    four. Those byte runs are UTF-8 in practice, so they are decoded as
+    UTF-8 here; ``errors="replace"`` is only the last resort for bytes
+    that are not valid UTF-8.
+    """
+    name = (charset or "").lower()
+    if name in _UNKNOWN_CHARSETS:
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.decode("utf-8", errors="replace")
+    try:
+        return value.decode(charset)
+    except (UnicodeDecodeError, LookupError):
+        pass
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return value.decode("utf-8", errors="replace")
+
+
+def _decode_header_parts(parts: list[tuple[object, object]]) -> list[str]:
+    """Turn ``decode_header()`` parts into text pieces."""
+    out: list[str] = []
+    for value, charset in parts:
+        if isinstance(value, bytes):
+            name = charset if isinstance(charset, str) else ""
+            out.append(_decode_bytes(value, name))
+        else:
+            out.append(value if isinstance(value, str) else str(value))
+    return out
+
+
+def _decode_encoded_words(text: str) -> str:
+    """Decode RFC 2047 encoded words, keeping everything else verbatim.
+
+    :func:`email.header.decode_header` returns the unencoded part of a
+    header as ASCII with every non-ASCII character replaced by an escape
+    sequence, which loses the original text.  Splitting the header here
+    keeps the unencoded text as it is and decodes only the encoded words.
+    """
+    if "=?" not in text:
+        return text
+    out: list[str] = []
+    last = 0
+    for match in _ENCODED_WORD.finditer(text):
+        out.append(text[last : match.start()])
+        charset = match.group(1)
+        encoding = match.group(2)
+        payload = match.group(3)
+        try:
+            if encoding.lower() == "b":
+                data = base64.b64decode(payload)
+            else:
+                data = quopri.decodestring(payload.replace("_", " "))
+        except (ValueError, binascii.Error):
+            out.append(match.group(0))
+            last = match.end()
+            continue
+        out.append(_decode_bytes(data, charset))
+        last = match.end()
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _decode_header_text(raw: object) -> str:
+    """Decode a mail header into text without losing non-ASCII bytes.
+
+    A header may mix raw bytes with an encoded-word part.  The
+    encoded-word is only recognised as such once the bytes are decoded,
+    so the decoded text is scanned for encoded words afterwards.
+    """
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        text = "".join(_decode_header_parts(decode_header(raw)))  # type: ignore[arg-type]
+    return _decode_encoded_words(text)
 
 
 def _detect_mail_version() -> str:
@@ -220,15 +315,15 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         subject = ""
         if msg["Subject"]:
             try:
-                subject = str(make_header(decode_header(msg["Subject"])))
+                subject = _decode_header_text(msg["Subject"])
             except (UnicodeDecodeError, LookupError):
-                subject = msg["Subject"] or ""
+                subject = str(msg["Subject"] or "")
 
         # Extract sender
         sender = msg["From"] or ""
         if sender:
             try:
-                sender = str(make_header(decode_header(sender)))
+                sender = _decode_header_text(sender)
             except (UnicodeDecodeError, LookupError):
                 pass
 
@@ -280,9 +375,9 @@ def parse_emlx(path: Path) -> EmlxEmail | None:
         reply_to = ""
         if msg["Reply-To"]:
             try:
-                reply_to = str(make_header(decode_header(msg["Reply-To"])))
+                reply_to = _decode_header_text(msg["Reply-To"])
             except (UnicodeDecodeError, LookupError):
-                reply_to = msg["Reply-To"] or ""
+                reply_to = str(msg["Reply-To"] or "")
 
         message_id_header = msg.get("Message-ID", "") or ""
 
