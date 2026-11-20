@@ -103,9 +103,16 @@ def _index_writer_retry_loop(
     within one interval: it flips ``index_writer`` and runs the same
     sync-then-watch path a winning startup would have.
     """
+    from .index.freshness import mail_readable
+
     while True:
         time.sleep(interval)
-        if lock.try_acquire():
+        # A process that cannot read the Mail store must not hold the
+        # lock: it could never sync, and would block one that can.
+        if mail_readable() and lock.try_acquire():
+            from .index.freshness import WRITER_LOCK_HELD
+
+            WRITER_LOCK_HELD.set()
             manager.index_writer = True
             print(
                 "Index writer lock acquired — promoting to writer",
@@ -188,6 +195,56 @@ def _acquire_cli_index_lock(manager: "IndexManager") -> "IndexLock":
     sys.exit(1)
 
 
+# How long `index` waits for a running server to answer a sync request.
+_SYNC_REQUEST_TIMEOUT_SEC = 20.0
+
+
+def _sync_via_running_server(manager: "IndexManager") -> bool:
+    """Bring the index current while a running server holds the lock.
+
+    Returns False when no server holds the writer lock: the caller
+    then builds the index itself, as before. Otherwise asks the server
+    to sync (see ``index.freshness``). A server that does not answer
+    (an older version, or one that cannot read mail) gets a one-off
+    incremental sync from this process instead. That is safe next to
+    it: incremental sync writes row by row through the FTS triggers
+    and SQLite (WAL) serialises the writers. Only the full build,
+    which drops the triggers, must never run beside another writer.
+    """
+    from .index.freshness import (
+        lock_held_elsewhere,
+        request_sync,
+        sync_now,
+        wait_for_sync,
+    )
+
+    if not lock_held_elsewhere(manager.db_path):
+        return False
+    print("A running server holds the index — asking it to sync...")
+    stamp = request_sync(manager.db_path)
+    done = wait_for_sync(manager.db_path, stamp, _SYNC_REQUEST_TIMEOUT_SEC)
+    if done is not None and not done.get("error"):
+        changes = done.get("changes", 0)
+        print(f"✓ Synced by the running server: {changes} changes")
+    else:
+        why = done["error"] if done else "no answer"
+        print(f"  Server did not sync ({why}); syncing from here instead.")
+        start = time.time()
+        changes = sync_now(manager)
+        if manager.last_sync_blocked:
+            print(
+                "✗ This process cannot read ~/Library/Mail either. "
+                "Grant Full Disk Access to the terminal and retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"✓ Synced {changes} changes in {_format_time(time.time() - start)}"
+        )
+    print(f"  Emails: {manager.get_stats().email_count:,}")
+    return True
+
+
 def _run_serve(watch: bool = False, read_only: bool = False) -> None:
     """Internal function to run the MCP server."""
     import threading
@@ -221,15 +278,24 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
     # prevent. The lock object must outlive this function's sync
     # block — it is held for the process lifetime (the frame stays
     # alive while mcp.run() blocks below).
+    from .index.freshness import mail_readable, serve_sync_requests, sync_now
+
     index_lock = IndexLock(manager.db_path)
-    is_writer = index_lock.try_acquire()
+    can_read_mail = mail_readable()
+    is_writer = can_read_mail and index_lock.try_acquire()
+    if is_writer:
+        from .index.freshness import WRITER_LOCK_HELD
+
+        WRITER_LOCK_HELD.set()
+    if not can_read_mail:
+        _warn_sync_blocked("permission")
 
     if manager.has_index():
 
         def _background_sync() -> None:
             try:
                 start = time.time()
-                count = manager.sync_updates()
+                count = sync_now(manager)
                 elapsed = time.time() - start
                 if manager.last_sync_blocked:
                     # A blocked sync also returns 0 changes. Reporting
@@ -272,6 +338,12 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
                         file=sys.stderr,
                     )
 
+            # Answer `apple-mail-mcp index` and passive servers asking
+            # for a sync, so they never need to take the lock from us.
+            threading.Thread(
+                target=serve_sync_requests, args=(manager,), daemon=True
+            ).start()
+
         if is_writer:
             sync_thread = threading.Thread(target=_background_sync, daemon=True)
             sync_thread.start()
@@ -284,7 +356,8 @@ def _run_serve(watch: bool = False, read_only: bool = False) -> None:
             manager.index_writer = False
             interval = get_lock_retry_seconds()
             print(
-                "Another instance is syncing the index — running "
+                "Another instance (or none, if this one cannot read "
+                "mail) is syncing the index — running "
                 f"index-passive (retrying every {interval:.0f}s)",
                 file=sys.stderr,
                 flush=True,
@@ -391,6 +464,8 @@ def index(
     from .index import IndexManager
 
     manager = IndexManager()
+    if manager.has_index() and _sync_via_running_server(manager):
+        return
     with _acquire_cli_index_lock(manager):
         # Announce only once the lock is won — otherwise a contended
         # run interleaves "Building..." with the waiting/error output.

@@ -990,6 +990,7 @@ class TestIsEmpty:
                 "2026-01-15T10:30:00",
                 None,
                 0,
+                "",
             ),
         )
         conn.commit()

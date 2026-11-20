@@ -17,7 +17,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Current schema version for migrations
-SCHEMA_VERSION = 5  # Bumped for failed_index_jobs (DLQ) support
+SCHEMA_VERSION = 6  # Bumped for the recipients (To/Cc) column
 
 # Default PRAGMAs for all connections (centralized to avoid drift)
 DEFAULT_PRAGMAS = {
@@ -31,8 +31,8 @@ DEFAULT_PRAGMAS = {
 # Uses INSERT OR REPLACE for idempotent upserts on composite key
 INSERT_EMAIL_SQL = """INSERT OR REPLACE INTO emails
     (message_id, account, mailbox, subject, sender, content, date_received,
-     emlx_path, attachment_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+     emlx_path, attachment_count, recipients)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
 # SQL for inserting attachment metadata
 INSERT_ATTACHMENT_SQL = """INSERT INTO attachments
@@ -109,7 +109,7 @@ def email_to_row(
     mailbox: str,
     emlx_path: str | None = None,
     attachment_count: int = 0,
-) -> tuple[int, str, str, str, str, str, str, str | None, int]:
+) -> tuple[int, str, str, str, str, str, str, str | None, int, str]:
     """
     Convert an email dict to a database row tuple.
 
@@ -120,6 +120,7 @@ def email_to_row(
 
     Args:
         email: Email dict with id, subject, sender, content, date_received
+            and optionally recipients (To/Cc, see disk.format_recipients)
         account: Account name/identifier
         mailbox: Mailbox name
         emlx_path: Path to the .emlx file on disk (for disk-first sync)
@@ -138,6 +139,7 @@ def email_to_row(
         email.get("date_received", ""),
         emlx_path,
         attachment_count,
+        email.get("recipients", ""),
     )
 
 
@@ -186,6 +188,7 @@ CREATE TABLE IF NOT EXISTS emails (
     date_received TEXT,
     emlx_path TEXT,                  -- Path to .emlx file (for disk-first sync)
     attachment_count INTEGER DEFAULT 0,
+    recipients TEXT DEFAULT '',     -- To + Cc, "Name <addr>, ..."
     indexed_at TEXT DEFAULT (datetime('now')),
     UNIQUE(account, mailbox, message_id)  -- Composite uniqueness
 );
@@ -222,7 +225,8 @@ CREATE TRIGGER IF NOT EXISTS emails_ad AFTER DELETE ON emails BEGIN
     VALUES('delete', old.rowid, old.subject, old.sender, old.content);
 END;
 
-CREATE TRIGGER IF NOT EXISTS emails_au AFTER UPDATE ON emails BEGIN
+CREATE TRIGGER IF NOT EXISTS emails_au
+    AFTER UPDATE OF subject, sender, content ON emails BEGIN
     INSERT INTO emails_fts(emails_fts, rowid, subject, sender, content)
     VALUES('delete', old.rowid, old.subject, old.sender, old.content);
     INSERT INTO emails_fts(rowid, subject, sender, content)
@@ -439,6 +443,30 @@ def _run_migrations(
                 ON failed_index_jobs(account, mailbox);
         """)
         logger.info("Migration v4→v5 complete.")
+
+    if from_version < 6:
+        # v5→v6: To/Cc recipients, so outbound mail can be matched by
+        # who it went to. Existing rows stay '' until the next build.
+        logger.info("Migrating schema v5→v6: adding recipients column")
+        # NULL marks "not parsed yet"; the next sync backfills those
+        # rows (IndexManager.backfill_recipients). The update trigger
+        # is narrowed to the FTS columns so the backfill does not
+        # re-tokenize every message.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(emails)")}
+        if "recipients" not in cols:
+            conn.execute("ALTER TABLE emails ADD COLUMN recipients TEXT")
+        conn.executescript("""
+            DROP TRIGGER IF EXISTS emails_au;
+            CREATE TRIGGER emails_au
+            AFTER UPDATE OF subject, sender, content ON emails BEGIN
+                INSERT INTO emails_fts(
+                    emails_fts, rowid, subject, sender, content
+                ) VALUES('delete', old.rowid, old.subject, old.sender,
+                         old.content);
+                INSERT INTO emails_fts(rowid, subject, sender, content)
+                VALUES (new.rowid, new.subject, new.sender, new.content);
+            END;
+        """)
 
     conn.execute("UPDATE schema_version SET version = ?", (to_version,))
     conn.commit()

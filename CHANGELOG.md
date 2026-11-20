@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`search()` matches recipients and reports direction.** The index stores To/Cc (schema v6, backfilled on the next sync). `search()` takes `recipient=` (To/Cc substring) and `direction=` (`"inbound"`/`"outbound"`), adds `scope="participant"` (sender OR recipient, newest first; an empty query lists everything the filters allow), and every hit carries `recipients` and `direction`. Outbound is Sent/Outbox/Drafts, plus mail from the user's own sending addresses wherever it now lives.
+- **`get_email()` surfaces inline images.** Attachments from the disk path carry `inline`, `content_id` and, when Mail stored the file beside the message (`Attachments/<id>/<part>/`, common for `.partial.emlx`), its `path`. The result also carries `mailbox` and `direction`.
+
+### Fixed
+
+- **A server without Full Disk Access no longer blocks `apple-mail-mcp index`.** MCP hosts often launch the server without FDA. It took the writer lock, could never sync, and every CLI `index` then failed after 30s. A server that cannot read the Mail store now stays index-passive, and only promotes once it can.
+- **`apple-mail-mcp index` works while a server runs.** Instead of failing on the lock, it asks the writer to sync (`<db>.sync-request` / `.sync-done`) and, if no answer comes, runs a one-off incremental sync itself (row-level writes through the FTS triggers, serialised by SQLite). The full build still requires the lock.
+- **Search finds mail that arrived minutes ago.** `search()` runs an incremental sync first (at most every 30s, `APPLE_MAIL_SEARCH_SYNC_SECONDS`, 0 disables) and, when the index is over an hour old and cannot be refreshed, says so in a `warning` alongside the results.
+
 ## [0.5.1] - 2026-11-16
 
 ### Added

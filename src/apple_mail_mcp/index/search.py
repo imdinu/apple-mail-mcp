@@ -16,8 +16,17 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+Direction = Literal["inbound", "outbound"]
+
+# Mailboxes holding mail the user sent (or is about to). Compared
+# lower-cased against the index's mailbox column (the leaf name).
+OUTBOUND_MAILBOXES = frozenset(
+    {"sent", "sent messages", "sent items", "sent mail", "outbox", "drafts"}
+)
 
 # Characters that make a bare FTS5 token dangerous
 # (hyphens = NOT, colons = column filter, parens = grouping, etc.)
@@ -130,9 +139,11 @@ def add_account_mailbox_filter(
     *,
     before: str | None = None,
     after: str | None = None,
+    recipient: str | None = None,
+    direction: Direction | None = None,
 ) -> str:
     """
-    Add account/mailbox/date WHERE clauses to a SQL query.
+    Add account/mailbox/date/recipient/direction WHERE clauses.
 
     This helper reduces repetition when building filtered queries.
     Modifies params in-place and returns the updated SQL string.
@@ -149,6 +160,8 @@ def add_account_mailbox_filter(
             UUIDs; callers resolve display names -> UUIDs upstream).
         before: Exclude emails on/after this date (YYYY-MM-DD)
         after: Include emails on/after this date (YYYY-MM-DD)
+        recipient: Substring matched against To/Cc names and addresses
+        direction: "outbound" (Sent/Outbox/Drafts) or "inbound"
 
     Returns:
         Updated SQL string with added WHERE clauses
@@ -173,7 +186,60 @@ def add_account_mailbox_filter(
     if before:
         sql += f" AND {table_alias}.date_received < ?"
         params.append(before)
+    if recipient:
+        sql += f" AND LOWER({table_alias}.recipients) LIKE ? ESCAPE '\\'"
+        params.append(_like_pattern(recipient))
+    if direction:
+        names = sorted(OUTBOUND_MAILBOXES)
+        placeholders = ", ".join("?" for _ in names)
+        op = "IN" if direction == "outbound" else "NOT IN"
+        sql += f" AND LOWER({table_alias}.mailbox) {op} ({placeholders})"
+        params.extend(names)
     return sql
+
+
+def _like_pattern(text: str) -> str:
+    """Lower-cased ``%text%`` with LIKE wildcards escaped."""
+    escaped = (
+        text.lower()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
+def own_addresses(conn: sqlite3.Connection) -> set[str]:
+    """Addresses the user sends from: every sender seen in Sent/Outbox.
+
+    Lets mail the user sent be marked outbound even after it moved to
+    Trash or Archive, where the mailbox name no longer says so.
+    """
+    placeholders = ", ".join("?" for _ in OUTBOUND_MAILBOXES)
+    rows = conn.execute(
+        f"SELECT DISTINCT sender FROM emails "
+        f"WHERE LOWER(mailbox) IN ({placeholders})",
+        sorted(OUTBOUND_MAILBOXES),
+    )
+    return {a for (s,) in rows if (a := _address(s))}
+
+
+def _address(sender: str | None) -> str:
+    """Lower-cased bare address from ``Name <addr>`` or ``addr``."""
+    from email.utils import parseaddr
+
+    return parseaddr(sender or "")[1].lower()
+
+
+def direction_of(
+    mailbox: str, sender: str = "", own: AbstractSet[str] = frozenset()
+) -> Direction:
+    """Whether a message in ``mailbox`` was sent by the user or to them."""
+    if (mailbox or "").lower() in OUTBOUND_MAILBOXES:
+        return "outbound"
+    if own and _address(sender) in own:
+        return "outbound"
+    return "inbound"
 
 
 @dataclass
@@ -188,6 +254,11 @@ class SearchResult:
     content_snippet: str
     date_received: str
     score: float
+    recipients: str = ""
+
+    @property
+    def direction(self) -> Direction:
+        return direction_of(self.mailbox)
 
 
 def sanitize_fts_query(query: str) -> str:
@@ -254,6 +325,8 @@ def search_fts(
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
+    recipient: str | None = None,
+    direction: Direction | None = None,
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -303,6 +376,7 @@ def search_fts(
             e.sender,
             e.content,
             e.date_received,
+            e.recipients,
             -bm25(emails_fts, 1.0, 0.5, 2.0) as score
         FROM emails_fts
         JOIN emails e ON emails_fts.rowid = e.rowid
@@ -319,6 +393,8 @@ def search_fts(
         exclude_accounts=exclude_accounts,
         before=before,
         after=after,
+        recipient=recipient,
+        direction=direction,
     )
     sql += " ORDER BY score DESC LIMIT ?"
     params.append(limit)
@@ -341,6 +417,7 @@ def search_fts(
                     content_snippet=_extract_snippet(row["content"]),
                     date_received=row["date_received"] or "",
                     score=round(row["score"], 3),
+                    recipients=row["recipients"] or "",
                 )
             )
 
@@ -362,6 +439,8 @@ def search_fts(
                 exclude_accounts=exclude_accounts,
                 before=before,
                 after=after,
+                recipient=recipient,
+                direction=direction,
                 offset=offset,
                 _is_retry=True,
             )
@@ -381,6 +460,8 @@ def search_fts_highlight(
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
+    recipient: str | None = None,
+    direction: Direction | None = None,
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -444,6 +525,8 @@ def search_fts_highlight(
         exclude_accounts=exclude_accounts,
         before=before,
         after=after,
+        recipient=recipient,
+        direction=direction,
     )
     inner += " ORDER BY bm25(emails_fts, 1.0, 0.5, 2.0) LIMIT ?"
     inner_params.append(limit)
@@ -461,6 +544,7 @@ def search_fts_highlight(
             snippet(emails_fts, 2, '**', '**', '...', 32)
                 as content_snippet,
             e.date_received,
+            e.recipients,
             -bm25(emails_fts, 1.0, 0.5, 2.0) as score
         FROM emails_fts
         JOIN emails e ON emails_fts.rowid = e.rowid
@@ -485,6 +569,7 @@ def search_fts_highlight(
                     content_snippet=row["content_snippet"] or "",
                     date_received=row["date_received"] or "",
                     score=round(row["score"], 3),
+                    recipients=row["recipients"] or "",
                 )
             )
 
@@ -504,6 +589,8 @@ def search_fts_highlight(
                 exclude_accounts=exclude_accounts,
                 before=before,
                 after=after,
+                recipient=recipient,
+                direction=direction,
                 offset=offset,
                 _is_retry=True,
             )
@@ -519,6 +606,8 @@ def search_fts_highlight(
             exclude_accounts=exclude_accounts,
             before=before,
             after=after,
+            recipient=recipient,
+            direction=direction,
             offset=offset,
         )
 
@@ -636,6 +725,70 @@ def search_attachments(
             "filename": row["filename"],
         }
         for row in cursor
+    ]
+
+
+def search_participants(
+    conn: sqlite3.Connection,
+    party: str,
+    account: str | None = None,
+    mailbox: str | None = None,
+    limit: int = 20,
+    *,
+    exclude_mailboxes: list[str] | None = None,
+    exclude_accounts: list[str] | None = None,
+    before: str | None = None,
+    after: str | None = None,
+    offset: int = 0,
+    recipient: str | None = None,
+    direction: Direction | None = None,
+) -> list[SearchResult]:
+    """Messages where ``party`` is the sender OR a To/Cc recipient.
+
+    Not FTS: a substring match on names and addresses, newest first,
+    so "everything with lawfirm.example either way" is one call. An empty
+    ``party`` lists every message the other filters allow.
+    """
+    sql = """
+        SELECT e.message_id, e.account, e.mailbox, e.subject, e.sender,
+               e.content, e.date_received, e.recipients
+        FROM emails e
+        WHERE 1 = 1
+    """
+    params: list = []
+    if party.strip():
+        sql += (
+            " AND (LOWER(e.sender) LIKE ? ESCAPE '\\'"
+            " OR LOWER(e.recipients) LIKE ? ESCAPE '\\')"
+        )
+        params += [_like_pattern(party.strip())] * 2
+    sql = add_account_mailbox_filter(
+        sql,
+        params,
+        account,
+        mailbox,
+        exclude_mailboxes=exclude_mailboxes,
+        exclude_accounts=exclude_accounts,
+        before=before,
+        after=after,
+        recipient=recipient,
+        direction=direction,
+    )
+    sql += " ORDER BY e.date_received DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    return [
+        SearchResult(
+            id=row["message_id"],
+            account=row["account"],
+            mailbox=row["mailbox"],
+            subject=row["subject"] or "",
+            sender=row["sender"] or "",
+            content_snippet=_extract_snippet(row["content"]),
+            date_received=row["date_received"] or "",
+            score=1.0,
+            recipients=row["recipients"] or "",
+        )
+        for row in conn.execute(sql, params)
     ]
 
 

@@ -200,9 +200,12 @@ class TestNoIndexLockAcquisition:
             _run_serve(watch=False)
         return mock_manager
 
-    def test_no_index_server_holds_the_lock(self, tmp_path):
+    def test_no_index_server_holds_the_lock(self, tmp_path, monkeypatch):
         """While serving, a contender cannot take the lock."""
+        from apple_mail_mcp.index import freshness
         from apple_mail_mcp.index.lock import IndexLock
+
+        monkeypatch.setattr(freshness, "mail_readable", lambda: True)
 
         state = {}
 

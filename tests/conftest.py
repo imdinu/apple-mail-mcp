@@ -166,6 +166,7 @@ def populated_db(temp_db: sqlite3.Connection, sample_emails: list[dict]):
             email["date_received"],  # date_received
             None,  # emlx_path (not used in test fixtures)
             0,  # attachment_count
+            email.get("recipients", ""),  # recipients (To/Cc)
         )
         temp_db.execute(INSERT_EMAIL_SQL, row)
     temp_db.commit()

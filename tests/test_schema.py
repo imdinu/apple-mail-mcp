@@ -516,6 +516,7 @@ class TestConcurrentWrites:
                             "2026-01-01 00:00:00",
                             f"/fake/{worker}/{i}.emlx",
                             0,
+                            "",
                         ),
                     )
                     # Commit in small batches to force lock handoffs

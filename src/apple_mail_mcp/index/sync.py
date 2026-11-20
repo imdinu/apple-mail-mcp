@@ -106,7 +106,7 @@ def sync_from_disk(
     Returns:
         SyncResult with counts of added/deleted/moved emails
     """
-    from .disk import iter_disk_inventory, parse_emlx
+    from .disk import format_recipients, iter_disk_inventory, parse_emlx
 
     if progress_callback:
         progress_callback(0, None, "Scanning disk inventory...")
@@ -266,6 +266,7 @@ def sync_from_disk(
                         "sender": parsed.sender,
                         "content": parsed.content,
                         "date_received": parsed.date_received,
+                        "recipients": format_recipients(parsed.to, parsed.cc),
                     },
                     account,
                     mailbox,
