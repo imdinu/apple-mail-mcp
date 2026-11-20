@@ -98,7 +98,10 @@ class TestIndexLock:
 class TestIndexWriterRetryLoop:
     """The index-passive server's promotion loop (cli.py)."""
 
-    def test_promotes_after_writer_releases(self, db_path):
+    def test_promotes_after_writer_releases(self, db_path, monkeypatch):
+        from apple_mail_mcp.index import freshness
+
+        monkeypatch.setattr(freshness, "mail_readable", lambda: True)
         winner = IndexLock(db_path)
         assert winner.try_acquire() is True
 

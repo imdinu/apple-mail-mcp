@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .disk import find_mail_directory, parse_emlx
+from .disk import find_mail_directory, format_recipients, parse_emlx
 from .schema import (
     CLEAR_PARSE_FAILURE_SQL,
     INSERT_EMAIL_SQL,
@@ -374,6 +374,9 @@ class IndexWatcher:
                                 "sender": email.sender,
                                 "content": email.content,
                                 "date_received": email.date_received,
+                                "recipients": format_recipients(
+                                    email.to, email.cc
+                                ),
                             },
                             account,
                             mailbox,

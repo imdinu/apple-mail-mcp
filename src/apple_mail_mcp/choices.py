@@ -13,5 +13,10 @@ EmailFilter = Literal[
 ]
 """get_emails() filter; "this_week" is an alias for "last_7_days"."""
 
-SearchScope = Literal["all", "subject", "sender", "body", "attachments"]
-"""search() scope."""
+SearchScope = Literal[
+    "all", "subject", "sender", "body", "attachments", "participant"
+]
+"""search() scope. "participant" = sender OR To/Cc (substring)."""
+
+Direction = Literal["inbound", "outbound"]
+"""Inbound = received; outbound = Sent, Outbox or Drafts."""

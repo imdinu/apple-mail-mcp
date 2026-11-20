@@ -158,6 +158,21 @@ def _read_recipients(
     return recipients
 
 
+def format_recipients(*groups: list[dict[str, str]]) -> str:
+    """Flatten To/Cc lists into one searchable string for the index.
+
+    ``[{"name": "Ann", "address": "a@x.com"}]`` -> ``"Ann <a@x.com>"``,
+    entries joined with ``", "``. Used for recipient matching (LIKE),
+    so it keeps both the display name and the address.
+    """
+    parts = []
+    for group in groups:
+        for r in group:
+            name, addr = r.get("name", ""), r.get("address", "")
+            parts.append(f"{name} <{addr}>" if name else addr)
+    return ", ".join(parts)
+
+
 def find_mail_directory() -> Path:
     """
     Find the Apple Mail data directory.
@@ -611,6 +626,30 @@ def _find_external_attachment(
         return files[0]
 
     return None
+
+
+def external_attachment_paths(emlx_path: Path) -> dict[str, Path]:
+    """Files Mail stored beside a message, keyed by file name.
+
+    Covers ``Attachments/<msg_id>/<part>/<file>`` for both partial and
+    full .emlx messages, including inline images that make up the body
+    of a reply. Empty when there is no such directory.
+    """
+    try:
+        msg_id = extract_message_id(emlx_path)
+    except ValueError:
+        return {}
+    root = emlx_path.parent.parent / "Attachments" / str(msg_id)
+    found: dict[str, Path] = {}
+    try:
+        for part_dir in sorted(root.iterdir()):
+            if part_dir.is_dir():
+                for f in part_dir.iterdir():
+                    if f.is_file():
+                        found.setdefault(f.name, f)
+    except OSError:
+        return {}
+    return found
 
 
 def _synthetic_inline_name(content_id: str, mime_type: str) -> str:
@@ -1085,6 +1124,7 @@ def scan_all_emails(
             "date_received": parsed.date_received,
             "emlx_path": str(emlx_path),
             "attachments": parsed.attachments or [],
+            "recipients": format_recipients(parsed.to, parsed.cc),
         }
 
 

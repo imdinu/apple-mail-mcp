@@ -40,6 +40,7 @@ from .search import SearchResult  # Re-use, don't duplicate
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .search import Direction
     from .watcher import IndexWatcher
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ class IndexManager:
         # blocked sync still returns 0 changes, which is
         # indistinguishable from "already up to date" without this.
         self.last_sync_blocked: str | None = None
+        self._own_addresses: set[str] | None = None
 
     def _resolve_exclusions(self) -> set[str]:
         """Resolve configured account exclusions to UUIDs and remember
@@ -396,6 +398,7 @@ class IndexManager:
                         email_data.get("date_received", ""),
                         email_data.get("emlx_path", ""),
                         len(attachments),
+                        email_data.get("recipients", ""),
                     )
                 )
                 if attachments:
@@ -458,7 +461,7 @@ class IndexManager:
                 END;
 
                 CREATE TRIGGER IF NOT EXISTS emails_au
-                AFTER UPDATE ON emails BEGIN
+                AFTER UPDATE OF subject, sender, content ON emails BEGIN
                     INSERT INTO emails_fts(
                         emails_fts, rowid, subject, sender, content
                     ) VALUES(
@@ -574,10 +577,64 @@ class IndexManager:
             progress_callback,
             exclude_account_uuids=exclude_account_uuids,
         )
+        self.backfill_recipients()
         # Disk inventory just changed (or was just verified) — drop
         # the get_stats cache so the next status call reflects truth.
         self.invalidate_disk_count_cache()
         return result.total_changes
+
+    def last_sync_time(self) -> datetime | None:
+        """When the index was last reconciled with disk (any mailbox)."""
+        try:
+            row = (
+                self._get_conn()
+                .execute("SELECT MAX(last_sync) FROM sync_state")
+                .fetchone()
+            )
+            return datetime.fromisoformat(row[0]) if row and row[0] else None
+        except (sqlite3.Error, ValueError):
+            return None
+
+    def backfill_recipients(self, batch: int = 500) -> int:
+        """Fill To/Cc for rows indexed before schema v6 (recipients NULL).
+
+        Parses each row's .emlx headers once; a row whose file cannot
+        be read gets '' so it is not retried on every sync.
+        """
+        from email.parser import BytesHeaderParser
+        from email.policy import compat32
+
+        from .disk import _read_recipients, format_recipients
+
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT rowid, emlx_path FROM emails WHERE recipients IS NULL"
+        ).fetchall()
+        parser = BytesHeaderParser(policy=compat32)
+        done = 0
+        for i, (rowid, path) in enumerate(rows, 1):
+            value = ""
+            try:
+                # Headers sit at the top; skip the .emlx byte-count line.
+                with open(path, "rb") as f:
+                    head = f.read(256 * 1024)
+                msg = parser.parsebytes(head.split(b"\n", 1)[1])
+                value = format_recipients(
+                    _read_recipients(msg, "To"), _read_recipients(msg, "Cc")
+                )
+            except (OSError, IndexError, TypeError):
+                pass
+            conn.execute(
+                "UPDATE emails SET recipients = ? WHERE rowid = ?",
+                (value, rowid),
+            )
+            done += 1
+            if i % batch == 0:
+                conn.commit()
+        conn.commit()
+        if done:
+            logger.info("Backfilled recipients for %d emails", done)
+        return done
 
     def search(
         self,
@@ -593,6 +650,8 @@ class IndexManager:
         after: str | None = None,
         offset: int = 0,
         highlight: bool = False,
+        recipient: str | None = None,
+        direction: Direction | None = None,
     ) -> list[SearchResult]:
         """
         Search indexed emails using FTS5.
@@ -609,6 +668,8 @@ class IndexManager:
             after: Include emails on/after this date (YYYY-MM-DD)
             offset: Skip first N results (default: 0)
             highlight: Use FTS5 highlight/snippet for results
+            recipient: Substring of a To/Cc name or address
+            direction: "inbound" or "outbound" (Sent/Outbox/Drafts)
 
         Returns:
             List of SearchResult ordered by relevance (BM25 score)
@@ -628,7 +689,23 @@ class IndexManager:
             before=before,
             after=after,
             offset=offset,
+            recipient=recipient,
+            direction=direction,
         )
+
+    def own_addresses(self) -> set[str]:
+        """Cached sender addresses of the user's own sent mail."""
+        if self._own_addresses is None:
+            from .search import own_addresses
+
+            self._own_addresses = own_addresses(self._get_conn())
+        return self._own_addresses
+
+    def search_participants(self, party: str, **filters) -> list[SearchResult]:
+        """Sender-or-recipient substring search, newest first."""
+        from .search import search_participants
+
+        return search_participants(self._get_conn(), party, **filters)
 
     def rebuild(
         self,

@@ -44,7 +44,7 @@ else:
     from typing_extensions import TypedDict
 
 from .builders import AccountsQueryBuilder, QueryBuilder
-from .choices import EmailFilter, SearchScope
+from .choices import Direction, EmailFilter, SearchScope
 from .config import (
     get_default_account,
     get_default_mailbox,
@@ -272,14 +272,25 @@ class SearchResult(TypedDict, total=False):
     content_snippet: str
     account: str
     mailbox: str
+    direction: str
+    recipients: str
 
 
-class AttachmentSummary(TypedDict):
-    """Summary of an email attachment."""
+class AttachmentSummary(TypedDict, total=False):
+    """Summary of an email attachment.
+
+    ``inline`` marks parts embedded in the body (Content-ID), such as
+    a reply whose whole body is a pasted image. ``path`` is the file
+    Mail keeps on disk for it (``Attachments/<id>/<part>/``), when one
+    exists; otherwise fetch it with get_email_attachment().
+    """
 
     filename: str
     mime_type: str
     size: int
+    content_id: str
+    inline: bool
+    path: str
 
 
 class Recipient(TypedDict):
@@ -305,9 +316,100 @@ class EmailFull(TypedDict, total=False):
     to: list[Recipient]
     cc: list[Recipient]
     attachments: list[AttachmentSummary]
+    direction: str
+    mailbox: str
 
 
 # ========== Helper Functions ==========
+
+
+def _attachment_summaries(emlx_path: _Path, attachments: list) -> list:
+    """Attachment list for get_email, with inline flag and disk path."""
+    from .index.disk import external_attachment_paths
+
+    on_disk = external_attachment_paths(emlx_path)
+    out = []
+    for a in attachments:
+        item: dict = {
+            "filename": a.filename,
+            "mime_type": a.mime_type,
+            "size": a.file_size,
+            # Embedded in the body: an image referenced by Content-ID.
+            "inline": bool(a.content_id) and a.mime_type.startswith("image/"),
+        }
+        if a.content_id:
+            item["content_id"] = a.content_id
+        if a.filename in on_disk:
+            item["path"] = str(on_disk[a.filename])
+        out.append(item)
+    return out
+
+
+def _mailbox_and_direction(emlx_path: _Path) -> dict:
+    from .index.disk import _infer_account_mailbox, find_mail_directory
+    from .index.search import direction_of
+
+    try:
+        _, mailbox = _infer_account_mailbox(emlx_path, find_mail_directory())
+    except (OSError, ValueError):
+        return {}
+    return {"mailbox": mailbox, "direction": direction_of(mailbox)}
+
+
+# Sync-before-search: at most once per this many seconds (0 disables).
+SEARCH_SYNC_SECONDS = _clamped_env_int(
+    "APPLE_MAIL_SEARCH_SYNC_SECONDS", 30, 0, 3600
+)
+# Warn in search results when the index is older than this and could
+# not be refreshed.
+STALE_WARNING_SECONDS = 3600
+_last_search_sync = 0.0
+
+
+async def _refresh_before_search(manager) -> str | None:
+    """Pick up mail that arrived since the last sync, cheaply.
+
+    The writer syncs in-process (~1s, throttled). Anyone else asks the
+    writer (see index.freshness) and waits briefly. Returns a warning
+    when the index is stale and nothing could refresh it.
+    """
+    global _last_search_sync
+    from .index import freshness as fr
+
+    if not manager.has_index():
+        return None
+    now = time.monotonic()
+    if SEARCH_SYNC_SECONDS and now - _last_search_sync >= SEARCH_SYNC_SECONDS:
+        _last_search_sync = now
+        try:
+            if fr.WRITER_LOCK_HELD.is_set():
+                await asyncio.to_thread(fr.sync_now, manager)
+                return None
+            if fr.lock_held_elsewhere(manager.db_path):
+                stamp = fr.request_sync(manager.db_path)
+                done = await asyncio.to_thread(
+                    fr.wait_for_sync, manager.db_path, stamp, 5.0
+                )
+                if done and not done.get("error"):
+                    return None
+            elif manager.index_writer and fr.mail_readable():
+                # No server running (CLI use): sync directly.
+                await asyncio.to_thread(fr.sync_now, manager)
+                return None
+        except Exception:
+            logger.debug("sync before search failed", exc_info=True)
+    last = getattr(manager, "last_sync_time", lambda: None)()
+    if not isinstance(last, datetime):
+        return None
+    age = (datetime.now() - last).total_seconds()
+    if age < STALE_WARNING_SECONDS:
+        return None
+    return (
+        f"Index last synced {age / 3600:.1f}h ago and could not be "
+        "refreshed (this server cannot read ~/Library/Mail without Full "
+        "Disk Access). Mail newer than that is missing. Run "
+        "'apple-mail-mcp index' in a terminal that has Full Disk Access."
+    )
 
 
 def _get_index_manager():
@@ -963,14 +1065,10 @@ async def get_email(
                             "message_id": parsed.message_id_header,
                             "to": parsed.to,
                             "cc": parsed.cc,
-                            "attachments": [
-                                {
-                                    "filename": a.filename,
-                                    "mime_type": a.mime_type,
-                                    "size": a.file_size,
-                                }
-                                for a in (parsed.attachments or [])
-                            ],
+                            "attachments": _attachment_summaries(
+                                emlx_path, parsed.attachments or []
+                            ),
+                            **_mailbox_and_direction(emlx_path),
                         }
                         return _enrich_attachments(result)
                 else:
@@ -1322,6 +1420,29 @@ async def get_attachment(
     return await get_email_attachment(message_id, filename, account, mailbox)
 
 
+def _result_dict(r, acct_map, matched_in: str) -> SearchResult:
+    """One index search hit as returned by search()."""
+    from .index.search import direction_of
+
+    try:
+        own = _get_index_manager().own_addresses()
+    except Exception:
+        own = set()
+    return {
+        "id": r.id,
+        "subject": r.subject,
+        "sender": r.sender,
+        "recipients": r.recipients,
+        "direction": direction_of(r.mailbox, r.sender, own),
+        "date_received": r.date_received,
+        "score": r.score,
+        "matched_in": matched_in,
+        "content_snippet": r.content_snippet,
+        "account": acct_map.uuid_to_name(r.account),
+        "mailbox": r.mailbox,
+    }
+
+
 @mcp.tool(annotations=READ_ONLY_TOOL_ANNOTATIONS)
 async def search(
     query: str,
@@ -1334,9 +1455,11 @@ async def search(
     before: str | None = None,
     after: str | None = None,
     highlight: bool = False,
+    recipient: str | None = None,
+    direction: Direction | None = None,
 ) -> list[SearchResult] | dict:
     """
-    Search emails across all accounts and mailboxes.
+    Search emails across all accounts and mailboxes, sent mail included.
 
     Uses full-text search index for fast results (~2ms). All scopes
     search across every account and mailbox unless filtered.
@@ -1359,6 +1482,10 @@ async def search(
             - "sender": Sender name/email only
             - "body": Body text only
             - "attachments": Attachment filenames
+            - "participant": Sender OR To/Cc contains the query
+              (substring, newest first). Finds both directions of a
+              conversation, e.g. search("lawfirm.example", scope="participant").
+              An empty query lists everything the filters allow.
         limit: Maximum results (default: 20)
         offset: Skip first N results for pagination (default: 0)
         exclude_mailboxes: Mailboxes to exclude (default: ["Drafts"])
@@ -1366,11 +1493,19 @@ async def search(
         after: Include only emails on/after this date (YYYY-MM-DD).
         highlight: Wrap matched terms in **markers** in subject
             and content_snippet (default: False).
+        recipient: Only mail whose To/Cc contains this (name or
+            address substring), e.g. "lawfirm.example".
+        direction: "outbound" (Sent, Outbox, Drafts) or "inbound".
+
+    Freshness: the index is synced before searching (at most every
+    30s), so mail that arrived minutes ago is found. If it cannot be
+    refreshed and is over an hour old, the result is a dict
+    {"result": [...], "warning": "..."} saying so.
 
     Returns:
         List of matching emails with id, subject, sender,
-        date_received, score, matched_in, content_snippet,
-        account, and mailbox fields.
+        recipients, direction, date_received, score, matched_in,
+        content_snippet, account, and mailbox fields.
 
         When nothing matches, returns a dict instead:
         {"result": [], "hint": "..."} — the hint suggests how to
@@ -1407,6 +1542,7 @@ async def search(
 
     manager = _get_index_manager()
     indexed = manager.has_index()
+    stale_warning = await _refresh_before_search(manager)
 
     def _maybe_hint(results: list) -> list | dict:
         """Return results, or explain an empty one.
@@ -1416,7 +1552,11 @@ async def search(
         different keywords cannot fix it (#110).
         """
         if results:
+            if stale_warning:
+                return {"result": results, "warning": stale_warning}
             return results
+        if stale_warning:
+            return {"result": [], "hint": stale_warning}
         if not indexed:
             return {"result": [], "hint": _jxa_fallback_message(manager)}
         if _index_is_empty(manager):
@@ -1440,6 +1580,34 @@ async def search(
         if before or after:
             raise ValueError(_NO_INDEX_DATE_MESSAGE)
         return _maybe_hint([])
+
+    if scope == "participant" or (
+        not query.strip() and (recipient or direction)
+    ):
+        if not indexed:
+            raise ValueError(_no_index_message(manager, "Participant search"))
+        acct_map = _get_account_map()
+        await acct_map.ensure_loaded()
+        rows = manager.search_participants(
+            query,
+            account=(acct_map.name_to_uuid(account) or account)
+            if account
+            else None,
+            mailbox=mailbox,
+            limit=limit,
+            offset=offset,
+            exclude_mailboxes=exclude_mailboxes,
+            exclude_accounts=list(
+                acct_map.names_to_uuids(_excluded_account_names())
+            ),
+            before=before,
+            after=after,
+            recipient=recipient,
+            direction=direction,
+        )
+        return _maybe_hint(
+            [_result_dict(r, acct_map, matched_in="participant") for r in rows]
+        )
 
     # Attachment filename search (SQL LIKE query, no JXA needed)
     if scope == "attachments":
@@ -1530,29 +1698,28 @@ async def search(
                     after=after,
                     offset=offset,
                     highlight=highlight,
+                    recipient=recipient,
+                    direction=direction,
                 )
             except Exception as e:
                 raise RuntimeError(_search_index_error(manager, e)) from e
             return _maybe_hint(
                 [
-                    {
-                        "id": r.id,
-                        "subject": r.subject,
-                        "sender": r.sender,
-                        "date_received": r.date_received,
-                        "score": r.score,
-                        "matched_in": (
+                    _result_dict(
+                        r,
+                        acct_map,
+                        matched_in=(
                             scope
                             if scope in ("subject", "sender")
                             else _detect_matched_columns(query, r)
                         ),
-                        "content_snippet": r.content_snippet,
-                        "account": acct_map.uuid_to_name(r.account),
-                        "mailbox": r.mailbox,
-                    }
+                    )
                     for r in results
                 ]
             )
+
+    if recipient or direction:
+        raise ValueError(_no_index_message(manager, "Recipient filtering"))
 
     # Body search requires the FTS5 index: the JXA fallback below can
     # only read subject and sender, so answering from it would return
