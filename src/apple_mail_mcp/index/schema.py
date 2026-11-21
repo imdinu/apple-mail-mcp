@@ -25,6 +25,12 @@ DEFAULT_PRAGMAS = {
     "synchronous": "NORMAL",  # Good balance of safety and speed
     "busy_timeout": 5000,  # Wait up to 5s for locks
     "foreign_keys": "ON",  # Required for ON DELETE CASCADE
+    # INSERT OR REPLACE removes the conflicting row without firing its
+    # DELETE trigger unless this is on. emails_fts is an external-content
+    # table kept in step only by those triggers, so every re-index of an
+    # existing message would otherwise leave its old tokens behind.
+    # Side effect: a trigger that writes back to `emails` would recurse.
+    "recursive_triggers": "ON",
 }
 
 # Centralized SQL for email insertion (used by manager, sync, watcher)
@@ -452,6 +458,38 @@ def rebuild_fts_index(conn: sqlite3.Connection) -> None:
     """
     conn.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
     conn.commit()
+
+
+def repair_fts_index(conn: sqlite3.Connection) -> bool:
+    """
+    Rebuild the FTS index if its document count differs from ``emails``.
+
+    Indexes written before ``recursive_triggers`` was enabled keep the
+    tokens of every row that INSERT OR REPLACE overwrote. Those entries
+    never surface (the join to ``emails`` drops them) but they inflate
+    the index, skew BM25 statistics, and fail FTS5's content check.
+    FTS5 keeps one document-size row per indexed document, so comparing
+    that count with ``emails`` detects the drift in one cheap query; the
+    rebuild then runs once and the counts stay equal.
+
+    Returns:
+        True if the index was rebuilt, False if it was already in step.
+    """
+    fts_docs, emails = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM emails_fts_docsize), "
+        "(SELECT COUNT(*) FROM emails)"
+    ).fetchone()
+    if fts_docs == emails:
+        return False
+
+    logger.warning(
+        "Search index out of step with emails (%d entries for %d rows); "
+        "rebuilding it once",
+        fts_docs,
+        emails,
+    )
+    rebuild_fts_index(conn)
+    return True
 
 
 def optimize_fts_index(conn: sqlite3.Connection) -> None:

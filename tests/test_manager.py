@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apple_mail_mcp.index.manager import IndexManager, IndexStats
+from apple_mail_mcp.index.schema import INSERT_EMAIL_SQL, email_to_row
 
 
 class TestIndexManagerSingleton:
@@ -191,6 +192,48 @@ class TestSyncUpdates:
 
         assert result == 5
         mock_sync.assert_called_once()
+
+    @patch("apple_mail_mcp.index.sync.sync_from_disk")
+    @patch("apple_mail_mcp.index.disk.find_mail_directory")
+    def test_sync_updates_repairs_fts_left_by_replace(
+        self, mock_find, mock_sync, temp_db_path
+    ):
+        """An index written before recursive_triggers heals on sync."""
+        mock_find.return_value = Path("/fake/mail")
+        mock_sync.return_value = MagicMock(total_changes=0)
+        manager = IndexManager(db_path=temp_db_path)
+        conn = manager._get_conn()
+        conn.execute("PRAGMA recursive_triggers=OFF")
+        for content in ("oldword123", "newword456"):
+            email = {"id": 1, "subject": "S", "content": content}
+            row = email_to_row(email, "acc", "INBOX")
+            conn.execute(INSERT_EMAIL_SQL, row)
+        conn.commit()
+        conn.execute("PRAGMA recursive_triggers=ON")
+        count = "SELECT COUNT(*) FROM emails_fts_docsize"
+        assert conn.execute(count).fetchone()[0] == 2
+
+        manager.sync_updates()
+
+        assert conn.execute(count).fetchone()[0] == 1
+        manager.close()
+
+    @patch("apple_mail_mcp.index.manager.repair_fts_index")
+    @patch("apple_mail_mcp.index.sync.sync_from_disk")
+    @patch("apple_mail_mcp.index.disk.find_mail_directory")
+    def test_sync_updates_survives_failed_fts_repair(
+        self, mock_find, mock_sync, mock_repair, temp_db_path
+    ):
+        """The reconcile already committed; a failed repair is not fatal."""
+        import sqlite3
+
+        mock_find.return_value = Path("/fake/mail")
+        mock_sync.return_value = MagicMock(total_changes=4)
+        mock_repair.side_effect = sqlite3.OperationalError("database is locked")
+
+        manager = IndexManager(db_path=temp_db_path)
+        assert manager.sync_updates() == 4
+        manager.close()
 
     @pytest.mark.parametrize("error_cls", [FileNotFoundError, PermissionError])
     @patch("apple_mail_mcp.index.disk.find_mail_directory")
