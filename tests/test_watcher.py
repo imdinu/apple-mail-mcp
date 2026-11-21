@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from apple_mail_mcp.index.disk import AttachmentInfo, EmlxEmail
 from apple_mail_mcp.index.schema import create_connection, get_schema_sql
 from apple_mail_mcp.index.watcher import PATH_PATTERN, IndexWatcher
 
@@ -313,3 +314,61 @@ class TestNestedMailboxRegex:
         assert m is not None
         assert m.group(2) == "Work/Q1"
         assert m.group(3) == "49461"
+
+
+class TestReindexReplacesExistingRow:
+    """Re-indexing a message must replace its FTS entry and attachments.
+
+    The watcher re-indexes a message it already holds whenever Mail
+    rewrites the .emlx. That goes through INSERT OR REPLACE, which only
+    fires the FTS delete trigger with recursive_triggers on.
+    """
+
+    @staticmethod
+    def _email(content: str, attachment: str) -> EmlxEmail:
+        return EmlxEmail(
+            id=1,
+            subject="Subject",
+            sender="a@example.com",
+            content=content,
+            date_received="2024-01-01T00:00:00+00:00",
+            emlx_path=Path("/fake/1.emlx"),
+            attachments=[
+                AttachmentInfo(attachment, "application/pdf", 1, None)
+            ],
+        )
+
+    @patch("apple_mail_mcp.index.watcher.parse_emlx")
+    def test_reindex_keeps_one_fts_entry(self, mock_parse, watcher_db):
+        db_path, conn = watcher_db
+        watcher = IndexWatcher(db_path)
+        key = ("acct", "INBOX", 1)
+        for content, attachment in (
+            ("oldword123", "a.pdf"),
+            ("newword456", "b.pdf"),
+        ):
+            mock_parse.return_value = self._email(content, attachment)
+            watcher._pending_adds = {key: Path("/fake/1.emlx")}
+            watcher._process_pending()
+        watcher.stop()
+
+        def count(sql: str) -> int:
+            return conn.execute(sql).fetchone()[0]
+
+        assert count("SELECT COUNT(*) FROM emails") == 1
+        assert count("SELECT COUNT(*) FROM emails_fts_docsize") == 1
+        assert (
+            count(
+                "SELECT COUNT(*) FROM emails_fts "
+                "WHERE emails_fts MATCH 'oldword123'"
+            )
+            == 0
+        )
+        filenames = [
+            r[0] for r in conn.execute("SELECT filename FROM attachments")
+        ]
+        assert filenames == ["b.pdf"]
+        conn.execute(
+            "INSERT INTO emails_fts(emails_fts, rank) "
+            "VALUES('integrity-check', 1)"
+        )

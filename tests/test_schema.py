@@ -10,12 +10,15 @@ from pathlib import Path
 import pytest
 
 from apple_mail_mcp.index.schema import (
+    INSERT_EMAIL_SQL,
     SCHEMA_VERSION,
     _run_migrations,
+    email_to_row,
     init_database,
     insert_attachments,
     optimize_fts_index,
     rebuild_fts_index,
+    repair_fts_index,
 )
 
 
@@ -160,6 +163,102 @@ class TestFtsTriggers:
             "SELECT rowid FROM emails_fts WHERE emails_fts MATCH 'newword456'"
         )
         assert cursor.fetchone() is not None
+
+
+def _fts_doc_count(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM emails_fts_docsize").fetchone()[0]
+
+
+def _fts_integrity_check(conn: sqlite3.Connection) -> None:
+    """Raises sqlite3.DatabaseError if emails_fts disagrees with emails."""
+    conn.execute(
+        "INSERT INTO emails_fts(emails_fts, rank) VALUES('integrity-check', 1)"
+    )
+
+
+def _upsert(conn: sqlite3.Connection, content: str) -> None:
+    """Index message 1 the way the watcher and sync do."""
+    email = {
+        "id": 1,
+        "subject": "Subject",
+        "sender": "a@example.com",
+        "content": content,
+    }
+    conn.execute(INSERT_EMAIL_SQL, email_to_row(email, "acc", "INBOX"))
+    conn.commit()
+
+
+class TestReplaceKeepsFtsInStep:
+    """INSERT OR REPLACE must not strand the replaced row's tokens.
+
+    The watcher re-indexes a message whenever Mail rewrites its .emlx
+    (every read/flag change), through INSERT_EMAIL_SQL. SQLite only
+    fires the DELETE trigger for the replaced row when
+    recursive_triggers is on.
+    """
+
+    def test_reindex_removes_old_tokens(self, temp_db: sqlite3.Connection):
+        _upsert(temp_db, "oldword123")
+        _upsert(temp_db, "newword456")
+
+        old = temp_db.execute(
+            "SELECT rowid FROM emails_fts WHERE emails_fts MATCH 'oldword123'"
+        ).fetchall()
+        new = temp_db.execute(
+            "SELECT rowid FROM emails_fts WHERE emails_fts MATCH 'newword456'"
+        ).fetchall()
+        assert old == []
+        assert len(new) == 1
+
+    def test_reindex_leaves_one_fts_entry_per_email(
+        self, temp_db: sqlite3.Connection
+    ):
+        for content in ("one", "two", "three"):
+            _upsert(temp_db, content)
+
+        assert _fts_doc_count(temp_db) == 1
+        _fts_integrity_check(temp_db)
+
+    def test_file_connections_enable_recursive_triggers(
+        self, temp_db_path: Path
+    ):
+        conn = init_database(temp_db_path)
+        try:
+            assert conn.execute("PRAGMA recursive_triggers").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+
+class TestRepairFtsIndex:
+    """Indexes written before the pragma carry stale entries."""
+
+    @pytest.fixture
+    def drifted_db(self, temp_db: sqlite3.Connection) -> sqlite3.Connection:
+        temp_db.execute("PRAGMA recursive_triggers=OFF")
+        _upsert(temp_db, "oldword123")
+        _upsert(temp_db, "newword456")
+        temp_db.execute("PRAGMA recursive_triggers=ON")
+        assert _fts_doc_count(temp_db) == 2  # the pre-fix state
+        return temp_db
+
+    def test_rebuilds_a_drifted_index(self, drifted_db: sqlite3.Connection):
+        assert repair_fts_index(drifted_db) is True
+
+        assert _fts_doc_count(drifted_db) == 1
+        _fts_integrity_check(drifted_db)
+        hits = drifted_db.execute(
+            "SELECT rowid FROM emails_fts WHERE emails_fts MATCH 'newword456'"
+        ).fetchall()
+        assert len(hits) == 1
+
+    def test_leaves_a_consistent_index_alone(
+        self, populated_db: sqlite3.Connection
+    ):
+        assert repair_fts_index(populated_db) is False
+
+    def test_second_call_is_a_no_op(self, drifted_db: sqlite3.Connection):
+        repair_fts_index(drifted_db)
+        assert repair_fts_index(drifted_db) is False
 
 
 class TestInitDatabase:

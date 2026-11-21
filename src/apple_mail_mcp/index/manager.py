@@ -14,6 +14,7 @@ Thread Safety:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 import threading
@@ -34,6 +35,7 @@ from .schema import (
     insert_attachments,
     optimize_fts_index,
     rebuild_fts_index,
+    repair_fts_index,
 )
 from .search import SearchResult  # Re-use, don't duplicate
 
@@ -574,6 +576,15 @@ class IndexManager:
             progress_callback,
             exclude_account_uuids=exclude_account_uuids,
         )
+        # Heal indexes written before REPLACE fired the delete trigger.
+        # Best-effort: the reconcile above has already committed, so a
+        # failed repair must not be reported as a failed sync.
+        try:
+            repair_fts_index(self._get_conn())
+        except sqlite3.Error as e:
+            with contextlib.suppress(sqlite3.Error):
+                self._get_conn().rollback()
+            logger.warning("Search index repair skipped: %s", e)
         # Disk inventory just changed (or was just verified) — drop
         # the get_stats cache so the next status call reflects truth.
         self.invalidate_disk_count_cache()
