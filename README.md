@@ -13,7 +13,7 @@
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![CI](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml/badge.svg)](https://github.com/imdinu/apple-mail-mcp/actions/workflows/lint.yml)
 
-The only Apple Mail MCP server with **full-coverage body search** — reliable on large mailboxes where AppleScript-based servers timeout. 8 tools for reading, searching, and extracting email content.
+The only Apple Mail MCP server with **full-coverage body search** — reliable on large mailboxes where AppleScript-based servers timeout. 11 tools for reading, searching, extracting, and — opt-in — updating, moving, and sending email.
 
 **[Read the docs](https://imdinu.github.io/apple-mail-mcp/)** for the full guide.
 
@@ -89,6 +89,9 @@ for the full schema and precedence rules.
 | `get_email_links(message_id)` | Extract links from an email |
 | `get_email_attachment(message_id, filename)` | Extract attachment content |
 | `get_attachment(message_id, filename)` | *Deprecated* — use `get_email_attachment()` |
+| `update_email_status(message_ids, read?, flagged?)` | Mark read/unread, flag/unflag (≤10 ids) |
+| `move_email(message_ids, target_mailbox)` | Move — Archive, Trash, or any folder (≤10 ids) |
+| `send_email(to, subject, body, cc?, bcc?, confirm?)` | Draft by default; `confirm=True` sends |
 
 ## Performance
 
@@ -138,6 +141,9 @@ apple-mail-mcp emails --filter unread --limit 10
 apple-mail-mcp accounts
 apple-mail-mcp mailboxes --account Work
 apple-mail-mcp extract 12345 invoice.pdf
+apple-mail-mcp mark 12345 --read --flag            # write tools: off with --read-only
+apple-mail-mcp move 12345 --to Archive
+apple-mail-mcp send --to a@example.com -s "Hi" -b "…" # draft; add --confirm to send
 ```
 
 All commands output JSON. Generate a [Claude Code skill](https://imdinu.github.io/apple-mail-mcp/configuration/#cli-commands) for CLI-based access:

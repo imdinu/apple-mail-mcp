@@ -254,5 +254,8 @@ apple-mail-mcp emails       # List emails (JSON output)
 apple-mail-mcp accounts     # List accounts (JSON output)
 apple-mail-mcp mailboxes    # List mailboxes (JSON output)
 apple-mail-mcp extract      # Extract attachment (JSON output)
+apple-mail-mcp mark         # Mark read/unread, flag/unflag (write)
+apple-mail-mcp move         # Move / archive / trash (write)
+apple-mail-mcp send         # Draft by default; --confirm sends (write)
 apple-mail-mcp integrate claude  # Generate a Claude Code skill file
 ```

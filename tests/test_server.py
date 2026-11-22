@@ -1689,6 +1689,28 @@ class TestToolAnnotations:
                 hints.idempotentHint,
             ) == (True, False, True), tool.name
 
+    @pytest.mark.asyncio
+    async def test_write_tools_declare_their_worst_case(self):
+        """send_email can transmit, so it alone is destructive; only a
+        status change is safe to repeat."""
+        from fastmcp import Client
+
+        expected = {
+            "update_email_status": (False, True),
+            "move_email": (False, False),
+            "send_email": (True, False),
+        }
+        writes = {n for n, w in self._tool_writes().items() if w}
+        assert writes == set(expected)
+        async with Client(self._server()) as client:
+            hints = {t.name: t.annotations for t in await client.list_tools()}
+        for name, pair in expected.items():
+            assert hints[name] is not None, name
+            assert (
+                hints[name].destructiveHint,
+                hints[name].idempotentHint,
+            ) == pair, name
+
 
 class TestInputValidation:
     """MCP boundary validation: pagination clamps + date checks (#96)."""
