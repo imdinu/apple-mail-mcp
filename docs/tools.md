@@ -20,7 +20,15 @@ Apple Mail MCP provides **11 MCP tools** — a consolidated API designed for AI 
 
 ### Tool annotations
 
-Every tool declares MCP tool annotations so clients and gateways can classify it without guessing from its name. All eight tools only read mail and declare `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: true` (the tools reach external systems: Mail.app and, through it, the accounts' mail servers). `get_email_attachment()` and `get_attachment()` write the extracted file to a local cache, but never change mail state. The hints are advisory: they do not replace read-only mode or account exclusion.
+Every tool declares MCP tool annotations so clients and gateways can classify it without guessing from its name. The eight tools that only read mail declare `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, and `openWorldHint: true` (the tools reach external systems: Mail.app and, through it, the accounts' mail servers). `get_email_attachment()` and `get_attachment()` write the extracted file to a local cache, but never change mail state. The hints are advisory: they do not replace read-only mode or account exclusion.
+
+The three write tools declare `readOnlyHint: false` and `openWorldHint: true`, and differ on the rest:
+
+| Tool | `destructiveHint` | `idempotentHint` | Why |
+|------|-------------------|------------------|-----|
+| `update_email_status()` | `false` | `true` | Setting a flag twice leaves the same state; no content is lost |
+| `move_email()` | `false` | `false` | The message is kept and can be moved back. A repeat call no longer finds it in the source mailbox and raises |
+| `send_email()` | `true` | `false` | A sent message cannot be recalled. Hints describe the worst case, so the default draft path is classified the same way |
 
 ---
 

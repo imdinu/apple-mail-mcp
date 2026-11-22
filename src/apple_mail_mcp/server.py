@@ -40,7 +40,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path as _Path
-from typing import Any, TypeVar, cast, overload
+from typing import Any, Literal, TypeVar, cast, overload
 
 # pydantic (via fastmcp tool-schema generation) rejects
 # typing.TypedDict on Python < 3.12.
@@ -563,10 +563,11 @@ def _detect_matched_columns(query: str, result) -> str:
 
 # MCP tool annotations: advisory hints that let clients and gateways
 # classify a tool without guessing from its name. They never replace
-# the read-only (#80) or hidden-account (#90) gates. Every tool below
-# only reads mail, so all share one set; openWorldHint is true because
-# the tools reach external systems: Mail.app and, through it, the
-# accounts' mail servers.
+# the read-only (#80) or hidden-account (#90) gates. The tools that
+# only read mail share one set; each write tool declares its own next
+# to its definition. openWorldHint is true because the tools reach
+# external systems: Mail.app and, through it, the accounts' mail
+# servers.
 READ_ONLY_TOOL_ANNOTATIONS = {
     "readOnlyHint": True,
     "destructiveHint": False,
@@ -1679,7 +1680,16 @@ class SendResult(TypedDict):
     subject: str
 
 
-@mcp.tool
+# Setting a flag to a given value twice leaves the same state, and no
+# mail content is lost: idempotent, not destructive.
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
 async def update_email_status(
     message_ids: list[int],
     read: bool | None = None,
@@ -1817,7 +1827,18 @@ async def _evict_index_rows(
         )
 
 
-@mcp.tool
+# A move keeps the message and can be moved back, so it is not marked
+# destructive (Trash is just another target mailbox). It is not
+# declared idempotent: the same call again looks in the source
+# mailbox, no longer finds the message there, and raises.
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
 async def move_email(
     message_ids: list[int],
     target_mailbox: str,
@@ -1985,7 +2006,17 @@ def _validate_addresses(field: str, addresses: list[str] | None) -> list[str]:
     return clean
 
 
-@mcp.tool
+# A sent message cannot be recalled, and every call adds a new draft or
+# message. The hints describe the worst case (confirm=True), so the
+# default draft-only path is classified as destructive too.
+@mcp.tool(
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    }
+)
 async def send_email(
     to: list[str],
     subject: str,
