@@ -1073,7 +1073,11 @@ class TestSearchFtsAccountFiltering:
     """Tests for S5: FTS5 None account means all."""
 
     @pytest.mark.asyncio
-    async def test_search_fts_none_account_means_all(self):
+    @pytest.mark.parametrize(
+        ("sort", "expected_sort"),
+        [(None, "relevance"), ("date_desc", "date_desc")],
+    )
+    async def test_search_fts_none_account_means_all(self, sort, expected_sort):
         """When account=None, FTS5 path should NOT resolve a default."""
         mock_manager = MagicMock()
         mock_manager.has_index.return_value = True
@@ -1093,11 +1097,12 @@ class TestSearchFtsAccountFiltering:
 
             from apple_mail_mcp.server import search
 
-            await search("test", account=None)
+            await search("test", account=None, sort=sort)
 
             # account should be None → search all
             call_kwargs = mock_manager.search.call_args[1]
             assert call_kwargs["account"] is None
+            assert call_kwargs["sort"] == expected_sort
 
 
 class TestSearchNoAutoSync:
@@ -1293,11 +1298,26 @@ class TestSearchAttachments:
 
             from apple_mail_mcp.server import search
 
-            results = await search("invoice", scope="attachments")
+            results = await search(
+                "invoice", scope="attachments", sort="date_asc"
+            )
 
             assert len(results) == 1
             assert results[0]["matched_in"] == "attachment: invoice.pdf"
             assert results[0]["account"] == "Work"
+            assert mock_manager.search_attachments.call_args.kwargs["sort"] == (
+                "date_asc"
+            )
+
+    @pytest.mark.asyncio
+    async def test_attachment_search_rejects_relevance_sort(self):
+        with patch("apple_mail_mcp.server._get_index_manager") as mock_get:
+            mock_get.return_value.has_index.return_value = True
+
+            from apple_mail_mcp.server import search
+
+            with pytest.raises(ValueError, match="supports date sorting only"):
+                await search("invoice", scope="attachments", sort="relevance")
 
 
 class TestGetEmailEnrichesAttachments:
@@ -2092,6 +2112,23 @@ class TestSearchIndexHonesty:
 
         assert isinstance(result, list)
         assert result[0]["id"] == 7
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sort", ["relevance", "date_asc", "date_desc"])
+    @patch("apple_mail_mcp.server.execute_query_async")
+    async def test_explicit_sort_without_index_raises(self, mock_exec, sort):
+        with patch("apple_mail_mcp.server._get_index_manager") as mock_get:
+            mock_get.return_value = self._manager(has_index=False)
+
+            from apple_mail_mcp.server import search
+
+            with pytest.raises(
+                ValueError, match="requires the search index"
+            ) as exc:
+                await search("renewal", sort=sort)
+
+        assert "apple-mail-mcp index" in str(exc.value)
+        mock_exec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_body_scope_without_index_raises(self):

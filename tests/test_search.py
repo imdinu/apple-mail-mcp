@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from unittest.mock import DEFAULT, Mock
 
 import pytest
 
@@ -517,6 +518,62 @@ class TestDateRangeFiltering:
         results = search_attachments(fts_db, "pdf", after="2026-03-01")
         assert len(results) == 1
         assert results[0]["filename"] == "invoice.pdf"
+
+
+class TestSearchSort:
+    """Tests for ordering indexed results before pagination."""
+
+    @pytest.mark.parametrize("search_fn", [search_fts, search_fts_highlight])
+    @pytest.mark.parametrize(
+        ("sort", "ids"),
+        [("date_asc", [2, 3, 1, 4]), ("date_desc", [1, 2, 3, 4])],
+    )
+    def test_date_order_with_pagination(self, fts_db, search_fn, sort, ids):
+        fts_db.executemany(
+            "UPDATE emails SET date_received = ? WHERE message_id = ?",
+            [
+                ("2026-01-01T09:30:00+00:00", 1),
+                ("2026-01-01T10:00:00+01:00", 2),
+                ("2026-01-01T09:00:00+00:00", 3),
+                ("", 4),
+            ],
+        )
+        scores = {r.id: r.score for r in search_fts(fts_db, "the")}
+
+        for offset in (0, 2):
+            page = search_fn(fts_db, "the", sort=sort, limit=2, offset=offset)
+            assert [r.id for r in page] == ids[offset : offset + 2]
+            assert [r.score for r in page] == [scores[r.id] for r in page]
+            if search_fn is search_fts_highlight:
+                assert all("**" in r.content_snippet for r in page)
+
+    @pytest.mark.parametrize(
+        ("sort", "filename"),
+        [("date_asc", "second.pdf"), ("date_desc", "first.pdf")],
+    )
+    def test_attachment_date_order_with_pagination(
+        self, fts_db, sort, filename
+    ):
+        fts_db.execute(
+            "INSERT INTO attachments (email_rowid, filename) VALUES "
+            "(1, 'first.pdf'), (1, 'second.pdf'), (4, 'newest.pdf')"
+        )
+        rows = search_attachments(fts_db, "pdf", sort=sort, limit=1, offset=1)
+        assert [row["filename"] for row in rows] == [filename]
+
+    def test_highlight_fallback_keeps_date_order(self, fts_db):
+        conn = Mock(wraps=fts_db)
+        conn.execute.side_effect = [
+            sqlite3.OperationalError("highlight failed"),
+            DEFAULT,
+        ]
+
+        results = search_fts_highlight(
+            conn, "budget", sort="date_desc", limit=1
+        )
+
+        assert [r.id for r in results] == [3]
+        assert "**" not in results[0].subject
 
 
 class TestSearchFtsHighlight:

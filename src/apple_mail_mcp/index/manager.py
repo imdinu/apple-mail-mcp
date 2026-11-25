@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..choices import SearchSort
 from ..config import (
     get_index_max_emails,
     get_index_path,
@@ -593,6 +594,7 @@ class IndexManager:
         after: str | None = None,
         offset: int = 0,
         highlight: bool = False,
+        sort: SearchSort = "relevance",
     ) -> list[SearchResult]:
         """
         Search indexed emails using FTS5.
@@ -609,9 +611,10 @@ class IndexManager:
             after: Include emails on/after this date (YYYY-MM-DD)
             offset: Skip first N results (default: 0)
             highlight: Use FTS5 highlight/snippet for results
+            sort: Relevance (BM25) or received date order
 
         Returns:
-            List of SearchResult ordered by relevance (BM25 score)
+            List of SearchResult in the requested order
         """
         from .search import search_fts, search_fts_highlight
 
@@ -628,6 +631,7 @@ class IndexManager:
             before=before,
             after=after,
             offset=offset,
+            sort=sort,
         )
 
     def rebuild(
@@ -879,6 +883,7 @@ class IndexManager:
         before: str | None = None,
         after: str | None = None,
         offset: int = 0,
+        sort: SearchSort = "date_desc",
     ) -> list[dict]:
         """Search attachments by filename using SQL LIKE.
 
@@ -891,6 +896,7 @@ class IndexManager:
             before: Exclude emails on/after this date (YYYY-MM-DD)
             after: Include emails on/after this date (YYYY-MM-DD)
             offset: Skip first N results (default: 0)
+            sort: Received date order (default: newest first)
 
         Returns:
             List of dicts with message_id, account, mailbox,
@@ -909,6 +915,7 @@ class IndexManager:
             before=before,
             after=after,
             offset=offset,
+            sort=sort,
         )
 
     def get_email_attachments(

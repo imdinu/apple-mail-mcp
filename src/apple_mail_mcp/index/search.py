@@ -19,12 +19,20 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
+from ..choices import SearchSort
+
 # Characters that make a bare FTS5 token dangerous
 # (hyphens = NOT, colons = column filter, parens = grouping, etc.)
 _HAS_SPECIAL = re.compile(r"['\-\(\)\:\^]")
 
 # FTS5 boolean operators that should be passed through
 _FTS5_OPERATORS = {"OR", "AND", "NOT"}
+
+# Indexed timestamps can have different UTC offsets or no usable date.
+_DATE_ORDER_BY = {
+    "date_asc": "julianday(e.date_received) ASC NULLS LAST",
+    "date_desc": "julianday(e.date_received) DESC NULLS LAST",
+}
 
 
 def _tokenize_fts_query(query: str) -> list[str]:
@@ -254,6 +262,7 @@ def search_fts(
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
+    sort: SearchSort = "relevance",
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -270,9 +279,10 @@ def search_fts(
             sanitization so the prefix isn't escaped.
         before: Exclude emails on/after this date (YYYY-MM-DD)
         after: Include emails on/after this date (YYYY-MM-DD)
+        sort: Relevance (BM25) or received date order
 
     Returns:
-        List of SearchResult ordered by relevance (BM25 score)
+        List of SearchResult in the requested order
     """
     if not query or not query.strip():
         return []
@@ -320,7 +330,8 @@ def search_fts(
         before=before,
         after=after,
     )
-    sql += " ORDER BY score DESC LIMIT ?"
+    order_by = _DATE_ORDER_BY.get(sort, "score DESC")
+    sql += f" ORDER BY {order_by}, e.rowid LIMIT ?"
     params.append(limit)
     if offset:
         sql += " OFFSET ?"
@@ -363,6 +374,7 @@ def search_fts(
                 before=before,
                 after=after,
                 offset=offset,
+                sort=sort,
                 _is_retry=True,
             )
         raise
@@ -381,6 +393,7 @@ def search_fts_highlight(
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
+    sort: SearchSort = "relevance",
     _is_retry: bool = False,
 ) -> list[SearchResult]:
     """
@@ -400,6 +413,7 @@ def search_fts_highlight(
         exclude_mailboxes: Mailboxes to exclude
         before: Exclude emails on/after this date (YYYY-MM-DD)
         after: Include emails on/after this date (YYYY-MM-DD)
+        sort: Relevance (BM25) or received date order
 
     Returns:
         List of SearchResult with highlighted content_snippet
@@ -445,12 +459,15 @@ def search_fts_highlight(
         before=before,
         after=after,
     )
-    inner += " ORDER BY bm25(emails_fts, 1.0, 0.5, 2.0) LIMIT ?"
+    date_order = _DATE_ORDER_BY.get(sort)
+    inner_order = date_order or "bm25(emails_fts, 1.0, 0.5, 2.0)"
+    inner += f" ORDER BY {inner_order}, e.rowid LIMIT ?"
     inner_params.append(limit)
     if offset:
         inner += " OFFSET ?"
         inner_params.append(offset)
 
+    outer_order = date_order or "score DESC"
     sql = f"""
         SELECT
             e.message_id,
@@ -466,7 +483,7 @@ def search_fts_highlight(
         JOIN emails e ON emails_fts.rowid = e.rowid
         WHERE emails_fts MATCH ?
           AND +emails_fts.rowid IN ({inner})
-        ORDER BY score DESC
+        ORDER BY {outer_order}, e.rowid
     """
     params: list = [safe_query, *inner_params]
 
@@ -505,6 +522,7 @@ def search_fts_highlight(
                 before=before,
                 after=after,
                 offset=offset,
+                sort=sort,
                 _is_retry=True,
             )
         # Fall back to basic search on other errors
@@ -520,6 +538,7 @@ def search_fts_highlight(
             before=before,
             after=after,
             offset=offset,
+            sort=sort,
         )
 
 
@@ -579,6 +598,7 @@ def search_attachments(
     before: str | None = None,
     after: str | None = None,
     offset: int = 0,
+    sort: SearchSort = "date_desc",
 ) -> list[dict]:
     """Search attachments by filename using SQL LIKE.
 
@@ -593,6 +613,7 @@ def search_attachments(
         exclude_mailboxes: Mailboxes to exclude
         before: Exclude emails on/after this date (YYYY-MM-DD)
         after: Include emails on/after this date (YYYY-MM-DD)
+        sort: Received date order (default: newest first)
 
     Returns:
         List of dicts with message_id, account, mailbox,
@@ -618,7 +639,9 @@ def search_attachments(
         before=before,
         after=after,
     )
-    sql += " ORDER BY e.date_received DESC LIMIT ?"
+    if sort not in _DATE_ORDER_BY:
+        raise ValueError("Attachment search supports date sorting only.")
+    sql += f" ORDER BY {_DATE_ORDER_BY[sort]}, a.rowid LIMIT ?"
     params.append(limit)
     if offset:
         sql += " OFFSET ?"

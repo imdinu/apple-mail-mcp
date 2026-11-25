@@ -15,3 +15,6 @@ EmailFilter = Literal[
 
 SearchScope = Literal["all", "subject", "sender", "body", "attachments"]
 """search() scope."""
+
+SearchSort = Literal["relevance", "date_asc", "date_desc"]
+"""search() result order."""

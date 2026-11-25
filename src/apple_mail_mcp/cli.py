@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Annotated, TypeVar
 
 import cyclopts
 
-from .choices import EmailFilter, SearchScope
+from .choices import EmailFilter, SearchScope, SearchSort
 from .config import get_index_path
 
 if TYPE_CHECKING:
@@ -834,6 +834,10 @@ def cli_search(
         bool,
         cyclopts.Parameter(help="Highlight matched terms"),
     ] = True,
+    sort: Annotated[
+        SearchSort | None,
+        cyclopts.Parameter(help="Sort indexed results by relevance or date"),
+    ] = None,
 ) -> None:
     """Search emails using the FTS5 index."""
     from .server import search as _search
@@ -850,6 +854,7 @@ def cli_search(
                 before=before,
                 after=after,
                 highlight=highlight,
+                sort=sort,
             )
         )
         _print_json(result)
