@@ -10,7 +10,7 @@ Apple Mail MCP provides **8 MCP tools** — a consolidated API designed for AI a
 | `list_mailboxes()` | List mailboxes | `account?` |
 | `get_emails()` | Get emails with filtering | `account?`, `mailbox?`, `filter?`, `limit?` |
 | `get_email()` | Get single email with content + attachments | `message_id`, `account?`, `mailbox?` |
-| `search()` | Search emails | `query`, `account?`, `mailbox?`, `scope?`, `limit?`, `exclude_mailboxes?`, `before?`, `after?`, `highlight?` |
+| `search()` | Search emails | `query`, `account?`, `mailbox?`, `scope?`, `limit?`, `offset?`, `exclude_mailboxes?`, `before?`, `after?`, `highlight?`, `sort?` |
 | `get_email_links()` | Extract links from an email | `message_id`, `account?`, `mailbox?` |
 | `get_email_attachment()` | Extract attachment content | `message_id`, `filename`, `account?`, `mailbox?` |
 | `get_attachment()` | *Deprecated* — use `get_email_attachment()` | `message_id`, `filename`, `account?`, `mailbox?` |
@@ -148,6 +148,7 @@ Search emails with automatic FTS5 optimization. Uses the FTS5 index for fast sea
 | `before` | `string?` | `None` | Only return emails before this date (YYYY-MM-DD) |
 | `after` | `string?` | `None` | Only return emails after this date (YYYY-MM-DD) |
 | `highlight` | `bool?` | `False` | Highlight matching terms in results |
+| `sort` | `string?` | `None` | `relevance`, `date_asc` (oldest received first), or `date_desc` (newest received first). Explicit sorts require the index. |
 
 **Scopes:**
 
@@ -159,7 +160,7 @@ Search emails with automatic FTS5 optimization. Uses the FTS5 index for fast sea
 | `body` | Body content only | FTS5 (if indexed) |
 | `attachments` | Attachment filenames | SQL (requires index) |
 
-**Returns:** List of results sorted by relevance (FTS5) or date (JXA fallback), each with: `id`, `subject`, `sender`, `date_received`, `score`, `matched_in`, and optionally `content_snippet`, `account`, `mailbox`.
+**Returns:** Indexed results in the requested order, sorted before pagination. By default, full-text results use relevance, attachment results use newest first, and the live JXA fallback keeps its existing date order. Attachment search supports date sorts only. Each result has `id`, `subject`, `sender`, `date_received`, `score`, `matched_in`, and optionally `content_snippet`, `account`, and `mailbox`.
 
 **When nothing is found**, the return is `{"result": [], "hint": "..."}` instead of a list. The hint distinguishes three different situations, so a caller never mistakes an unusable index for an empty mailbox:
 

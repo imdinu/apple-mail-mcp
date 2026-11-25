@@ -197,6 +197,20 @@ search("contract", before="2024-12-31")
 
 Date filtering is applied at the SQL level when using the FTS5 index, so it does not impact search performance.
 
+## Sort by Received Date
+
+Indexed full-text search defaults to `relevance`. Use `sort="date_desc"` for newest first or `sort="date_asc"` for oldest first. Date order applies to all matches before pagination; messages without a usable date appear last. Both date sorts work with attachment searches, date filters, and highlighted results.
+
+```python
+search("invoice", after="2026-01-01", sort="date_desc")
+```
+
+```bash
+apple-mail-mcp search "invoice" --sort date_asc
+```
+
+Explicit sorting requires the index. Omit `sort` to use the live fallback when the index is unavailable.
+
 ## Highlighted Results
 
 Set `highlight=True` to have matching terms wrapped in highlight markers in the result snippets. This is useful for displaying search results in a UI or for quickly identifying why a result matched.
@@ -246,4 +260,3 @@ Pagination works with all scopes, date filters, and highlighting.
 | Startup sync | 60s timeout | <5s | **12x** |
 | Initial build | — | ~1–2 min | One-time |
 | Disk usage | — | ~6 KB/email | — |
-

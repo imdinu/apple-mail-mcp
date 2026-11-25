@@ -1,7 +1,7 @@
 """CLI option choices match the MCP tool parameters they forward to.
 
-`emails --filter` and `search --scope` are Literal-typed, so cyclopts
-rejects anything outside the set at parse time. Both surfaces take
+`emails --filter`, `search --scope` and `search --sort` are Literal-typed,
+so cyclopts rejects anything outside the set at parse time. Both surfaces take
 their choices from apple_mail_mcp.choices; these tests fail if either
 side stops doing so.
 """
@@ -15,6 +15,7 @@ import pytest
 from cyclopts.exceptions import CycloptsError
 
 from apple_mail_mcp import cli, server
+from apple_mail_mcp.choices import SearchSort
 
 
 def _cli_choices(func, param: str) -> tuple[str, ...]:
@@ -37,6 +38,34 @@ def test_search_scope_choices_match_server() -> None:
     assert _cli_choices(cli.cli_search, "scope") == _server_choices(
         server.search, "scope"
     )
+
+
+def test_search_sort_choices_match_server() -> None:
+    cli_hint = get_type_hints(cli.cli_search, include_extras=True)["sort"]
+    assert SearchSort in get_args(get_args(cli_hint)[0])
+    assert SearchSort in _server_choices(server.search, "sort")
+
+
+def test_search_rejects_unknown_sort() -> None:
+    with pytest.raises(CycloptsError):
+        cli.app.parse_args(
+            ["search", "invoice", "--sort", "sender"],
+            exit_on_error=False,
+            print_error=False,
+        )
+
+
+def test_search_forwards_sort_to_server(capsys) -> None:
+    mock = AsyncMock(return_value=[])
+    with patch("apple_mail_mcp.server.search", mock):
+        cli.app(
+            ["search", "invoice", "--sort", "date_desc"],
+            exit_on_error=False,
+            result_action="return_value",
+        )
+    assert capsys.readouterr().out.strip() == "[]"
+    assert mock.await_args is not None
+    assert mock.await_args.kwargs["sort"] == "date_desc"
 
 
 def test_emails_accepts_this_week() -> None:

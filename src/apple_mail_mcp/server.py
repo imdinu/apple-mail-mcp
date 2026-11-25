@@ -44,7 +44,7 @@ else:
     from typing_extensions import TypedDict
 
 from .builders import AccountsQueryBuilder, QueryBuilder
-from .choices import EmailFilter, SearchScope
+from .choices import EmailFilter, SearchScope, SearchSort
 from .config import (
     get_default_account,
     get_default_mailbox,
@@ -1334,6 +1334,7 @@ async def search(
     before: str | None = None,
     after: str | None = None,
     highlight: bool = False,
+    sort: SearchSort | None = None,
 ) -> list[SearchResult] | dict:
     """
     Search emails across all accounts and mailboxes.
@@ -1366,6 +1367,11 @@ async def search(
         after: Include only emails on/after this date (YYYY-MM-DD).
         highlight: Wrap matched terms in **markers** in subject
             and content_snippet (default: False).
+        sort: Order indexed results before pagination: "relevance" (default
+            for full-text search), "date_asc" (oldest received first), or
+            "date_desc" (newest received first, default for attachments).
+            Attachment search does not rank by relevance. Omit sort to
+            allow live fallback when there is no index.
 
     Returns:
         List of matching emails with id, subject, sender,
@@ -1379,12 +1385,12 @@ async def search(
         When the search index cannot answer, the hint says so
         instead of suggesting other keywords: an unbuilt index
         (subject/sender still searched live, bodies not) or an
-        index holding 0 emails. Scopes that only the index can
-        serve — "body", "attachments", and any date filter —
-        raise instead, naming the index path and how to build it.
+        index holding 0 emails. Options that require the index —
+        "body", "attachments", date filters, and explicit sort —
+        raise instead with instructions to build the index.
 
     Raises:
-        ValueError: Index required for this scope and not built.
+        ValueError: Index required but not built, or sort unsupported by scope.
         RuntimeError: Index exists but could not be queried.
 
     Examples:
@@ -1393,6 +1399,7 @@ async def search(
         >>> search('"project update"')  # Exact phrase
         >>> search("invoice.pdf", scope="attachments")
         >>> search("budget", after="2026-01-01", before="2026-04-01")
+        >>> search("budget", sort="date_desc")
     """
     limit, offset = _validate_pagination(limit, offset)
     before = _validate_date(before, "before")
@@ -1407,6 +1414,11 @@ async def search(
 
     manager = _get_index_manager()
     indexed = manager.has_index()
+    # The live fallback limits matches before sorting them.
+    if sort is not None and not indexed:
+        raise ValueError(_no_index_message(manager, "Explicit search sorting"))
+    if scope == "attachments" and sort == "relevance":
+        raise ValueError("Attachment search supports date sorting only.")
 
     def _maybe_hint(results: list) -> list | dict:
         """Return results, or explain an empty one.
@@ -1467,6 +1479,7 @@ async def search(
             before=before,
             after=after,
             offset=offset,
+            sort=sort or "date_desc",
         )
 
         return _maybe_hint(
@@ -1530,6 +1543,7 @@ async def search(
                     after=after,
                     offset=offset,
                     highlight=highlight,
+                    sort=sort or "relevance",
                 )
             except Exception as e:
                 raise RuntimeError(_search_index_error(manager, e)) from e

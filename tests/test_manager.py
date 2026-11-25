@@ -218,7 +218,13 @@ class TestSearch:
         manager = IndexManager(db_path=temp_db_path)
         manager._get_conn()  # Initialize connection
 
-        manager.search("invoice", account="Work", mailbox="INBOX", limit=10)
+        manager.search(
+            "invoice",
+            account="Work",
+            mailbox="INBOX",
+            limit=10,
+            sort="date_asc",
+        )
 
         mock_search.assert_called_once()
         call_args = mock_search.call_args
@@ -226,6 +232,7 @@ class TestSearch:
         assert call_args[1]["account"] == "Work"
         assert call_args[1]["mailbox"] == "INBOX"
         assert call_args[1]["limit"] == 10
+        assert call_args[1]["sort"] == "date_asc"
 
 
 class TestClose:
